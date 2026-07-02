@@ -67,9 +67,17 @@ export function previousMonth(month: number): number {
 	return month === 1 ? 12 : month - 1;
 }
 
-/** Trip tabs: row 2 holds the category block titles (模型, 書, ...). */
+/** @deprecated v2 single-row model — deleted in Task 2 with the finance-ops import swap. */
 export const TRIP_CATEGORY_ROW = 2;
-/** Each block is 7 data columns (日期 店鋪 品項 支付方式 日幣原價 臺幣匯率 臺幣進位) + 1 spacer. */
+
+/** Trip tabs: a block header row starts with these two cells, side by side. */
+export const TRIP_HEADER_DATE = "日期";
+export const TRIP_HEADER_SHOP = "店鋪";
+/** A block's terminator row contains this substring (may be prefixed, e.g. 機票住宿分類總花費). */
+export const TRIP_TOTAL_LABEL = "分類總花費";
+/** Scan cap for blocks with no terminator row. */
+export const TRIP_MAX_BLOCK_ROWS = 30;
+/** Each block is 7 data columns (日期 店鋪 品項 支付方式 日幣原價 臺幣 臺幣進位) + 1 spacer. */
 export const TRIP_BLOCK_WIDTH = 8;
 
 export const CONVENTIONS_TEXT = `How this personal-finance spreadsheet is organized:
@@ -83,8 +91,12 @@ MONTHLY TABS — named "N 月" (e.g. "9 月", with a space).
 - Below the list: 總預算 / 沛還 / 薪水 / 剩餘 / 美金支付 (labels in column A, values in column B).
 
 TRIP TABS — e.g. "2026/07/25 京都東京".
-- Side-by-side category blocks (模型, 書, ...), block titles in row 2, one spacer column between blocks.
-- Block columns: 日期, 店鋪, 品項, 支付方式, 日幣原價, 臺幣 0.22 匯率, 臺幣 進位.
+- A mosaic of category blocks in four column bands (A-G, I-O, Q-W, Z-AF), stacked vertically within each band.
+- Each block: a header row (日期, 店鋪, 品項, 支付方式, 日幣原價, 臺幣…, 臺幣進位), the category name on the row below it, data rows, and usually a 分類總花費 total row.
+- Known categories: 模型, 書, 餐(當下吃的), 機票住宿, 雜支, 衣服/鞋子, 吃的伴手禮, 紀念品小物, 交通, 送禮, 入場券, 電子產品.
+- Entries are JPY-priced (¥ → TWD at ~0.22 plus a rounded-up column) or TWD-direct (機票住宿-style: 日幣原價 empty, 臺幣 holds the NTD amount).
+- A budget-vs-actual summary occupies the bottom-right of the grid — it is not a category block.
+- Never insert whole sheet rows in a trip tab: a row insert cuts across all bands and damages neighboring blocks. add_trip_entry writes into empty rows inside a block, or inserts cells scoped to the block's own columns.
 
 OTHER — "火車模型" is a hobby purchase planner; monthly tabs may cross-reference its cells.
 

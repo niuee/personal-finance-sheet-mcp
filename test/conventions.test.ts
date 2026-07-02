@@ -12,6 +12,10 @@ import {
 	REPAYMENT_LABEL,
 	SALARY_LABEL,
 	TOTAL_ROW_LABEL,
+	TRIP_HEADER_DATE,
+	TRIP_HEADER_SHOP,
+	TRIP_MAX_BLOCK_ROWS,
+	TRIP_TOTAL_LABEL,
 	USD_PAYMENT_LABEL,
 } from "../src/conventions";
 
@@ -67,8 +71,24 @@ describe("conventions", () => {
 	});
 
 	it("conventions text mentions the anchors Claude needs", () => {
-		for (const needle of ["花費總額", "GOOGLEFINANCE", "上月透支", "insert", "0.22"]) {
+		for (const needle of [
+			"花費總額",
+			"GOOGLEFINANCE",
+			"上月透支",
+			"insert",
+			"0.22",
+			"分類總花費",
+			"電子產品",
+			"機票住宿",
+		]) {
 			expect(CONVENTIONS_TEXT).toContain(needle);
 		}
+	});
+
+	it("exports the trip block anchors", () => {
+		expect(TRIP_HEADER_DATE).toBe("日期");
+		expect(TRIP_HEADER_SHOP).toBe("店鋪");
+		expect(TRIP_TOTAL_LABEL).toBe("分類總花費");
+		expect(TRIP_MAX_BLOCK_ROWS).toBe(30);
 	});
 });
