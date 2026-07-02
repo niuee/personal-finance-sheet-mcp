@@ -71,7 +71,7 @@ export function registerFinanceTools(server: McpServer, client: SheetsClient): v
 
 	server.tool(
 		"update_range",
-		"OVERWRITE the cells in a range with new values. This destroys the existing contents of those cells — read the range first and double-check before updating. Returns the range and cell count actually written.",
+		"OVERWRITE the cells in a range with new values. This destroys the existing contents of those cells — read the range first and double-check before updating. Returns the range and cell count actually written. To clear a cell, write an empty string \"\" — a null cell value leaves the existing cell unchanged.",
 		{
 			range: z.string().min(1).describe("A1 notation range to overwrite, e.g. Transactions!B7"),
 			values: rowsSchema.describe("Replacement values; outer array = rows, inner = cells"),

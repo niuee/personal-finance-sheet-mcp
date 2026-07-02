@@ -20,9 +20,11 @@ afterEach(() => {
 	vi.unstubAllGlobals();
 });
 
+type FetchMock = (url: string, init?: RequestInit) => Promise<Response>;
+
 describe("SheetsClient reads", () => {
 	it("listTabs returns tab names and dimensions", async () => {
-		const fetchMock = vi.fn(async () =>
+		const fetchMock = vi.fn<FetchMock>(async () =>
 			jsonResponse({
 				sheets: [
 					{ properties: { title: "Transactions", gridProperties: { rowCount: 500, columnCount: 8 } } },
@@ -34,8 +36,8 @@ describe("SheetsClient reads", () => {
 
 		const tabs = await makeClient().listTabs();
 
-		expect((fetchMock.mock.calls[0] as any)[0]).toBe(`${BASE}?fields=sheets.properties`);
-		expect((fetchMock.mock.calls[0] as any)[1].headers.Authorization).toBe("Bearer test-token");
+		expect(fetchMock.mock.calls[0][0]).toBe(`${BASE}?fields=sheets.properties`);
+		expect(fetchMock.mock.calls[0][1]?.headers).toMatchObject({ Authorization: "Bearer test-token" });
 		expect(tabs).toEqual([
 			{ title: "Transactions", rowCount: 500, columnCount: 8 },
 			{ title: "Budget", rowCount: 100, columnCount: 4 },
@@ -43,14 +45,14 @@ describe("SheetsClient reads", () => {
 	});
 
 	it("readRange URL-encodes the range and returns values", async () => {
-		const fetchMock = vi.fn(async () =>
+		const fetchMock = vi.fn<FetchMock>(async () =>
 			jsonResponse({ range: "Transactions!A1:B2", values: [["date", "amount"], ["2026-07-01", 42]] }),
 		);
 		vi.stubGlobal("fetch", fetchMock);
 
 		const result = await makeClient().readRange("Transactions!A1:B2");
 
-		expect((fetchMock.mock.calls[0] as any)[0]).toBe(`${BASE}/values/Transactions!A1%3AB2`);
+		expect(fetchMock.mock.calls[0][0]).toBe(`${BASE}/values/Transactions!A1%3AB2`);
 		expect(result).toEqual({
 			range: "Transactions!A1:B2",
 			values: [["date", "amount"], ["2026-07-01", 42]],
@@ -61,7 +63,10 @@ describe("SheetsClient reads", () => {
 	it("readRange truncates oversized results and flags it", async () => {
 		const bigRow = ["x".repeat(500)];
 		const rows = Array.from({ length: 500 }, () => bigRow);
-		vi.stubGlobal("fetch", vi.fn(async () => jsonResponse({ range: "Log!A1:A500", values: rows })));
+		vi.stubGlobal(
+			"fetch",
+			vi.fn<FetchMock>(async () => jsonResponse({ range: "Log!A1:A500", values: rows })),
+		);
 
 		const result = await makeClient().readRange("Log!A1:A500");
 
@@ -74,7 +79,7 @@ describe("SheetsClient reads", () => {
 	it("surfaces Google's error message with the status", async () => {
 		vi.stubGlobal(
 			"fetch",
-			vi.fn(async () =>
+			vi.fn<FetchMock>(async () =>
 				new Response(JSON.stringify({ error: { message: "Unable to parse range: Nope!A1" } }), {
 					status: 400,
 				}),
@@ -85,11 +90,31 @@ describe("SheetsClient reads", () => {
 		await expect(promise).rejects.toThrow("Unable to parse range: Nope!A1");
 		await expect(promise).rejects.toBeInstanceOf(SheetsApiError);
 	});
+
+	it("falls back to a generic message when the error body is not JSON", async () => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => new Response("<html>Server Error</html>", { status: 502 })),
+		);
+
+		const promise = makeClient().readRange("Transactions!A1");
+		await expect(promise).rejects.toThrow("Sheets API error (502)");
+		await expect(promise).rejects.toBeInstanceOf(SheetsApiError);
+	});
 });
+
+/**
+ * `RequestInit.body` is typed as `BodyInit | null | undefined`; our client
+ * always passes a JSON string, so this narrows just enough to call
+ * `JSON.parse`. This is the one cast Fix 4 keeps (see final-review-fixes.md).
+ */
+function parsedBody(init: RequestInit | undefined): unknown {
+	return JSON.parse(init?.body as string);
+}
 
 describe("SheetsClient writes", () => {
 	it("appendRows POSTs USER_ENTERED values to the quoted tab", async () => {
-		const fetchMock = vi.fn(async () =>
+		const fetchMock = vi.fn<FetchMock>(async () =>
 			jsonResponse({ updates: { updatedRange: "'My Tab'!A10:B11", updatedRows: 2 } }),
 		);
 		vi.stubGlobal("fetch", fetchMock);
@@ -99,54 +124,54 @@ describe("SheetsClient writes", () => {
 			["2026-07-02", -3],
 		]);
 
-		expect((fetchMock.mock.calls[0] as any)[0]).toBe(
+		expect(fetchMock.mock.calls[0][0]).toBe(
 			`${BASE}/values/'My%20Tab'!A1:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`,
 		);
-		expect((fetchMock.mock.calls[0] as any)[1].method).toBe("POST");
-		expect(JSON.parse((fetchMock.mock.calls[0] as any)[1].body)).toEqual({
+		expect(fetchMock.mock.calls[0][1]?.method).toBe("POST");
+		expect(parsedBody(fetchMock.mock.calls[0][1])).toEqual({
 			values: [["2026-07-02", 12.5], ["2026-07-02", -3]],
 		});
 		expect(result).toEqual({ updatedRange: "'My Tab'!A10:B11", updatedRows: 2 });
 	});
 
 	it("appendRows escapes single quotes in tab names", async () => {
-		const fetchMock = vi.fn(async () =>
+		const fetchMock = vi.fn<FetchMock>(async () =>
 			jsonResponse({ updates: { updatedRange: "x", updatedRows: 1 } }),
 		);
 		vi.stubGlobal("fetch", fetchMock);
 
 		await makeClient().appendRows("Bob's Tab", [["a"]]);
 
-		expect(String((fetchMock.mock.calls[0] as any)[0])).toContain("/values/'Bob''s%20Tab'!A1:append");
+		expect(String(fetchMock.mock.calls[0][0])).toContain("/values/'Bob''s%20Tab'!A1:append");
 	});
 
 	it("updateRange PUTs USER_ENTERED values", async () => {
-		const fetchMock = vi.fn(async () =>
+		const fetchMock = vi.fn<FetchMock>(async () =>
 			jsonResponse({ updatedRange: "Budget!B2", updatedCells: 1 }),
 		);
 		vi.stubGlobal("fetch", fetchMock);
 
 		const result = await makeClient().updateRange("Budget!B2", [[99]]);
 
-		expect((fetchMock.mock.calls[0] as any)[0]).toBe(
+		expect(fetchMock.mock.calls[0][0]).toBe(
 			`${BASE}/values/Budget!B2?valueInputOption=USER_ENTERED`,
 		);
-		expect((fetchMock.mock.calls[0] as any)[1].method).toBe("PUT");
-		expect(JSON.parse((fetchMock.mock.calls[0] as any)[1].body)).toEqual({ values: [[99]] });
+		expect(fetchMock.mock.calls[0][1]?.method).toBe("PUT");
+		expect(parsedBody(fetchMock.mock.calls[0][1])).toEqual({ values: [[99]] });
 		expect(result).toEqual({ updatedRange: "Budget!B2", updatedCells: 1 });
 	});
 
 	it("addTab issues a batchUpdate addSheet request", async () => {
-		const fetchMock = vi.fn(async () =>
+		const fetchMock = vi.fn<FetchMock>(async () =>
 			jsonResponse({ replies: [{ addSheet: { properties: { title: "2027", sheetId: 12345 } } }] }),
 		);
 		vi.stubGlobal("fetch", fetchMock);
 
 		const result = await makeClient().addTab("2027");
 
-		expect((fetchMock.mock.calls[0] as any)[0]).toBe(`${BASE}:batchUpdate`);
-		expect((fetchMock.mock.calls[0] as any)[1].method).toBe("POST");
-		expect(JSON.parse((fetchMock.mock.calls[0] as any)[1].body)).toEqual({
+		expect(fetchMock.mock.calls[0][0]).toBe(`${BASE}:batchUpdate`);
+		expect(fetchMock.mock.calls[0][1]?.method).toBe("POST");
+		expect(parsedBody(fetchMock.mock.calls[0][1])).toEqual({
 			requests: [{ addSheet: { properties: { title: "2027" } } }],
 		});
 		expect(result).toEqual({ title: "2027", sheetId: 12345 });
