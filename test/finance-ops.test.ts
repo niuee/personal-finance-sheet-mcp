@@ -8,6 +8,8 @@ import {
 	cellData,
 	colIndex,
 	colLetter,
+	findCells,
+	FIND_CELLS_CAP,
 	findRowByValue,
 	findTripBlocks,
 	monthSummary,
@@ -824,5 +826,78 @@ describe("safeUpdateRange", () => {
 
 		await expect(safeUpdateRange(client, "'T'!A1:Z999", [["y"]])).rejects.toThrow("truncated");
 		expect((client.updateRange as any).mock.calls.length).toBe(0);
+	});
+});
+
+describe("findCells", () => {
+	function searchClient(tabGrids: Record<string, unknown[][]>): SheetsClient {
+		return {
+			listTabs: vi.fn(async () =>
+				Object.keys(tabGrids).map((title) => ({ title, rowCount: 100, columnCount: 26 })),
+			),
+			readRange: vi.fn(async (range: string) => {
+				const title = range.replace(/^'|'$/g, "").replace(/''/g, "'");
+				return { range, values: tabGrids[title] ?? [], truncated: false };
+			}),
+		} as unknown as SheetsClient;
+	}
+
+	it("finds cells by case-insensitive substring with exact addresses", async () => {
+		const client = searchClient({
+			京都: [[], ["", "", "", "haruka 特急"], ["Haruka"]],
+		});
+
+		const result = await findCells(client, { query: "HARUKA", tab: "京都" });
+
+		expect(result).toEqual({
+			matches: [
+				{ tab: "京都", cell: "D2", row: 2, column: "D", value: "haruka 特急" },
+				{ tab: "京都", cell: "A3", row: 3, column: "A", value: "Haruka" },
+			],
+			truncated: false,
+		});
+		expect((client.readRange as any).mock.calls[0][0]).toBe("'京都'");
+	});
+
+	it("exact match trims and is case-sensitive", async () => {
+		const client = searchClient({
+			T: [["Haruka ", "haruka", "the Haruka train"]],
+		});
+
+		const result = await findCells(client, { query: "Haruka", tab: "T", match: "exact" });
+
+		expect(result.matches).toEqual([{ tab: "T", cell: "A1", row: 1, column: "A", value: "Haruka " }]);
+	});
+
+	it("sweeps every tab when tab is omitted", async () => {
+		const client = searchClient({
+			"9 月": [["Netflix"]],
+			京都: [["", "Netflix Store"]],
+		});
+
+		const result = await findCells(client, { query: "netflix" });
+
+		expect(result.matches.map((m) => `${m.tab}!${m.cell}`)).toEqual(["9 月!A1", "京都!B1"]);
+	});
+
+	it("caps at FIND_CELLS_CAP and flags truncation", async () => {
+		const grid = Array.from({ length: FIND_CELLS_CAP + 5 }, () => ["hit"]);
+		const client = searchClient({ T: grid });
+
+		const result = await findCells(client, { query: "hit", tab: "T" });
+
+		expect(result.matches).toHaveLength(FIND_CELLS_CAP);
+		expect(result.truncated).toBe(true);
+	});
+
+	it("flags truncation when a tab read was cut off", async () => {
+		const client = {
+			readRange: vi.fn(async (range: string) => ({ range, values: [["x"]], truncated: true })),
+		} as unknown as SheetsClient;
+
+		const result = await findCells(client, { query: "zzz", tab: "T" });
+
+		expect(result.matches).toEqual([]);
+		expect(result.truncated).toBe(true);
 	});
 });

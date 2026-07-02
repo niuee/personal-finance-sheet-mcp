@@ -596,3 +596,40 @@ export async function safeUpdateRange(
 	const result = await client.updateRange(range, values);
 	return { ...result, previousValues };
 }
+
+export const FIND_CELLS_CAP = 50;
+
+export interface FindCellsParams {
+	query: string;
+	tab?: string;
+	match?: "contains" | "exact";
+}
+
+/** Find cells by text and return exact A1 addresses — the alternative to reading big ranges and counting rows. */
+export async function findCells(client: SheetsClient, p: FindCellsParams) {
+	const mode = p.match ?? "contains";
+	const needle = mode === "contains" ? p.query.toLowerCase() : p.query.trim();
+	const tabs = p.tab !== undefined ? [p.tab] : (await client.listTabs()).map((t) => t.title);
+
+	const matches: Array<{ tab: string; cell: string; row: number; column: string; value: string }> = [];
+	let truncated = false;
+	outer: for (const tab of tabs) {
+		const { values, truncated: readTruncated } = await client.readRange(quoteTab(tab));
+		if (readTruncated) truncated = true;
+		for (let i = 0; i < values.length; i++) {
+			const row = values[i] ?? [];
+			for (let j = 0; j < row.length; j++) {
+				const raw = String(row[j] ?? "");
+				if (raw === "") continue;
+				const hit = mode === "contains" ? raw.toLowerCase().includes(needle) : raw.trim() === needle;
+				if (!hit) continue;
+				if (matches.length >= FIND_CELLS_CAP) {
+					truncated = true;
+					break outer;
+				}
+				matches.push({ tab, cell: `${colLetter(j)}${i + 1}`, row: i + 1, column: colLetter(j), value: raw });
+			}
+		}
+	}
+	return { matches, truncated };
+}
