@@ -21,11 +21,11 @@
   "kv_namespaces": [
     {
       "binding": "OAUTH_KV",
-      "id": "<Add-KV-ID-in-Task-7>"
+      "id": "a1ad721aeab24c848aa236b07ea9d49f"
     }
   ],
   "vars": {
-    "SPREADSHEET_ID": "<real-finance-spreadsheet-id>",
+    "SPREADSHEET_ID": "1UcOqYUidte72tGCn6N5e2QkeSeeAdgxH8n8QaN71f8k",
     "ALLOWED_GITHUB_LOGIN": "niuee"
   },
   "observability": {
