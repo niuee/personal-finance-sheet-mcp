@@ -4,11 +4,14 @@ import {
 	adjustColumnRefsForInsert,
 	addExpense,
 	addTripEntry,
+	annotateRows,
 	cellData,
+	colIndex,
 	colLetter,
 	findRowByValue,
 	findTripBlocks,
 	monthSummary,
+	safeUpdateRange,
 	spliceIntoSum,
 	startMonth,
 	stripRefErrors,
@@ -740,5 +743,86 @@ describe("findTripBlocks", () => {
 		g[4] = ["", "", "", "", "", "交通", "=SUM(G3:G4)"];
 		const [block] = findTripBlocks(g);
 		expect(block).toEqual({ category: "交通", headerRow: 1, startCol: 0, firstDataRow: 3, endRow: 5 });
+	});
+});
+
+describe("annotateRows", () => {
+	it("derives the start row from the echoed range and numbers rows", () => {
+		const result = annotateRows("'9 月'!A3:F60", [["a"], [], ["c", 5]]);
+		expect(result).toEqual({
+			startRow: 3,
+			rows: [
+				{ row: 3, values: ["a"] },
+				{ row: 5, values: ["c", 5] },
+			],
+		});
+	});
+
+	it("defaults to row 1 for bare tab names and column-only ranges", () => {
+		expect(annotateRows("Transactions", [["x"]]).startRow).toBe(1);
+		expect(annotateRows("'9 月'!A:F", [["x"]]).startRow).toBe(1);
+	});
+
+	it("omits rows whose cells are all empty", () => {
+		const result = annotateRows("'T'!B10:D12", [["", "", ""], ["v"]]);
+		expect(result.rows).toEqual([{ row: 11, values: ["v"] }]);
+	});
+});
+
+describe("colIndex", () => {
+	it("inverts colLetter", () => {
+		expect(colIndex("A")).toBe(0);
+		expect(colIndex("I")).toBe(8);
+		expect(colIndex("Z")).toBe(25);
+		expect(colIndex("AA")).toBe(26);
+		expect(colIndex("AF")).toBe(31);
+	});
+});
+
+describe("safeUpdateRange", () => {
+	function updateClient(readResult: { range: string; values: unknown[][]; truncated?: boolean }): SheetsClient {
+		return {
+			readRange: vi.fn(async () => ({ truncated: false, ...readResult })),
+			updateRange: vi.fn(async () => ({ updatedRange: readResult.range, updatedCells: 3 })),
+		} as unknown as SheetsClient;
+	}
+
+	it("returns the previous values, row-annotated with formulas", async () => {
+		const client = updateClient({ range: "'京都'!Q29:W29", values: [["Haruka", "", "=U29*0.22"]] });
+
+		const result = await safeUpdateRange(client, "'京都'!Q29:W29", [["new", "", 1]]);
+
+		expect((client.readRange as any).mock.calls[0]).toEqual(["'京都'!Q29:W29", "FORMULA"]);
+		expect((client.updateRange as any).mock.calls[0]).toEqual(["'京都'!Q29:W29", [["new", "", 1]]]);
+		expect(result).toEqual({
+			updatedRange: "'京都'!Q29:W29",
+			updatedCells: 3,
+			previousValues: { startRow: 29, rows: [{ row: 29, values: ["Haruka", "", "=U29*0.22"] }] },
+		});
+	});
+
+	it("expect_empty refuses when any target cell is occupied, naming the cells", async () => {
+		const client = updateClient({ range: "'京都'!Q29:W29", values: [["Haruka", "", "=U29*0.22"]] });
+
+		const promise = safeUpdateRange(client, "'京都'!Q29:W29", [["x"]], true);
+		await expect(promise).rejects.toThrow("Q29=Haruka");
+		await expect(promise).rejects.toThrow("S29==U29*0.22");
+		expect((client.updateRange as any).mock.calls.length).toBe(0);
+	});
+
+	it("expect_empty writes when the target is genuinely empty", async () => {
+		const client = updateClient({ range: "'京都'!Q30:W30", values: [] });
+
+		const result = await safeUpdateRange(client, "'京都'!Q30:W30", [["x"]], true);
+
+		expect((client.updateRange as any).mock.calls.length).toBe(1);
+		expect(result.previousValues).toEqual({ startRow: 30, rows: [] });
+	});
+
+	it("refuses when the pre-write read was truncated", async () => {
+		const client = updateClient({ range: "'T'!A1:Z999", values: [["x"]], truncated: true });
+
+		await expect(safeUpdateRange(client, "'T'!A1:Z999", [["y"]])).rejects.toThrow("truncated");
+		expect((client.updateRange as any).mock.calls.length).toBe(0);
 	});
 });

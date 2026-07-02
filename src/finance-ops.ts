@@ -528,3 +528,71 @@ export function findTripBlocks(values: unknown[][]): TripBlock[] {
 	}
 	return blocks;
 }
+
+export interface AnnotatedRows {
+	startRow: number;
+	rows: Array<{ row: number; values: unknown[] }>;
+}
+
+/** Row-number a values grid using the A1 range the API echoed ("'9 月'!A3:F60" → startRow 3). Empty rows are omitted. */
+export function annotateRows(range: string, values: unknown[][]): AnnotatedRows {
+	const m = range.match(/![A-Z]*(\d+)/);
+	const startRow = m ? Number(m[1]) : 1;
+	const rows: Array<{ row: number; values: unknown[] }> = [];
+	for (let i = 0; i < values.length; i++) {
+		const row = values[i] ?? [];
+		if (row.some((c) => c !== "" && c != null)) {
+			rows.push({ row: startRow + i, values: row });
+		}
+	}
+	return { startRow, rows };
+}
+
+/** "A" → 0, "I" → 8, "AA" → 26 — the inverse of colLetter. */
+export function colIndex(letter: string): number {
+	let n = 0;
+	for (const ch of letter) n = n * 26 + (ch.charCodeAt(0) - 64);
+	return n - 1;
+}
+
+/**
+ * update_range with a seatbelt: reads the target first (the read IS the
+ * safety mechanism — two calls, deliberately not atomic), optionally refuses
+ * non-empty targets, and always returns what was there before the write.
+ */
+export async function safeUpdateRange(
+	client: SheetsClient,
+	range: string,
+	values: unknown[][],
+	expectEmpty = false,
+): Promise<{ updatedRange: string; updatedCells: number; previousValues: AnnotatedRows }> {
+	const before = await client.readRange(range, "FORMULA");
+	if (before.truncated) {
+		throw new Error(`Refusing to write: reading ${range} back was truncated, so its current contents cannot be verified.`);
+	}
+	const echoed = before.range || range;
+	const previousValues = annotateRows(echoed, before.values);
+
+	if (expectEmpty) {
+		const colMatch = echoed.match(/!([A-Z]+)\d*/);
+		const startCol = colMatch ? colIndex(colMatch[1]) : 0;
+		const occupied: string[] = [];
+		for (const r of previousValues.rows) {
+			r.values.forEach((c, j) => {
+				if (c !== "" && c != null) {
+					occupied.push(`${colLetter(startCol + j)}${r.row}=${String(c).slice(0, 40)}`);
+				}
+			});
+		}
+		if (occupied.length > 0) {
+			const listed = occupied.slice(0, 10).join(", ");
+			const more = occupied.length > 10 ? ` (+${occupied.length - 10} more)` : "";
+			throw new Error(
+				`expect_empty: target range ${range} is not empty — refusing to overwrite. Occupied: ${listed}${more}`,
+			);
+		}
+	}
+
+	const result = await client.updateRange(range, values);
+	return { ...result, previousValues };
+}
