@@ -39,9 +39,9 @@ app.get("/authorize", async (c) => {
 		client: await c.env.OAUTH_PROVIDER.lookupClient(clientId),
 		csrfToken,
 		server: {
-			description: "This is a demo MCP Remote Server using GitHub for authentication.",
-			logo: "https://avatars.githubusercontent.com/u/314135?s=200&v=4",
-			name: "Cloudflare GitHub MCP Server",
+			description:
+				"Private MCP server for Vincent's personal-finance Google Sheet. Only the owner's GitHub account is authorized.",
+			name: "Personal Finance Sheets MCP",
 		},
 		setCookie,
 		state: { oauthReqInfo },
@@ -171,6 +171,10 @@ app.get("/callback", async (c) => {
 	// Fetch the user info from GitHub
 	const user = await new Octokit({ auth: accessToken }).rest.users.getAuthenticated();
 	const { login, name, email } = user.data;
+
+	if (login !== c.env.ALLOWED_GITHUB_LOGIN) {
+		return c.text(`Access denied: GitHub user "${login}" is not authorized to use this server.`, 403);
+	}
 
 	// Return back to the MCP client a new token
 	const { redirectTo } = await c.env.OAUTH_PROVIDER.completeAuthorization({
