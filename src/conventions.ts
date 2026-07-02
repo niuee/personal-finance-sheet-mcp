@@ -16,6 +16,13 @@ export const CATEGORIES: Record<string, string> = {
 
 export const DEFAULT_CATEGORY = "額外雜支";
 
+/** Column-A anchor labels for the budget/income section (values in the adjacent column). */
+export const OVERDRAFT_LABEL = "上月透支";
+export const SALARY_LABEL = "薪水";
+export const REPAYMENT_LABEL = "沛還";
+export const REMAINDER_LABEL = "剩餘";
+export const USD_PAYMENT_LABEL = "美金支付";
+
 /** Items start_month keeps when opening a new month; everything else is a one-off. */
 export const RECURRING_ITEMS = new Set<string>([
 	"上月透支",

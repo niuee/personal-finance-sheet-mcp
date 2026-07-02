@@ -141,13 +141,29 @@ describe("addExpense", () => {
 		await addExpense(client, { item: "API credits", amount: 30, currency: "USD", category: "訂閱費", month: 9 });
 
 		const requests = (client.batchUpdate as any).mock.calls[0][0];
-		expect(requests[0].updateCells.rows[0].values).toEqual([
-			{ userEnteredValue: { stringValue: "API credits" } },
-			{ userEnteredValue: { numberValue: 30 } },
-			{ userEnteredValue: { formulaValue: '=B9*GOOGLEFINANCE("CURRENCY:USDTWD")' } },
-		]);
-		expect(requests[1].updateCells.rows[0].values).toEqual([
-			{ userEnteredValue: { formulaValue: "=sum(C4,C5,C9)" } },
+		expect(requests).toEqual([
+			{
+				updateCells: {
+					start: { sheetId: 111, rowIndex: 8, columnIndex: 0 },
+					rows: [
+						{
+							values: [
+								{ userEnteredValue: { stringValue: "API credits" } },
+								{ userEnteredValue: { numberValue: 30 } },
+								{ userEnteredValue: { formulaValue: '=B9*GOOGLEFINANCE("CURRENCY:USDTWD")' } },
+							],
+						},
+					],
+					fields: "userEnteredValue",
+				},
+			},
+			{
+				updateCells: {
+					start: { sheetId: 111, rowIndex: 4, columnIndex: 5 },
+					rows: [{ values: [{ userEnteredValue: { formulaValue: "=sum(C4,C5,C9)" } }] }],
+					fields: "userEnteredValue",
+				},
+			},
 		]);
 	});
 
@@ -160,17 +176,63 @@ describe("addExpense", () => {
 		const result = await addExpense(client, { item: "加購", amount: 100, currency: "TWD", month: 9 });
 
 		const requests = (client.batchUpdate as any).mock.calls[0][0];
-		expect(requests[0]).toEqual({
-			insertDimension: {
-				range: { sheetId: 111, dimension: "ROWS", startIndex: 9, endIndex: 10 },
-				inheritFromBefore: true,
-			},
-		});
 		// new row is 10 (1-indexed); category 額外雜支 formula refs C8,C3 (< 10) stay put
-		expect(requests[2].updateCells.rows[0].values).toEqual([
-			{ userEnteredValue: { formulaValue: "=sum(C8,C3,C10)" } },
+		expect(requests).toEqual([
+			{
+				insertDimension: {
+					range: { sheetId: 111, dimension: "ROWS", startIndex: 9, endIndex: 10 },
+					inheritFromBefore: true,
+				},
+			},
+			{
+				updateCells: {
+					start: { sheetId: 111, rowIndex: 9, columnIndex: 0 },
+					rows: [
+						{
+							values: [
+								{ userEnteredValue: { stringValue: "加購" } },
+								{},
+								{ userEnteredValue: { numberValue: 100 } },
+							],
+						},
+					],
+					fields: "userEnteredValue",
+				},
+			},
+			{
+				updateCells: {
+					start: { sheetId: 111, rowIndex: 7, columnIndex: 5 },
+					rows: [{ values: [{ userEnteredValue: { formulaValue: "=sum(C8,C3,C10)" } }] }],
+					fields: "userEnteredValue",
+				},
+			},
 		]);
 		expect(result).toMatchObject({ row: 10, inserted: true });
+	});
+
+	it("shifts the category formula row when it sits at/below the insertion point", async () => {
+		const g: unknown[][] = [];
+		g[0] = ["title"];
+		g[2] = ["a", "", 1];
+		g[3] = ["b", "", 2];
+		g[4] = ["c", "", 3, "", "本月額外雜支", "=sum(C3)"];
+		g[5] = ["", "花費總額", "=SUM(C3:C5)"];
+		const client = fakeClient(g);
+
+		const result = await addExpense(client, { item: "x", amount: 5, currency: "TWD", month: 9 });
+
+		const requests = (client.batchUpdate as any).mock.calls[0][0];
+		expect(requests[0].insertDimension.range).toEqual({
+			sheetId: 111,
+			dimension: "ROWS",
+			startIndex: 4,
+			endIndex: 5,
+		});
+		expect(requests[2].updateCells.start).toEqual({ sheetId: 111, rowIndex: 5, columnIndex: 5 });
+		expect(requests[2].updateCells.rows[0].values).toEqual([
+			{ userEnteredValue: { formulaValue: "=sum(C3,C5)" } },
+		]);
+		expect(result).toMatchObject({ row: 5, inserted: true });
 	});
 
 	it("rejects unknown categories and missing anchors without writing", async () => {

@@ -9,8 +9,13 @@ import {
 	currentMonthTab,
 	DEFAULT_CATEGORY,
 	monthTabName,
+	OVERDRAFT_LABEL,
+	REMAINDER_LABEL,
+	REPAYMENT_LABEL,
+	SALARY_LABEL,
 	TOTAL_ROW_LABEL,
 	TRIP_CATEGORY_ROW,
+	USD_PAYMENT_LABEL,
 } from "./conventions";
 import type { SheetsClient } from "./sheets-client";
 
@@ -189,11 +194,11 @@ export async function monthSummary(client: SheetsClient, month?: number) {
 	return {
 		tab,
 		花費總額: cellAt(findRowByValue(values, 1, TOTAL_ROW_LABEL), 2),
-		上月透支: cellAt(rowByA("上月透支"), 2),
+		上月透支: cellAt(rowByA(OVERDRAFT_LABEL), 2),
 		categories,
-		薪水: cellAt(rowByA("薪水"), 1),
-		沛還: cellAt(rowByA("沛還"), 1),
-		剩餘: cellAt(rowByA("剩餘"), 1),
-		美金支付: cellAt(rowByA("美金支付"), 1),
+		薪水: cellAt(rowByA(SALARY_LABEL), 1),
+		沛還: cellAt(rowByA(REPAYMENT_LABEL), 1),
+		剩餘: cellAt(rowByA(REMAINDER_LABEL), 1),
+		美金支付: cellAt(rowByA(USD_PAYMENT_LABEL), 1),
 	};
 }

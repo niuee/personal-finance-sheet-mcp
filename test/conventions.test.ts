@@ -5,9 +5,14 @@ import {
 	currentMonthTab,
 	DEFAULT_CATEGORY,
 	monthTabName,
+	OVERDRAFT_LABEL,
 	previousMonth,
 	RECURRING_ITEMS,
+	REMAINDER_LABEL,
+	REPAYMENT_LABEL,
+	SALARY_LABEL,
 	TOTAL_ROW_LABEL,
+	USD_PAYMENT_LABEL,
 } from "../src/conventions";
 
 describe("conventions", () => {
@@ -45,6 +50,14 @@ describe("conventions", () => {
 			expect(RECURRING_ITEMS.has(item)).toBe(true);
 		}
 		expect(RECURRING_ITEMS.has("近鐵 80000系")).toBe(false);
+	});
+
+	it("exports the summary row labels", () => {
+		expect(OVERDRAFT_LABEL).toBe("上月透支");
+		expect(SALARY_LABEL).toBe("薪水");
+		expect(REPAYMENT_LABEL).toBe("沛還");
+		expect(REMAINDER_LABEL).toBe("剩餘");
+		expect(USD_PAYMENT_LABEL).toBe("美金支付");
 	});
 
 	it("conventions text mentions the anchors Claude needs", () => {
