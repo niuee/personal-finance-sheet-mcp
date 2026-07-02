@@ -8,7 +8,7 @@ let privateKeyPem: string;
 let publicKey: CryptoKey;
 
 beforeAll(async () => {
-	const pair = await crypto.subtle.generateKey(
+	const pair = (await crypto.subtle.generateKey(
 		{
 			name: "RSASSA-PKCS1-v1_5",
 			modulusLength: 2048,
@@ -17,9 +17,9 @@ beforeAll(async () => {
 		},
 		true,
 		["sign", "verify"],
-	);
+	)) as CryptoKeyPair;
 	publicKey = pair.publicKey;
-	const pkcs8 = await crypto.subtle.exportKey("pkcs8", pair.privateKey);
+	const pkcs8 = (await crypto.subtle.exportKey("pkcs8", pair.privateKey)) as ArrayBuffer;
 	const b64 = Buffer.from(pkcs8).toString("base64");
 	privateKeyPem = `-----BEGIN PRIVATE KEY-----\n${b64.match(/.{1,64}/g)!.join("\n")}\n-----END PRIVATE KEY-----\n`;
 });
