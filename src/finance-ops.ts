@@ -18,6 +18,7 @@ import {
 	TOTAL_ROW_LABEL,
 	TRIP_HEADER_DATE,
 	TRIP_HEADER_SHOP,
+	TRIP_BLOCK_WIDTH,
 	TRIP_MAX_BLOCK_ROWS,
 	TRIP_TOTAL_LABEL,
 	USD_PAYMENT_LABEL,
@@ -344,6 +345,8 @@ export interface TripEntryParams {
 const TRIP_READ = "A1:AL200";
 /** Plain single-column SUM range, e.g. =SUM(M10:M12). */
 const PLAIN_SUM_RANGE_RE = /^=SUM\(([A-Z]{1,2})(\d+):\1(\d+)\)$/i;
+/** Data columns per trip block (the band width minus its spacer column). */
+const BAND_COLS = TRIP_BLOCK_WIDTH - 1;
 
 export async function addTripEntry(client: SheetsClient, p: TripEntryParams) {
 	if ((p.jpy === undefined) === (p.twd === undefined)) {
@@ -364,8 +367,9 @@ export async function addTripEntry(client: SheetsClient, p: TripEntryParams) {
 	const cellStr = (r: number, c: number) => String(values[r - 1]?.[c] ?? "").trim();
 
 	// The block's 分類總花費 row (endRow when terminated by one) and its two total cells.
-	const totalRow = Array.from({ length: 7 }, (_, i) => cellStr(endRow, startCol + i)).some((v) =>
-		v.includes(TRIP_TOTAL_LABEL),
+	const endRowBand = Array.from({ length: BAND_COLS }, (_, i) => cellStr(endRow, startCol + i));
+	const totalRow = endRowBand.some(
+		(v) => v.includes(TRIP_TOTAL_LABEL) || (v.startsWith("=") && /sum\(/i.test(v)),
 	)
 		? endRow
 		: null;
@@ -382,7 +386,7 @@ export async function addTripEntry(client: SheetsClient, p: TripEntryParams) {
 	// Target: first fully-empty band row inside the region.
 	let targetRow: number | null = null;
 	for (let r = firstDataRow; r < endRow; r++) {
-		if (Array.from({ length: 7 }, (_, i) => cellStr(r, startCol + i)).every((v) => v === "")) {
+		if (Array.from({ length: BAND_COLS }, (_, i) => cellStr(r, startCol + i)).every((v) => v === "")) {
 			targetRow = r;
 			break;
 		}
@@ -420,7 +424,7 @@ export async function addTripEntry(client: SheetsClient, p: TripEntryParams) {
 						startRowIndex: row - 1,
 						endRowIndex: row,
 						startColumnIndex: startCol,
-						endColumnIndex: startCol + 7,
+						endColumnIndex: startCol + BAND_COLS,
 					},
 					shiftDimension: "ROWS",
 				},
@@ -460,7 +464,7 @@ export async function addTripEntry(client: SheetsClient, p: TripEntryParams) {
 		}
 	}
 
-	const range = `${quoteTab(p.tab)}!${colLetter(startCol)}${row}:${colLetter(startCol + 6)}${row}`;
+	const range = `${quoteTab(p.tab)}!${colLetter(startCol)}${row}:${colLetter(startCol + BAND_COLS - 1)}${row}`;
 	const result = await client.updateRange(range, [
 		[p.date, p.shop, p.item, p.paymentMethod, p.jpy ?? "", twdValue, roundFormula],
 	]);
@@ -492,7 +496,7 @@ export function findTripBlocks(values: unknown[][]): TripBlock[] {
 			if (cell(r, c) !== TRIP_HEADER_DATE || cell(r, c + 1) !== TRIP_HEADER_SHOP) continue;
 
 			let category = "";
-			for (let lc = c; lc < c + 7; lc++) {
+			for (let lc = c; lc < c + BAND_COLS; lc++) {
 				const v = cell(r + 1, lc);
 				if (v !== "") {
 					category = v;
@@ -504,8 +508,13 @@ export function findTripBlocks(values: unknown[][]): TripBlock[] {
 			const firstDataRow = r + 2;
 			let endRow = firstDataRow + TRIP_MAX_BLOCK_ROWS;
 			for (let br = firstDataRow; br < firstDataRow + TRIP_MAX_BLOCK_ROWS && br <= values.length; br++) {
-				const band = Array.from({ length: 7 }, (_, i) => cell(br, c + i));
+				const band = Array.from({ length: BAND_COLS }, (_, i) => cell(br, c + i));
 				if (band.some((v) => v.includes(TRIP_TOTAL_LABEL))) {
+					endRow = br;
+					break;
+				}
+				// An untitled per-block summary row (e.g. 交通's) is recognizable by its =SUM(...) cells.
+				if (band.some((v) => v.startsWith("=") && /sum\(/i.test(v))) {
 					endRow = br;
 					break;
 				}

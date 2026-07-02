@@ -77,6 +77,8 @@ describe("grid helpers", () => {
 		expect(colLetter(0)).toBe("A");
 		expect(colLetter(8)).toBe("I");
 		expect(colLetter(26)).toBe("AA");
+		expect(colLetter(25)).toBe("Z");
+		expect(colLetter(31)).toBe("AF");
 	});
 });
 
@@ -588,6 +590,68 @@ describe("addTripEntry (mosaic)", () => {
 		).rejects.toThrow("truncated");
 		expect((client.updateRange as any).mock.calls.length).toBe(0);
 	});
+
+	it("writes into a 交通-style block by inserting above its untitled summary and extending its SUM", async () => {
+		const g: unknown[][] = [];
+		g[0] = ["日期", "店鋪", "品項", "支付方式", "日幣原價", "臺幣", "臺幣進位"];
+		g[1] = ["交通"];
+		g[2] = ["07/25", "", "新幹線", "已算在預算", 14500, "=E3*0.22", "=CEILING(F3)"];
+		g[3] = ["07/25", "", "Haruka", "已算在預算", 2200, "=E4*0.22", "=CEILING(F4)"];
+		g[4] = ["", "", "", "", "", "交通", "=SUM(G3:G4)"];
+		const client = tripClient(g);
+
+		const result = await addTripEntry(client, {
+			tab: "京都",
+			category: "交通",
+			date: "07/26",
+			shop: "",
+			item: "Suica 儲值",
+			paymentMethod: "現金",
+			jpy: 3000,
+		});
+
+		expect((client.batchUpdate as any).mock.calls[0][0]).toEqual([
+			{
+				insertRange: {
+					range: { sheetId: 111, startRowIndex: 4, endRowIndex: 5, startColumnIndex: 0, endColumnIndex: 7 },
+					shiftDimension: "ROWS",
+				},
+			},
+			{
+				updateCells: {
+					start: { sheetId: 111, rowIndex: 5, columnIndex: 6 },
+					rows: [{ values: [{ userEnteredValue: { formulaValue: "=SUM(G3:G5)" } }] }],
+					fields: "userEnteredValue",
+				},
+			},
+		]);
+		expect((client.updateRange as any).mock.calls[0]).toEqual([
+			"'京都'!A5:G5",
+			[["07/26", "", "Suica 儲值", "現金", 3000, "=E5*0.22", "=CEILING(F5)"]],
+		]);
+		expect(result).toMatchObject({ category: "交通", row: 5 });
+	});
+
+	it("falls back to default conversion formulas when the previous row has plain numbers", async () => {
+		const client = tripClient(mosaicGrid());
+
+		const result = await addTripEntry(client, {
+			tab: "京都",
+			category: "機票住宿",
+			date: "07/27",
+			shop: "",
+			item: "追加住宿",
+			paymentMethod: "信用卡",
+			jpy: 12000,
+		});
+
+		expect((client.batchUpdate as any).mock.calls.length).toBe(0);
+		expect((client.updateRange as any).mock.calls[0]).toEqual([
+			"'京都'!I5:O5",
+			[["07/27", "", "追加住宿", "信用卡", 12000, "=M5*0.22", "=CEILING(N5)"]],
+		]);
+		expect(result).toMatchObject({ row: 5, currency: "JPY" });
+	});
 });
 
 /**
@@ -641,5 +705,16 @@ describe("findTripBlocks", () => {
 		g[2] = ["07/25", "", "紅包", "已算在預算", 25000, 4945.23, 4946];
 		const [block] = findTripBlocks(g);
 		expect(block).toEqual({ category: "雜支", headerRow: 1, startCol: 0, firstDataRow: 3, endRow: 33 });
+	});
+
+	it("bounds a block at an untitled =SUM summary row (交通-style)", () => {
+		const g: unknown[][] = [];
+		g[0] = ["日期", "店鋪", "品項", "支付方式", "日幣原價", "臺幣", "臺幣進位"];
+		g[1] = ["交通"];
+		g[2] = ["07/25", "", "新幹線", "已算在預算", 14500, "=E3*0.22", "=CEILING(F3)"];
+		g[3] = ["07/25", "", "Haruka", "已算在預算", 2200, "=E4*0.22", "=CEILING(F4)"];
+		g[4] = ["", "", "", "", "", "交通", "=SUM(G3:G4)"];
+		const [block] = findTripBlocks(g);
+		expect(block).toEqual({ category: "交通", headerRow: 1, startCol: 0, firstDataRow: 3, endRow: 5 });
 	});
 });
