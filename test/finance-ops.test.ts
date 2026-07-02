@@ -7,6 +7,7 @@ import {
 	cellData,
 	colLetter,
 	findRowByValue,
+	findTripBlocks,
 	monthSummary,
 	spliceIntoSum,
 	startMonth,
@@ -493,5 +494,59 @@ describe("addTripEntry", () => {
 			addTripEntry(client, { tab: "京都", category: "模型", date: "x", shop: "x", item: "x", paymentMethod: "x", jpy: 1 }),
 		).rejects.toThrow("truncated");
 		expect((client.updateRange as any).mock.calls.length).toBe(0);
+	});
+});
+
+/**
+ * Mosaic fixture mirroring the real trip tab: band A (cols 0-6) and band B
+ * (cols 8-14); band B has two stacked blocks; a summary section at the
+ * bottom that must never be detected as a block. Row = index+1.
+ */
+function mosaicGrid(): unknown[][] {
+	const g: unknown[][] = [];
+	g[0] = ["日期", "店鋪", "品項", "支付方式", "日幣原價", "臺幣 0.22 匯率", "臺幣 進位", "", "日期", "店鋪", "品項", "支付方式", "日幣原價", "臺幣", "臺幣進位"];
+	g[1] = ["模型", "", "", "", "", "", "", "", "機票住宿"];
+	g[2] = ["10/08", "Yodobashi", "鑷子", "Suica", 1373, "=E3*0.22", "=CEILING(F3)", "", "07/25", "", "去程機票", "已算在預算", "", 7849, 7849];
+	g[3] = ["", "", "", "", "", "", "", "", "07/25", "", "回程機票", "已算在預算", "", 8173, 8173];
+	// rows 4-5 empty in band A; row 5 empty in band B
+	g[5] = ["", "", "", "分類總花費", "=SUM(E3:E5)", "", "=SUM(G3:G5)", "", "", "", "", "機票住宿分類總花費", "", "", "=SUM(O3:O5)"];
+	// second block stacked in band B: header row 8, label row 9, ONE full data row 10, total row 11
+	g[7] = ["", "", "", "", "", "", "", "", "日期", "店鋪", "品項", "支付方式", "日幣原價", "臺幣 0.22 匯率", "臺幣進位"];
+	g[8] = ["", "", "", "", "", "", "", "", "電子產品"];
+	g[9] = ["", "", "", "", "", "", "", "", "10/09", "ビックカメラ", "DJI", "Suica", 13900, "=M10*0.22", "=CEILING(N10)"];
+	g[10] = ["", "", "", "", "", "", "", "", "", "", "", "分類總花費", "=SUM(M10:M10)", "", "=SUM(O10:O10)"];
+	// summary section — not a block
+	g[13] = ["本次總預算 粗估", "類別", "預算"];
+	return g;
+}
+
+describe("findTripBlocks", () => {
+	it("discovers stacked blocks across bands with correct geometry", () => {
+		const blocks = findTripBlocks(mosaicGrid());
+		expect(blocks).toEqual([
+			{ category: "模型", headerRow: 1, startCol: 0, firstDataRow: 3, endRow: 6 },
+			{ category: "機票住宿", headerRow: 1, startCol: 8, firstDataRow: 3, endRow: 6 },
+			{ category: "電子產品", headerRow: 8, startCol: 8, firstDataRow: 10, endRow: 11 },
+		]);
+	});
+
+	it("does not mistake the summary section for a block", () => {
+		const blocks = findTripBlocks(mosaicGrid());
+		expect(blocks.map((b) => b.category)).not.toContain("本次總預算 粗估");
+	});
+
+	it("skips a stray header row with no label beneath it", () => {
+		const g = mosaicGrid();
+		g[15] = ["日期", "店鋪"];
+		expect(findTripBlocks(g)).toHaveLength(3);
+	});
+
+	it("caps a block with no terminator at TRIP_MAX_BLOCK_ROWS", () => {
+		const g: unknown[][] = [];
+		g[0] = ["日期", "店鋪", "品項", "支付方式", "日幣原價", "臺幣", "臺幣進位"];
+		g[1] = ["雜支"];
+		g[2] = ["07/25", "", "紅包", "已算在預算", 25000, 4945.23, 4946];
+		const [block] = findTripBlocks(g);
+		expect(block).toEqual({ category: "雜支", headerRow: 1, startCol: 0, firstDataRow: 3, endRow: 33 });
 	});
 });

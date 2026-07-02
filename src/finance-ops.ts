@@ -16,7 +16,10 @@ import {
 	REPAYMENT_LABEL,
 	SALARY_LABEL,
 	TOTAL_ROW_LABEL,
-	TRIP_CATEGORY_ROW,
+	TRIP_HEADER_DATE,
+	TRIP_HEADER_SHOP,
+	TRIP_MAX_BLOCK_ROWS,
+	TRIP_TOTAL_LABEL,
 	USD_PAYMENT_LABEL,
 } from "./conventions";
 import type { SheetsClient } from "./sheets-client";
@@ -341,7 +344,7 @@ export async function addTripEntry(client: SheetsClient, p: TripEntryParams) {
 	const { values, truncated } = await client.readRange(`${quoteTab(p.tab)}!A1:AL200`, "FORMULA");
 	assertNotTruncated(truncated, p.tab, "A1:AL200");
 
-	const categoryRow = values[TRIP_CATEGORY_ROW - 1] ?? [];
+	const categoryRow = values[1] ?? [];
 	let startCol = -1;
 	for (let c = 0; c < categoryRow.length; c++) {
 		if (String(categoryRow[c] ?? "").trim() === p.category) {
@@ -352,13 +355,13 @@ export async function addTripEntry(client: SheetsClient, p: TripEntryParams) {
 	if (startCol === -1) {
 		const blocks = categoryRow.map((v) => String(v ?? "").trim()).filter(Boolean);
 		throw new Error(
-			`Category block "${p.category}" not found in row ${TRIP_CATEGORY_ROW} of ${p.tab}. Blocks present: ${blocks.join(", ")}`,
+			`Category block "${p.category}" not found in row 2 of ${p.tab}. Blocks present: ${blocks.join(", ")}`,
 		);
 	}
 
 	let targetRow = values.length + 1;
 	let lastDataRow = -1;
-	for (let r = TRIP_CATEGORY_ROW + 1; r <= values.length + 1; r++) {
+	for (let r = 3; r <= values.length + 1; r++) {
 		const block = (values[r - 1] ?? []).slice(startCol, startCol + 7);
 		if (block.some((c) => c !== "" && c != null)) {
 			lastDataRow = r;
@@ -372,7 +375,7 @@ export async function addTripEntry(client: SheetsClient, p: TripEntryParams) {
 	const twdCol = colLetter(startCol + 5);
 	let twdFormula = `=${jpyCol}${targetRow}*0.22`;
 	let roundFormula = `=CEILING(${twdCol}${targetRow})`;
-	if (lastDataRow > TRIP_CATEGORY_ROW) {
+	if (lastDataRow > 2) {
 		const prevRow = values[lastDataRow - 1] ?? [];
 		const prevTwd = String(prevRow[startCol + 5] ?? "");
 		const prevRound = String(prevRow[startCol + 6] ?? "");
@@ -385,4 +388,51 @@ export async function addTripEntry(client: SheetsClient, p: TripEntryParams) {
 		[p.date, p.shop, p.item, p.paymentMethod, p.jpy, twdFormula, roundFormula],
 	]);
 	return { tab: p.tab, category: p.category, row: targetRow, updatedRange: result.updatedRange };
+}
+
+export interface TripBlock {
+	category: string;
+	headerRow: number;
+	startCol: number;
+	firstDataRow: number;
+	endRow: number;
+}
+
+/** Discover trip category blocks: header row (日期+店鋪), label on the next row, region bounded by 分類總花費 / next header / scan cap. */
+export function findTripBlocks(values: unknown[][]): TripBlock[] {
+	const cell = (r: number, c: number) => String(values[r - 1]?.[c] ?? "").trim();
+
+	const blocks: TripBlock[] = [];
+	for (let r = 1; r <= values.length; r++) {
+		const rowLen = (values[r - 1] ?? []).length;
+		for (let c = 0; c < rowLen; c++) {
+			if (cell(r, c) !== TRIP_HEADER_DATE || cell(r, c + 1) !== TRIP_HEADER_SHOP) continue;
+
+			let category = "";
+			for (let lc = c; lc < c + 7; lc++) {
+				const v = cell(r + 1, lc);
+				if (v !== "") {
+					category = v;
+					break;
+				}
+			}
+			if (category === "") continue; // stray header with no label beneath
+
+			const firstDataRow = r + 2;
+			let endRow = firstDataRow + TRIP_MAX_BLOCK_ROWS;
+			for (let br = firstDataRow; br < firstDataRow + TRIP_MAX_BLOCK_ROWS && br <= values.length; br++) {
+				const band = Array.from({ length: 7 }, (_, i) => cell(br, c + i));
+				if (band.some((v) => v.includes(TRIP_TOTAL_LABEL))) {
+					endRow = br;
+					break;
+				}
+				if (cell(br, c) === TRIP_HEADER_DATE && cell(br, c + 1) === TRIP_HEADER_SHOP) {
+					endRow = br;
+					break;
+				}
+			}
+			blocks.push({ category, headerRow: r, startCol: c, firstDataRow, endRow });
+		}
+	}
+	return blocks;
 }

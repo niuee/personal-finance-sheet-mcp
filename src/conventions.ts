@@ -67,9 +67,6 @@ export function previousMonth(month: number): number {
 	return month === 1 ? 12 : month - 1;
 }
 
-/** @deprecated v2 single-row model — deleted in Task 2 with the finance-ops import swap. */
-export const TRIP_CATEGORY_ROW = 2;
-
 /** Trip tabs: a block header row starts with these two cells, side by side. */
 export const TRIP_HEADER_DATE = "日期";
 export const TRIP_HEADER_SHOP = "店鋪";
