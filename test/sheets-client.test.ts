@@ -177,3 +177,76 @@ describe("SheetsClient writes", () => {
 		expect(result).toEqual({ title: "2027", sheetId: 12345 });
 	});
 });
+
+describe("SheetsClient generic additions", () => {
+	it("batchUpdate POSTs the requests array to :batchUpdate", async () => {
+		const fetchMock = vi.fn<FetchMock>(async () => jsonResponse({ replies: [{}] }));
+		vi.stubGlobal("fetch", fetchMock);
+
+		const result = await makeClient().batchUpdate([{ foo: { bar: 1 } }]);
+
+		expect(fetchMock.mock.calls[0][0]).toBe(`${BASE}:batchUpdate`);
+		expect(fetchMock.mock.calls[0][1]?.method).toBe("POST");
+		expect(parsedBody(fetchMock.mock.calls[0][1])).toEqual({ requests: [{ foo: { bar: 1 } }] });
+		expect(result).toEqual({ replies: [{}] });
+	});
+
+	it("getSheetId resolves a tab title to its numeric sheetId", async () => {
+		const fetchMock = vi.fn<FetchMock>(async () =>
+			jsonResponse({
+				sheets: [
+					{ properties: { title: "9 月", sheetId: 111 } },
+					{ properties: { title: "火車模型", sheetId: 222 } },
+				],
+			}),
+		);
+		vi.stubGlobal("fetch", fetchMock);
+
+		expect(await makeClient().getSheetId("火車模型")).toBe(222);
+		expect(fetchMock.mock.calls[0][0]).toBe(`${BASE}?fields=sheets.properties`);
+	});
+
+	it("getSheetId throws a SheetsApiError naming the missing tab", async () => {
+		vi.stubGlobal("fetch", vi.fn<FetchMock>(async () => jsonResponse({ sheets: [] })));
+
+		const promise = makeClient().getSheetId("Nope");
+		await expect(promise).rejects.toThrow('Tab "Nope" not found');
+		await expect(promise).rejects.toBeInstanceOf(SheetsApiError);
+	});
+
+	it("insertRows issues insertDimension with 0-indexed bounds and inheritFromBefore", async () => {
+		const fetchMock = vi
+			.fn<FetchMock>()
+			.mockResolvedValueOnce(jsonResponse({ sheets: [{ properties: { title: "9 月", sheetId: 111 } }] }))
+			.mockResolvedValueOnce(jsonResponse({ replies: [{}] }));
+		vi.stubGlobal("fetch", fetchMock);
+
+		const result = await makeClient().insertRows("9 月", 24, 2);
+
+		expect(parsedBody(fetchMock.mock.calls[1][1])).toEqual({
+			requests: [
+				{
+					insertDimension: {
+						range: { sheetId: 111, dimension: "ROWS", startIndex: 23, endIndex: 25 },
+						inheritFromBefore: true,
+					},
+				},
+			],
+		});
+		expect(result).toEqual({ insertedAt: 24, count: 2 });
+	});
+
+	it("readRange passes valueRenderOption only for non-default modes", async () => {
+		const fetchMock = vi.fn<FetchMock>(async () => jsonResponse({ range: "x", values: [] }));
+		vi.stubGlobal("fetch", fetchMock);
+
+		const client = makeClient();
+		await client.readRange("A1");
+		await client.readRange("A1", "UNFORMATTED_VALUE");
+		await client.readRange("A1", "FORMULA");
+
+		expect(fetchMock.mock.calls[0][0]).toBe(`${BASE}/values/A1`);
+		expect(fetchMock.mock.calls[1][0]).toBe(`${BASE}/values/A1?valueRenderOption=UNFORMATTED_VALUE`);
+		expect(fetchMock.mock.calls[2][0]).toBe(`${BASE}/values/A1?valueRenderOption=FORMULA`);
+	});
+});

@@ -50,8 +50,12 @@ export class SheetsClient {
 		}));
 	}
 
-	async readRange(range: string): Promise<{ range: string; values: unknown[][]; truncated: boolean }> {
-		const data = await this.request(`/values/${encodeURIComponent(range)}`);
+	async readRange(
+		range: string,
+		renderOption: "FORMATTED_VALUE" | "UNFORMATTED_VALUE" | "FORMULA" = "FORMATTED_VALUE",
+	): Promise<{ range: string; values: unknown[][]; truncated: boolean }> {
+		const query = renderOption === "FORMATTED_VALUE" ? "" : `?valueRenderOption=${renderOption}`;
+		const data = await this.request(`/values/${encodeURIComponent(range)}${query}`);
 		const values: unknown[][] = data.values ?? [];
 		let truncated = false;
 		while (values.length > 0 && JSON.stringify(values).length > MAX_READ_CHARS) {
@@ -94,11 +98,36 @@ export class SheetsClient {
 		};
 	}
 
-	async addTab(title: string): Promise<{ title: string; sheetId: number }> {
-		const data = await this.request(":batchUpdate", {
+	async batchUpdate(requests: object[]): Promise<any> {
+		return this.request(":batchUpdate", {
 			method: "POST",
-			body: JSON.stringify({ requests: [{ addSheet: { properties: { title } } }] }),
+			body: JSON.stringify({ requests }),
 		});
+	}
+
+	async getSheetId(title: string): Promise<number> {
+		const data = await this.request("?fields=sheets.properties");
+		const sheet = (data.sheets ?? []).find((s: any) => s.properties.title === title);
+		if (!sheet) throw new SheetsApiError(`Tab "${title}" not found`, 404);
+		return sheet.properties.sheetId;
+	}
+
+	/** Insert `count` empty rows so the first lands AT 1-indexed `row`; existing rows shift down. */
+	async insertRows(tab: string, row: number, count: number): Promise<{ insertedAt: number; count: number }> {
+		const sheetId = await this.getSheetId(tab);
+		await this.batchUpdate([
+			{
+				insertDimension: {
+					range: { sheetId, dimension: "ROWS", startIndex: row - 1, endIndex: row - 1 + count },
+					inheritFromBefore: true,
+				},
+			},
+		]);
+		return { insertedAt: row, count };
+	}
+
+	async addTab(title: string): Promise<{ title: string; sheetId: number }> {
+		const data = await this.batchUpdate([{ addSheet: { properties: { title } } }]);
 		const props = data.replies?.[0]?.addSheet?.properties;
 		return { title: props?.title ?? title, sheetId: props?.sheetId ?? -1 };
 	}
