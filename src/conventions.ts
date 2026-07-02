@@ -25,7 +25,7 @@ export const USD_PAYMENT_LABEL = "美金支付";
 
 /** Items start_month keeps when opening a new month; everything else is a one-off. */
 export const RECURRING_ITEMS = new Set<string>([
-	"上月透支",
+	OVERDRAFT_LABEL,
 	"Google Cloud",
 	"ElevenLabs",
 	"iCloud",
@@ -53,8 +53,14 @@ export function monthTabName(month: number): string {
 	return `${month} 月`;
 }
 
+/** The sheet's months follow Taipei time; Workers run in UTC. */
+export const SHEET_TIMEZONE = "Asia/Taipei";
+
 export function currentMonthTab(now: Date = new Date()): string {
-	return monthTabName(now.getMonth() + 1);
+	const month = Number(
+		new Intl.DateTimeFormat("en-US", { timeZone: SHEET_TIMEZONE, month: "numeric" }).format(now),
+	);
+	return monthTabName(month);
 }
 
 export function previousMonth(month: number): number {

@@ -32,6 +32,12 @@ describe("conventions", () => {
 		expect(currentMonthTab(new Date("2026-12-31T12:00:00"))).toBe("12 月");
 	});
 
+	it("resolves the month in Taipei time, not UTC", () => {
+		// 2026-07-31T17:00:00Z is already August 1st, 01:00 in Taipei
+		expect(currentMonthTab(new Date("2026-07-31T17:00:00Z"))).toBe("8 月");
+		expect(currentMonthTab(new Date("2026-07-31T15:59:00Z"))).toBe("7 月");
+	});
+
 	it("wraps January's previous month to December", () => {
 		expect(previousMonth(1)).toBe(12);
 		expect(previousMonth(10)).toBe(9);

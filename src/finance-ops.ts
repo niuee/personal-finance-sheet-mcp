@@ -47,7 +47,10 @@ export function adjustColumnRefsForInsert(formula: string, column: string, inser
 
 /** Remove #REF! entries a row deletion leaves inside sum(...) lists. */
 export function stripRefErrors(formula: string): string {
-	return formula.replace(/#REF!\s*,\s*/g, "").replace(/,\s*#REF!/g, "");
+	return formula
+		.replace(/#REF!\s*,\s*/g, "")
+		.replace(/,\s*#REF!/g, "")
+		.replace(/\(\s*#REF!\s*\)/g, "(0)");
 }
 
 /** Re-target a single-row formula: "=E5*0.22" from row 5 to row 9 → "=E9*0.22". */
@@ -90,6 +93,14 @@ export function quoteTab(tab: string): string {
 	return `'${tab.replace(/'/g, "''")}'`;
 }
 
+function assertNotTruncated(truncated: boolean, tab: string, range: string): void {
+	if (truncated) {
+		throw new Error(
+			`Refusing to operate on ${tab}: reading ${range} was truncated at the size cap, so row positions cannot be trusted.`,
+		);
+	}
+}
+
 export interface AddExpenseParams {
 	item: string;
 	amount: number;
@@ -106,21 +117,31 @@ export async function addExpense(client: SheetsClient, p: AddExpenseParams) {
 		throw new Error(`Unknown category "${p.category}". Valid categories: ${Object.keys(CATEGORIES).join(", ")}`);
 	}
 
-	const { values } = await client.readRange(`${quoteTab(tab)}!${GRID_READ}`, "FORMULA");
+	const { values, truncated } = await client.readRange(`${quoteTab(tab)}!${GRID_READ}`, "FORMULA");
+	assertNotTruncated(truncated, tab, GRID_READ);
 
 	const totalRow = findRowByValue(values, 1, TOTAL_ROW_LABEL);
 	if (totalRow === null) {
 		throw new Error(`Could not find the "${TOTAL_ROW_LABEL}" row in ${tab} (searched column B of ${GRID_READ}).`);
 	}
+	const totalFormula = String(values[totalRow - 1]?.[2] ?? "");
+	const windowMatch = totalFormula.match(/^=SUM\(C(\d+):C(\d+)\)$/i);
+	if (!windowMatch) {
+		throw new Error(
+			`The "${TOTAL_ROW_LABEL}" cell C${totalRow} in ${tab} is not a plain =SUM(Cstart:Cend) formula (got "${totalFormula}") — cannot locate the expense window safely.`,
+		);
+	}
+	const windowStart = Number(windowMatch[1]);
+	const windowEnd = Number(windowMatch[2]);
 	const categoryRow = findRowByValue(values, 4, categoryLabel);
 	if (categoryRow === null) {
 		throw new Error(`Could not find the category label "${categoryLabel}" in column E of ${tab}.`);
 	}
 	const categoryFormula = String(values[categoryRow - 1]?.[5] ?? "");
 
-	// First fully-empty row inside the expense window (rows 3 .. totalRow-1).
+	// First fully-empty row inside the SUM window (and above the total row).
 	let targetRow: number | null = null;
-	for (let r = 3; r < totalRow; r++) {
+	for (let r = windowStart; r <= Math.min(windowEnd, totalRow - 1); r++) {
 		const row = values[r - 1] ?? [];
 		if (!row.some((c) => c !== "" && c != null)) {
 			targetRow = r;
@@ -132,8 +153,11 @@ export async function addExpense(client: SheetsClient, p: AddExpenseParams) {
 	const requests: object[] = [];
 	const inserted = targetRow === null;
 	if (targetRow === null) {
-		// Insert INSIDE the SUM window (above its last row) so SUM(C3:Cn) auto-extends.
-		targetRow = totalRow - 1;
+		if (windowEnd <= windowStart) {
+			throw new Error(`The expense window ${totalFormula} in ${tab} is too small to insert into safely.`);
+		}
+		// Insert at the window's last row: strictly inside the SUM range, so it auto-extends.
+		targetRow = windowEnd;
 		requests.push({
 			insertDimension: {
 				range: { sheetId, dimension: "ROWS", startIndex: targetRow - 1, endIndex: targetRow },
@@ -181,7 +205,8 @@ export async function addExpense(client: SheetsClient, p: AddExpenseParams) {
 
 export async function monthSummary(client: SheetsClient, month?: number) {
 	const tab = month !== undefined ? monthTabName(month) : currentMonthTab();
-	const { values } = await client.readRange(`${quoteTab(tab)}!${GRID_READ}`, "UNFORMATTED_VALUE");
+	const { values, truncated } = await client.readRange(`${quoteTab(tab)}!${GRID_READ}`, "UNFORMATTED_VALUE");
+	assertNotTruncated(truncated, tab, GRID_READ);
 
 	const num = (v: unknown): number | null => (typeof v === "number" ? v : null);
 	const cellAt = (row: number | null, col: number): number | null =>
@@ -224,7 +249,8 @@ export async function startMonth(client: SheetsClient, month: number) {
 	const sheetId = dup.replies?.[0]?.duplicateSheet?.properties?.sheetId;
 	if (sheetId == null) throw new Error("duplicateSheet did not return the new tab's sheetId.");
 
-	const { values } = await client.readRange(`${quoteTab(newTab)}!${GRID_READ}`, "FORMULA");
+	const { values, truncated } = await client.readRange(`${quoteTab(newTab)}!${GRID_READ}`, "FORMULA");
+	assertNotTruncated(truncated, newTab, GRID_READ);
 	const totalRow = findRowByValue(values, 1, TOTAL_ROW_LABEL);
 	if (totalRow === null) {
 		throw new Error(`Could not find the "${TOTAL_ROW_LABEL}" row in the duplicated tab ${newTab}.`);
@@ -275,12 +301,16 @@ export async function startMonth(client: SheetsClient, month: number) {
 
 	// Deleting referenced rows leaves #REF! inside the hand-picked category sums — scrub them.
 	if (rowsToDelete.length > 0) {
-		const after = await client.readRange(`${quoteTab(newTab)}!${GRID_READ}`, "FORMULA");
+		const { values: afterValues, truncated: afterTruncated } = await client.readRange(
+			`${quoteTab(newTab)}!${GRID_READ}`,
+			"FORMULA",
+		);
+		assertNotTruncated(afterTruncated, newTab, GRID_READ);
 		const fixes: object[] = [];
 		for (const label of Object.values(CATEGORIES)) {
-			const r = findRowByValue(after.values, 4, label);
+			const r = findRowByValue(afterValues, 4, label);
 			if (r === null) continue;
-			const formula = String(after.values[r - 1]?.[5] ?? "");
+			const formula = String(afterValues[r - 1]?.[5] ?? "");
 			if (formula.includes("#REF!")) {
 				fixes.push({
 					updateCells: {
@@ -308,7 +338,8 @@ export interface TripEntryParams {
 }
 
 export async function addTripEntry(client: SheetsClient, p: TripEntryParams) {
-	const { values } = await client.readRange(`${quoteTab(p.tab)}!A1:AL200`, "FORMULA");
+	const { values, truncated } = await client.readRange(`${quoteTab(p.tab)}!A1:AL200`, "FORMULA");
+	assertNotTruncated(truncated, p.tab, "A1:AL200");
 
 	const categoryRow = values[TRIP_CATEGORY_ROW - 1] ?? [];
 	let startCol = -1;

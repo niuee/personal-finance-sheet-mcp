@@ -46,6 +46,7 @@ describe("formula surgery", () => {
 		expect(stripRefErrors("=sum(#REF!,C3)")).toBe("=sum(C3)");
 		expect(stripRefErrors("=sum(C4,#REF!,C6)")).toBe("=sum(C4,C6)");
 		expect(stripRefErrors("=sum(C4,#REF!)")).toBe("=sum(C4)");
+		expect(stripRefErrors("=sum(#REF!)")).toBe("=sum(0)");
 	});
 
 	it("re-targets a single-row formula to another row", () => {
@@ -247,6 +248,45 @@ describe("addExpense", () => {
 		await expect(addExpense(noTotal, { item: "x", amount: 1, currency: "TWD", month: 9 })).rejects.toThrow("花費總額");
 		expect((noTotal.batchUpdate as any).mock.calls.length).toBe(0);
 	});
+
+	it("refuses to operate when the grid read was truncated", async () => {
+		const client = fakeClient(monthGrid());
+		(client.readRange as any).mockResolvedValue({ range: "x", values: monthGrid(), truncated: true });
+		await expect(addExpense(client, { item: "x", amount: 1, currency: "TWD", month: 9 })).rejects.toThrow(
+			"truncated",
+		);
+		expect((client.batchUpdate as any).mock.calls.length).toBe(0);
+	});
+
+	it("fails closed when the 花費總額 cell is not a plain SUM range", async () => {
+		const g = monthGrid();
+		g[10] = ["", "花費總額", "=SUM(C3:C10)+C2"];
+		const client = fakeClient(g);
+		await expect(addExpense(client, { item: "x", amount: 1, currency: "TWD", month: 9 })).rejects.toThrow(
+			"expense window",
+		);
+		expect((client.batchUpdate as any).mock.calls.length).toBe(0);
+	});
+
+	it("inserts inside the SUM window even when it ends above the total row", async () => {
+		const g = monthGrid();
+		g[10] = ["", "花費總額", "=SUM(C3:C8)"];
+		const client = fakeClient(g);
+
+		const result = await addExpense(client, { item: "gap", amount: 9, currency: "TWD", month: 9 });
+
+		const requests = (client.batchUpdate as any).mock.calls[0][0];
+		expect(requests[0].insertDimension.range).toEqual({
+			sheetId: 111,
+			dimension: "ROWS",
+			startIndex: 7,
+			endIndex: 8,
+		});
+		expect(requests[2].updateCells.rows[0].values).toEqual([
+			{ userEnteredValue: { formulaValue: "=sum(C9,C3,C8)" } },
+		]);
+		expect(result).toMatchObject({ row: 8, inserted: true });
+	});
 });
 
 describe("monthSummary", () => {
@@ -366,6 +406,20 @@ describe("startMonth", () => {
 		await expect(startMonth(noPrev, 10)).rejects.toThrow('"9 月" not found');
 		expect((noPrev.batchUpdate as any).mock.calls.length).toBe(0);
 	});
+
+	it("deletes multiple one-off rows bottom-up", async () => {
+		const grid = monthGrid();
+		grid[8] = ["一次性A", "", 10];
+		grid[9] = ["一次性B", "", 20];
+		const client = startMonthClient(grid, ["9 月", "8 月"]);
+
+		const result = await startMonth(client, 10);
+
+		const requests = (client.batchUpdate as any).mock.calls[1][0];
+		const deletes = requests.filter((r: any) => r.deleteDimension);
+		expect(deletes.map((r: any) => r.deleteDimension.range.startIndex)).toEqual([9, 8, 7]);
+		expect(result.cleared).toEqual(["近鐵 80000系", "一次性A", "一次性B"]);
+	});
 });
 
 describe("addTripEntry", () => {
@@ -429,5 +483,15 @@ describe("addTripEntry", () => {
 		await expect(
 			addTripEntry(client, { tab: "京都", category: "食物", date: "x", shop: "x", item: "x", paymentMethod: "x", jpy: 1 }),
 		).rejects.toThrow("模型, 書");
+	});
+
+	it("refuses to append when the trip read was truncated", async () => {
+		const grid = tripGrid();
+		const client = tripClient(grid);
+		(client.readRange as any).mockResolvedValue({ range: "x", values: grid, truncated: true });
+		await expect(
+			addTripEntry(client, { tab: "京都", category: "模型", date: "x", shop: "x", item: "x", paymentMethod: "x", jpy: 1 }),
+		).rejects.toThrow("truncated");
+		expect((client.updateRange as any).mock.calls.length).toBe(0);
 	});
 });
