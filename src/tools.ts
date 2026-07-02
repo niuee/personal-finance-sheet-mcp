@@ -161,19 +161,20 @@ export function registerTailoredTools(server: McpServer, client: SheetsClient): 
 
 	server.tool(
 		"add_trip_entry",
-		"Log a purchase into a trip tab (e.g. 2026/07/25 京都東京). Finds the category block (模型, 書, ...), appends to its first empty row, and fills the ¥→TWD conversion columns following the block's existing formulas.",
+		"Log a purchase into a trip tab (e.g. 2026/07/25 京都東京). Finds the category block anywhere in the tab's mosaic layout (模型, 書, 餐(當下吃的), 機票住宿, 雜支, 衣服/鞋子, 吃的伴手禮, 紀念品小物, 交通, 送禮, 入場券, 電子產品, ...), writes into the block's first empty row — inserting block-scoped cells if it is full — and keeps the 分類總花費 totals covering the new entry. Provide EXACTLY ONE of jpy (¥-priced purchase) or twd (NTD-direct row, 機票住宿-style).",
 		{
 			tab: z.string().min(1).describe("Trip tab name, exactly as it appears"),
-			category: z.string().min(1).describe("Block title in row 2, e.g. 模型 or 書"),
+			category: z.string().min(1).describe("Block title, e.g. 模型 or 電子產品"),
 			date: z.string().min(1).describe("Date/time as you write it, e.g. 10/08 16:03"),
-			shop: z.string().describe("Store name"),
+			shop: z.string().describe("Store name (may be empty)"),
 			item: z.string().min(1).describe("What was bought"),
-			payment_method: z.string().describe("e.g. Suica, 現金, 信用卡"),
-			jpy: z.number().describe("Price in Japanese yen"),
+			payment_method: z.string().describe("e.g. Suica, 現金, 信用卡, 已算在預算"),
+			jpy: z.number().optional().describe("Price in Japanese yen — exactly one of jpy/twd"),
+			twd: z.number().optional().describe("Price in NTD for TWD-direct rows — exactly one of jpy/twd"),
 		},
-		async ({ tab, category, date, shop, item, payment_method, jpy }) => {
+		async ({ tab, category, date, shop, item, payment_method, jpy, twd }) => {
 			try {
-				return ok(await addTripEntry(client, { tab, category, date, shop, item, paymentMethod: payment_method, jpy }));
+				return ok(await addTripEntry(client, { tab, category, date, shop, item, paymentMethod: payment_method, jpy, twd }));
 			} catch (e) {
 				return toError(e);
 			}

@@ -12,7 +12,7 @@ A personal [Model Context Protocol](https://modelcontextprotocol.io/introduction
 - **add_expense** — log an expense into a monthly tab (defaults to the current month).
 - **month_summary** — get a month's numbers as clean JSON.
 - **start_month** — open a new month by duplicating the previous month's tab.
-- **add_trip_entry** — log a purchase into a trip tab's category block.
+- **add_trip_entry** — log a purchase into a trip tab's mosaic category block, discovering the block by title and choosing between jpy (¥-priced) or twd (NTD-direct) rows.
 - **get_sheet_conventions** — read how the spreadsheet is organized.
 - **insert_rows** — insert empty rows at a 1-indexed position.
 
