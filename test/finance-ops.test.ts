@@ -22,6 +22,15 @@ describe("formula surgery", () => {
 		expect(() => spliceIntoSum("=20000", "C9")).toThrow("not a sum");
 	});
 
+	it("refuses to splice into nested or non-flat formulas (fail-closed)", () => {
+		expect(() => spliceIntoSum("=ROUND(SUM(C1:C10),2)", "C24")).toThrow("not a sum");
+		expect(() => spliceIntoSum('=SUM(A1:A10)+SUMIF(B:B,"x",C:C)', "C24")).toThrow("not a sum");
+	});
+
+	it("does not touch digit-bearing function names when re-targeting rows", () => {
+		expect(adaptRowFormula("=LOG10(E5)", 10, 99)).toBe("=LOG10(E5)");
+	});
+
 	it("shifts C-refs at/below the insertion row down by one", () => {
 		expect(adjustColumnRefsForInsert("=sum(C22,C3)", "C", 24)).toBe("=sum(C22,C3)");
 		expect(adjustColumnRefsForInsert("=sum(C22,C3)", "C", 22)).toBe("=sum(C23,C3)");

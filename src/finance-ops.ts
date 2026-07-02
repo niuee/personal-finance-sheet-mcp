@@ -4,12 +4,15 @@
  * live in this module too and are the only writers the tailored tools use.
  */
 
+const FLAT_SUM_RE =
+	/^=\s*sum\(\s*[A-Z]{1,3}\d+(?::[A-Z]{1,3}\d+)?(\s*,\s*[A-Z]{1,3}\d+(?::[A-Z]{1,3}\d+)?)*\s*\)$/i;
+
 /** Append a cell ref inside the final closing paren: "=sum(C22,C3)" + "C24" → "=sum(C22,C3,C24)". */
 export function spliceIntoSum(formula: string, cellRef: string): string {
-	const i = formula.lastIndexOf(")");
-	if (!formula.toLowerCase().includes("sum(") || i === -1) {
+	if (!FLAT_SUM_RE.test(formula)) {
 		throw new Error(`Category formula is not a sum(...) that can be extended: "${formula}"`);
 	}
+	const i = formula.lastIndexOf(")");
 	return `${formula.slice(0, i)},${cellRef})`;
 }
 
@@ -32,7 +35,7 @@ export function stripRefErrors(formula: string): string {
 
 /** Re-target a single-row formula: "=E5*0.22" from row 5 to row 9 → "=E9*0.22". */
 export function adaptRowFormula(formula: string, fromRow: number, toRow: number): string {
-	const re = new RegExp(`([A-Z]{1,2})${fromRow}(?![0-9])`, "g");
+	const re = new RegExp(`(?<![A-Z])([A-Z]{1,2})${fromRow}(?![0-9])`, "g");
 	return formula.replace(re, (_m, col: string) => `${col}${toRow}`);
 }
 
