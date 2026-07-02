@@ -65,4 +65,41 @@ export class SheetsClient {
 		}
 		return { range: data.range ?? range, values, truncated };
 	}
+
+	/** Quote a tab name for A1 notation: 'Bob''s Tab' */
+	private quoteTab(tab: string): string {
+		return `'${tab.replace(/'/g, "''")}'`;
+	}
+
+	async appendRows(tab: string, rows: unknown[][]): Promise<{ updatedRange: string; updatedRows: number }> {
+		const range = encodeURIComponent(`${this.quoteTab(tab)}!A1`);
+		const data = await this.request(
+			`/values/${range}:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`,
+			{ method: "POST", body: JSON.stringify({ values: rows }) },
+		);
+		return {
+			updatedRange: data.updates?.updatedRange ?? "",
+			updatedRows: data.updates?.updatedRows ?? 0,
+		};
+	}
+
+	async updateRange(range: string, values: unknown[][]): Promise<{ updatedRange: string; updatedCells: number }> {
+		const data = await this.request(
+			`/values/${encodeURIComponent(range)}?valueInputOption=USER_ENTERED`,
+			{ method: "PUT", body: JSON.stringify({ values }) },
+		);
+		return {
+			updatedRange: data.updatedRange ?? range,
+			updatedCells: data.updatedCells ?? 0,
+		};
+	}
+
+	async addTab(title: string): Promise<{ title: string; sheetId: number }> {
+		const data = await this.request(":batchUpdate", {
+			method: "POST",
+			body: JSON.stringify({ requests: [{ addSheet: { properties: { title } } }] }),
+		});
+		const props = data.replies?.[0]?.addSheet?.properties;
+		return { title: props?.title ?? title, sheetId: props?.sheetId ?? -1 };
+	}
 }

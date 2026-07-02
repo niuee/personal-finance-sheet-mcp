@@ -86,3 +86,69 @@ describe("SheetsClient reads", () => {
 		await expect(promise).rejects.toBeInstanceOf(SheetsApiError);
 	});
 });
+
+describe("SheetsClient writes", () => {
+	it("appendRows POSTs USER_ENTERED values to the quoted tab", async () => {
+		const fetchMock = vi.fn(async () =>
+			jsonResponse({ updates: { updatedRange: "'My Tab'!A10:B11", updatedRows: 2 } }),
+		);
+		vi.stubGlobal("fetch", fetchMock);
+
+		const result = await makeClient().appendRows("My Tab", [
+			["2026-07-02", 12.5],
+			["2026-07-02", -3],
+		]);
+
+		expect((fetchMock.mock.calls[0] as any)[0]).toBe(
+			`${BASE}/values/'My%20Tab'!A1:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`,
+		);
+		expect((fetchMock.mock.calls[0] as any)[1].method).toBe("POST");
+		expect(JSON.parse((fetchMock.mock.calls[0] as any)[1].body)).toEqual({
+			values: [["2026-07-02", 12.5], ["2026-07-02", -3]],
+		});
+		expect(result).toEqual({ updatedRange: "'My Tab'!A10:B11", updatedRows: 2 });
+	});
+
+	it("appendRows escapes single quotes in tab names", async () => {
+		const fetchMock = vi.fn(async () =>
+			jsonResponse({ updates: { updatedRange: "x", updatedRows: 1 } }),
+		);
+		vi.stubGlobal("fetch", fetchMock);
+
+		await makeClient().appendRows("Bob's Tab", [["a"]]);
+
+		expect(String((fetchMock.mock.calls[0] as any)[0])).toContain("/values/'Bob''s%20Tab'!A1:append");
+	});
+
+	it("updateRange PUTs USER_ENTERED values", async () => {
+		const fetchMock = vi.fn(async () =>
+			jsonResponse({ updatedRange: "Budget!B2", updatedCells: 1 }),
+		);
+		vi.stubGlobal("fetch", fetchMock);
+
+		const result = await makeClient().updateRange("Budget!B2", [[99]]);
+
+		expect((fetchMock.mock.calls[0] as any)[0]).toBe(
+			`${BASE}/values/Budget!B2?valueInputOption=USER_ENTERED`,
+		);
+		expect((fetchMock.mock.calls[0] as any)[1].method).toBe("PUT");
+		expect(JSON.parse((fetchMock.mock.calls[0] as any)[1].body)).toEqual({ values: [[99]] });
+		expect(result).toEqual({ updatedRange: "Budget!B2", updatedCells: 1 });
+	});
+
+	it("addTab issues a batchUpdate addSheet request", async () => {
+		const fetchMock = vi.fn(async () =>
+			jsonResponse({ replies: [{ addSheet: { properties: { title: "2027", sheetId: 12345 } } }] }),
+		);
+		vi.stubGlobal("fetch", fetchMock);
+
+		const result = await makeClient().addTab("2027");
+
+		expect((fetchMock.mock.calls[0] as any)[0]).toBe(`${BASE}:batchUpdate`);
+		expect((fetchMock.mock.calls[0] as any)[1].method).toBe("POST");
+		expect(JSON.parse((fetchMock.mock.calls[0] as any)[1].body)).toEqual({
+			requests: [{ addSheet: { properties: { title: "2027" } } }],
+		});
+		expect(result).toEqual({ title: "2027", sheetId: 12345 });
+	});
+});
