@@ -3,11 +3,13 @@ import {
 	adaptRowFormula,
 	adjustColumnRefsForInsert,
 	addExpense,
+	addTripEntry,
 	cellData,
 	colLetter,
 	findRowByValue,
 	monthSummary,
 	spliceIntoSum,
+	startMonth,
 	stripRefErrors,
 } from "../src/finance-ops";
 import type { SheetsClient } from "../src/sheets-client";
@@ -272,5 +274,160 @@ describe("monthSummary", () => {
 			剩餘: 12285.79,
 			美金支付: 640.42,
 		});
+	});
+});
+
+describe("startMonth", () => {
+	function startMonthClient(grid: unknown[][], tabs: string[]) {
+		const batchUpdate = vi
+			.fn()
+			.mockResolvedValueOnce({ replies: [{ duplicateSheet: { properties: { sheetId: 555 } } }] })
+			.mockResolvedValue({ replies: [{}] });
+		return {
+			listTabs: vi.fn(async () => tabs.map((title) => ({ title, rowCount: 1000, columnCount: 26 }))),
+			getSheetId: vi.fn(async () => 111),
+			readRange: vi.fn(async () => ({ range: "x", values: grid, truncated: false })),
+			batchUpdate,
+		} as unknown as SheetsClient;
+	}
+
+	it("duplicates the previous month, rewires 上月透支, and deletes one-off rows bottom-up", async () => {
+		const client = startMonthClient(monthGrid(), ["9 月", "8 月"]);
+
+		const result = await startMonth(client, 10);
+
+		const batch = (client.batchUpdate as any).mock.calls;
+		expect(batch[0][0]).toEqual([
+			{ duplicateSheet: { sourceSheetId: 111, insertSheetIndex: 0, newSheetName: "10 月" } },
+		]);
+		const requests = batch[1][0];
+		expect(requests[0]).toEqual({
+			updateCells: {
+				start: { sheetId: 555, rowIndex: 0, columnIndex: 0 },
+				rows: [{ values: [{ userEnteredValue: { stringValue: "10 月花費" } }] }],
+				fields: "userEnteredValue",
+			},
+		});
+		expect(requests[1]).toEqual({
+			updateCells: {
+				start: { sheetId: 555, rowIndex: 2, columnIndex: 2 },
+				rows: [{ values: [{ userEnteredValue: { formulaValue: "=IF(-'9 月'!B32 > 0, -'9 月'!B32, 0)" } }] }],
+				fields: "userEnteredValue",
+			},
+		});
+		// 近鐵 80000系 (row 8) is the only non-recurring item in the fixture
+		expect(requests[2]).toEqual({
+			deleteDimension: { range: { sheetId: 555, dimension: "ROWS", startIndex: 7, endIndex: 8 } },
+		});
+		expect(result).toEqual({
+			tab: "10 月",
+			duplicatedFrom: "9 月",
+			kept: ["上月透支", "Google Cloud", "ElevenLabs", "iCloud", "電話費"],
+			cleared: ["近鐵 80000系"],
+		});
+	});
+
+	it("scrubs #REF! from category formulas after deletions", async () => {
+		const grid = monthGrid();
+		const client = startMonthClient(grid, ["9 月", "8 月"]);
+		// After the deletion batch, the re-read returns a grid whose 額外雜支 formula has a #REF!
+		(client.readRange as any)
+			.mockResolvedValueOnce({ range: "x", values: grid, truncated: false })
+			.mockResolvedValueOnce({
+				range: "x",
+				values: (() => {
+					const g = monthGrid();
+					g[7] = ["", "", "", "", "本月額外雜支", "=sum(#REF!,C3)"];
+					return g;
+				})(),
+				truncated: false,
+			});
+
+		await startMonth(client, 10);
+
+		const batch = (client.batchUpdate as any).mock.calls;
+		const scrub = batch[2][0];
+		expect(scrub).toEqual([
+			{
+				updateCells: {
+					start: { sheetId: 555, rowIndex: 7, columnIndex: 5 },
+					rows: [{ values: [{ userEnteredValue: { formulaValue: "=sum(C3)" } }] }],
+					fields: "userEnteredValue",
+				},
+			},
+		]);
+	});
+
+	it("refuses to overwrite an existing tab and requires the previous month", async () => {
+		const exists = startMonthClient(monthGrid(), ["10 月", "9 月"]);
+		await expect(startMonth(exists, 10)).rejects.toThrow('"10 月" already exists');
+
+		const noPrev = startMonthClient(monthGrid(), ["7 月"]);
+		await expect(startMonth(noPrev, 10)).rejects.toThrow('"9 月" not found');
+		expect((noPrev.batchUpdate as any).mock.calls.length).toBe(0);
+	});
+});
+
+describe("addTripEntry", () => {
+	/** Trip grid: 模型 block at cols A-G (0-6), 書 block at I-O (8-14). */
+	function tripGrid(): unknown[][] {
+		const g: unknown[][] = [];
+		g[0] = ["日期", "店鋪", "品項", "支付方式", "日幣原價", "臺幣 0.22 匯率", "臺幣 進位", "", "日期", "店鋪", "品項", "支付方式", "日幣原價"];
+		g[1] = ["模型", "", "", "", "", "", "", "", "書"];
+		g[2] = ["10/08 16:03", "Yodobashi 京都", "鑷子", "Suica", 1373, "=E3*0.22", "=CEILING(F3)"];
+		return g;
+	}
+
+	function tripClient(grid: unknown[][]): SheetsClient {
+		return {
+			readRange: vi.fn(async () => ({ range: "x", values: grid, truncated: false })),
+			updateRange: vi.fn(async () => ({ updatedRange: "'京都'!A4:G4", updatedCells: 7 })),
+		} as unknown as SheetsClient;
+	}
+
+	it("appends to the first empty row of the category block, adapting the previous row's formulas", async () => {
+		const client = tripClient(tripGrid());
+
+		const result = await addTripEntry(client, {
+			tab: "京都",
+			category: "模型",
+			date: "10/09 11:00",
+			shop: "Volks",
+			item: "N規小物",
+			paymentMethod: "Suica",
+			jpy: 2200,
+		});
+
+		expect((client.updateRange as any).mock.calls[0]).toEqual([
+			"'京都'!A4:G4",
+			[["10/09 11:00", "Volks", "N規小物", "Suica", 2200, "=E4*0.22", "=CEILING(F4)"]],
+		]);
+		expect(result).toMatchObject({ row: 4, category: "模型" });
+	});
+
+	it("uses the 0.22 fallback when the block has no data rows, offset to the block's columns", async () => {
+		const client = tripClient(tripGrid());
+
+		await addTripEntry(client, {
+			tab: "京都",
+			category: "書",
+			date: "10/09",
+			shop: "京都鐵道博物館",
+			item: "Guide Book",
+			paymentMethod: "Suica",
+			jpy: 1100,
+		});
+
+		expect((client.updateRange as any).mock.calls[0]).toEqual([
+			"'京都'!I3:O3",
+			[["10/09", "京都鐵道博物館", "Guide Book", "Suica", 1100, "=M3*0.22", "=CEILING(N3)"]],
+		]);
+	});
+
+	it("names the available blocks when the category is missing", async () => {
+		const client = tripClient(tripGrid());
+		await expect(
+			addTripEntry(client, { tab: "京都", category: "食物", date: "x", shop: "x", item: "x", paymentMethod: "x", jpy: 1 }),
+		).rejects.toThrow("模型, 書");
 	});
 });

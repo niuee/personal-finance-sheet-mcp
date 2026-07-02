@@ -10,6 +10,8 @@ import {
 	DEFAULT_CATEGORY,
 	monthTabName,
 	OVERDRAFT_LABEL,
+	previousMonth,
+	RECURRING_ITEMS,
 	REMAINDER_LABEL,
 	REPAYMENT_LABEL,
 	SALARY_LABEL,
@@ -201,4 +203,155 @@ export async function monthSummary(client: SheetsClient, month?: number) {
 		剩餘: cellAt(rowByA(REMAINDER_LABEL), 1),
 		美金支付: cellAt(rowByA(USD_PAYMENT_LABEL), 1),
 	};
+}
+
+export async function startMonth(client: SheetsClient, month: number) {
+	const newTab = monthTabName(month);
+	const prevTab = monthTabName(previousMonth(month));
+
+	const tabs = await client.listTabs();
+	if (tabs.some((t) => t.title === newTab)) {
+		throw new Error(`Tab "${newTab}" already exists — refusing to overwrite it.`);
+	}
+	if (!tabs.some((t) => t.title === prevTab)) {
+		throw new Error(`Previous month tab "${prevTab}" not found — cannot duplicate it.`);
+	}
+
+	const prevSheetId = await client.getSheetId(prevTab);
+	const dup = await client.batchUpdate([
+		{ duplicateSheet: { sourceSheetId: prevSheetId, insertSheetIndex: 0, newSheetName: newTab } },
+	]);
+	const sheetId = dup.replies?.[0]?.duplicateSheet?.properties?.sheetId;
+	if (sheetId == null) throw new Error("duplicateSheet did not return the new tab's sheetId.");
+
+	const { values } = await client.readRange(`${quoteTab(newTab)}!${GRID_READ}`, "FORMULA");
+	const totalRow = findRowByValue(values, 1, TOTAL_ROW_LABEL);
+	if (totalRow === null) {
+		throw new Error(`Could not find the "${TOTAL_ROW_LABEL}" row in the duplicated tab ${newTab}.`);
+	}
+
+	const requests: object[] = [
+		{
+			updateCells: {
+				start: { sheetId, rowIndex: 0, columnIndex: 0 },
+				rows: [{ values: [cellData(`${month} 月花費`)] }],
+				fields: "userEnteredValue",
+			},
+		},
+	];
+
+	const overdraftRow = findRowByValue(values, 0, OVERDRAFT_LABEL);
+	if (overdraftRow !== null) {
+		const formula = String(values[overdraftRow - 1]?.[2] ?? "");
+		const rewired = formula.replace(/'\d+ 月'/g, `'${prevTab}'`);
+		requests.push({
+			updateCells: {
+				start: { sheetId, rowIndex: overdraftRow - 1, columnIndex: 2 },
+				rows: [{ values: [cellData(rewired)] }],
+				fields: "userEnteredValue",
+			},
+		});
+	}
+
+	const kept: string[] = [];
+	const cleared: string[] = [];
+	const rowsToDelete: number[] = [];
+	for (let r = 3; r < totalRow; r++) {
+		const item = String(values[r - 1]?.[0] ?? "").trim();
+		if (item === "") continue;
+		if (RECURRING_ITEMS.has(item)) kept.push(item);
+		else {
+			cleared.push(item);
+			rowsToDelete.push(r);
+		}
+	}
+	// Bottom-up so earlier deletions don't shift later indices.
+	for (const r of [...rowsToDelete].sort((a, b) => b - a)) {
+		requests.push({
+			deleteDimension: { range: { sheetId, dimension: "ROWS", startIndex: r - 1, endIndex: r } },
+		});
+	}
+	await client.batchUpdate(requests);
+
+	// Deleting referenced rows leaves #REF! inside the hand-picked category sums — scrub them.
+	if (rowsToDelete.length > 0) {
+		const after = await client.readRange(`${quoteTab(newTab)}!${GRID_READ}`, "FORMULA");
+		const fixes: object[] = [];
+		for (const label of Object.values(CATEGORIES)) {
+			const r = findRowByValue(after.values, 4, label);
+			if (r === null) continue;
+			const formula = String(after.values[r - 1]?.[5] ?? "");
+			if (formula.includes("#REF!")) {
+				fixes.push({
+					updateCells: {
+						start: { sheetId, rowIndex: r - 1, columnIndex: 5 },
+						rows: [{ values: [cellData(stripRefErrors(formula))] }],
+						fields: "userEnteredValue",
+					},
+				});
+			}
+		}
+		if (fixes.length > 0) await client.batchUpdate(fixes);
+	}
+
+	return { tab: newTab, duplicatedFrom: prevTab, kept, cleared };
+}
+
+export interface TripEntryParams {
+	tab: string;
+	category: string;
+	date: string;
+	shop: string;
+	item: string;
+	paymentMethod: string;
+	jpy: number;
+}
+
+export async function addTripEntry(client: SheetsClient, p: TripEntryParams) {
+	const { values } = await client.readRange(`${quoteTab(p.tab)}!A1:AL200`, "FORMULA");
+
+	const categoryRow = values[TRIP_CATEGORY_ROW - 1] ?? [];
+	let startCol = -1;
+	for (let c = 0; c < categoryRow.length; c++) {
+		if (String(categoryRow[c] ?? "").trim() === p.category) {
+			startCol = c;
+			break;
+		}
+	}
+	if (startCol === -1) {
+		const blocks = categoryRow.map((v) => String(v ?? "").trim()).filter(Boolean);
+		throw new Error(
+			`Category block "${p.category}" not found in row ${TRIP_CATEGORY_ROW} of ${p.tab}. Blocks present: ${blocks.join(", ")}`,
+		);
+	}
+
+	let targetRow = values.length + 1;
+	let lastDataRow = -1;
+	for (let r = TRIP_CATEGORY_ROW + 1; r <= values.length + 1; r++) {
+		const block = (values[r - 1] ?? []).slice(startCol, startCol + 7);
+		if (block.some((c) => c !== "" && c != null)) {
+			lastDataRow = r;
+		} else {
+			targetRow = r;
+			break;
+		}
+	}
+
+	const jpyCol = colLetter(startCol + 4);
+	const twdCol = colLetter(startCol + 5);
+	let twdFormula = `=${jpyCol}${targetRow}*0.22`;
+	let roundFormula = `=CEILING(${twdCol}${targetRow})`;
+	if (lastDataRow > TRIP_CATEGORY_ROW) {
+		const prevRow = values[lastDataRow - 1] ?? [];
+		const prevTwd = String(prevRow[startCol + 5] ?? "");
+		const prevRound = String(prevRow[startCol + 6] ?? "");
+		if (prevTwd.startsWith("=")) twdFormula = adaptRowFormula(prevTwd, lastDataRow, targetRow);
+		if (prevRound.startsWith("=")) roundFormula = adaptRowFormula(prevRound, lastDataRow, targetRow);
+	}
+
+	const range = `${quoteTab(p.tab)}!${colLetter(startCol)}${targetRow}:${colLetter(startCol + 6)}${targetRow}`;
+	const result = await client.updateRange(range, [
+		[p.date, p.shop, p.item, p.paymentMethod, p.jpy, twdFormula, roundFormula],
+	]);
+	return { tab: p.tab, category: p.category, row: targetRow, updatedRange: result.updatedRange };
 }
