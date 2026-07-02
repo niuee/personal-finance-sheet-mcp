@@ -1,7 +1,15 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { CATEGORIES, CONVENTIONS_TEXT, DEFAULT_CATEGORY } from "./conventions";
-import { addExpense, addTripEntry, monthSummary, startMonth } from "./finance-ops";
+import {
+	addExpense,
+	addTripEntry,
+	annotateRows,
+	findCells,
+	monthSummary,
+	safeUpdateRange,
+	startMonth,
+} from "./finance-ops";
 import type { SheetsClient } from "./sheets-client";
 
 const cellValue = z.union([z.string(), z.number(), z.boolean(), z.null()]);
@@ -37,7 +45,7 @@ export function registerFinanceTools(server: McpServer, client: SheetsClient): v
 
 	server.tool(
 		"read_range",
-		"Read cell values from the spreadsheet using A1 notation (e.g. 'Transactions!A1:F200', or just a tab name for the whole tab). mode 'raw' returns unformatted numbers (use it for math — default 'formatted' returns locale strings like \"13,603.67\"); mode 'formulas' returns cell formulas. Large results are truncated; the response says so via `truncated: true` — narrow the range to see the rest.",
+		"Read cell values using A1 notation (e.g. 'Transactions!A1:F200', or a tab name for the whole tab). Every returned row carries its REAL sheet row number (empty rows are omitted) — use those numbers directly, never count rows yourself. mode 'raw' returns unformatted numbers for math; 'formulas' returns cell formulas. truncated:true means narrow the range to see the rest.",
 		{
 			range: z
 				.string()
@@ -51,7 +59,9 @@ export function registerFinanceTools(server: McpServer, client: SheetsClient): v
 		async ({ range, mode }) => {
 			const render = { formatted: "FORMATTED_VALUE", raw: "UNFORMATTED_VALUE", formulas: "FORMULA" } as const;
 			try {
-				return ok(await client.readRange(range, render[mode ?? "formatted"]));
+				const r = await client.readRange(range, render[mode ?? "formatted"]);
+				const { startRow, rows } = annotateRows(r.range, r.values);
+				return ok({ range: r.range, startRow, rows, truncated: r.truncated });
 			} catch (e) {
 				return toError(e);
 			}
@@ -78,14 +88,18 @@ export function registerFinanceTools(server: McpServer, client: SheetsClient): v
 
 	server.tool(
 		"update_range",
-		"OVERWRITE the cells in a range with new values. This destroys the existing contents of those cells — read the range first and double-check before updating. Returns the range and cell count actually written. To clear a cell, write an empty string \"\" — a null cell value leaves the existing cell unchanged.",
+		"OVERWRITE the cells in a range with new values. This destroys the existing contents — pass expect_empty:true whenever you believe the target is empty (it refuses if anything is there), and read the range first when editing existing cells. The response includes previousValues (what was overwritten, with formulas) so any mistake can be reverted. To clear a cell, write an empty string \"\" — a null cell value leaves the existing cell unchanged.",
 		{
 			range: z.string().min(1).describe("A1 notation range to overwrite, e.g. Transactions!B7"),
 			values: rowsSchema.describe("Replacement values; outer array = rows, inner = cells"),
+			expect_empty: z
+				.boolean()
+				.optional()
+				.describe("true = refuse to write if ANY target cell is currently non-empty (use for append-like writes)"),
 		},
-		async ({ range, values }) => {
+		async ({ range, values, expect_empty }) => {
 			try {
-				return ok(await client.updateRange(range, values));
+				return ok(await safeUpdateRange(client, range, values, expect_empty ?? false));
 			} catch (e) {
 				return toError(e);
 			}
@@ -199,6 +213,26 @@ export function registerTailoredTools(server: McpServer, client: SheetsClient): 
 		async ({ tab, row, count }) => {
 			try {
 				return ok(await client.insertRows(tab, row, count));
+			} catch (e) {
+				return toError(e);
+			}
+		},
+	);
+
+	server.tool(
+		"find_cells",
+		"Find cells containing a text and get their exact A1 addresses — use this instead of reading big ranges and counting rows. Searches one tab, or every tab if tab is omitted. Returns at most 50 matches; truncated:true means there may be more (narrow the query or name a tab).",
+		{
+			query: z.string().min(1).describe("Text to look for, e.g. Haruka or 交通"),
+			tab: z.string().optional().describe("Tab to search; omit to search all tabs"),
+			match: z
+				.enum(["contains", "exact"])
+				.optional()
+				.describe("contains (default, case-insensitive substring) or exact (trimmed, case-sensitive)"),
+		},
+		async ({ query, tab, match }) => {
+			try {
+				return ok(await findCells(client, { query, tab, match }));
 			} catch (e) {
 				return toError(e);
 			}

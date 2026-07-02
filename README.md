@@ -5,9 +5,9 @@ A personal [Model Context Protocol](https://modelcontextprotocol.io/introduction
 ## Tools
 
 - **list_tabs** — list the tabs in the spreadsheet with their row/column counts.
-- **read_range** — read cell values from a tab using A1 notation; `mode` selects `formatted` (default), `raw` (unformatted numbers, for math), or `formulas`.
+- **read_range** — read cell values from a tab using A1 notation; `mode` selects `formatted` (default), `raw` (unformatted numbers, for math), or `formulas`. Every returned row carries its real sheet row number (empty rows are omitted), so callers never have to count rows themselves.
 - **append_rows** — append new rows below the existing data in a tab.
-- **update_range** — overwrite cells in a range with new values.
+- **update_range** — overwrite cells in a range with new values. `expect_empty:true` refuses the write if any target cell is currently non-empty (for append-like writes); the response always includes `previousValues` (what was overwritten, with formulas) so a mistake can be reverted.
 - **add_tab** — create a new empty tab.
 - **add_expense** — log an expense into a monthly tab (defaults to the current month).
 - **month_summary** — get a month's numbers as clean JSON.
@@ -15,6 +15,7 @@ A personal [Model Context Protocol](https://modelcontextprotocol.io/introduction
 - **add_trip_entry** — log a purchase into a trip tab's mosaic category block, discovering the block by title and choosing between jpy (¥-priced) or twd (NTD-direct) rows.
 - **get_sheet_conventions** — read how the spreadsheet is organized.
 - **insert_rows** — insert empty rows at a 1-indexed position.
+- **find_cells** — find cells containing a text and get their exact A1 addresses, across one tab or every tab; the alternative to reading big ranges and counting rows.
 
 ## Auth architecture
 
