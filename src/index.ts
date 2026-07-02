@@ -4,7 +4,7 @@ import { McpAgent } from "agents/mcp";
 import { GitHubHandler } from "./github-handler";
 import { GoogleAuth } from "./google-auth";
 import { SheetsClient } from "./sheets-client";
-import { registerFinanceTools } from "./tools";
+import { registerFinanceTools, registerTailoredTools } from "./tools";
 import type { Props } from "./utils";
 
 export class SheetsMCP extends McpAgent<Env, Record<string, never>, Props> {
@@ -26,6 +26,7 @@ export class SheetsMCP extends McpAgent<Env, Record<string, never>, Props> {
 		});
 		const client = new SheetsClient(auth, this.env.SPREADSHEET_ID);
 		registerFinanceTools(this.server, client);
+		registerTailoredTools(this.server, client);
 	}
 }
 

@@ -1,5 +1,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+import { CATEGORIES, CONVENTIONS_TEXT, DEFAULT_CATEGORY } from "./conventions";
+import { addExpense, addTripEntry, monthSummary, startMonth } from "./finance-ops";
 import type { SheetsClient } from "./sheets-client";
 
 const cellValue = z.union([z.string(), z.number(), z.boolean(), z.null()]);
@@ -35,16 +37,21 @@ export function registerFinanceTools(server: McpServer, client: SheetsClient): v
 
 	server.tool(
 		"read_range",
-		"Read cell values from the spreadsheet using A1 notation (e.g. 'Transactions!A1:F200', or just a tab name for the whole tab). Large results are truncated; the response says so via `truncated: true` — narrow the range to see the rest.",
+		"Read cell values from the spreadsheet using A1 notation (e.g. 'Transactions!A1:F200', or just a tab name for the whole tab). mode 'raw' returns unformatted numbers (use it for math — default 'formatted' returns locale strings like \"13,603.67\"); mode 'formulas' returns cell formulas. Large results are truncated; the response says so via `truncated: true` — narrow the range to see the rest.",
 		{
 			range: z
 				.string()
 				.min(1)
 				.describe("A1 notation range, e.g. Transactions!A1:F200 or a bare tab name"),
+			mode: z
+				.enum(["formatted", "raw", "formulas"])
+				.optional()
+				.describe("formatted (default) = display strings; raw = unformatted numbers; formulas = cell formulas"),
 		},
-		async ({ range }) => {
+		async ({ range, mode }) => {
+			const render = { formatted: "FORMATTED_VALUE", raw: "UNFORMATTED_VALUE", formulas: "FORMULA" } as const;
 			try {
-				return ok(await client.readRange(range));
+				return ok(await client.readRange(range, render[mode ?? "formatted"]));
 			} catch (e) {
 				return toError(e);
 			}
@@ -94,6 +101,103 @@ export function registerFinanceTools(server: McpServer, client: SheetsClient): v
 		async ({ title }) => {
 			try {
 				return ok(await client.addTab(title));
+			} catch (e) {
+				return toError(e);
+			}
+		},
+	);
+}
+
+const monthParam = z.number().int().min(1).max(12);
+
+export function registerTailoredTools(server: McpServer, client: SheetsClient): void {
+	server.tool(
+		"add_expense",
+		"Log an expense into a monthly tab (defaults to the current month). Writes into the expense window so 花費總額 picks it up, converts USD via GOOGLEFINANCE, and adds the entry to the chosen category's sum formula. Use this instead of append_rows/update_range for monthly expenses.",
+		{
+			item: z.string().min(1).describe("Expense name, e.g. 晚餐 or Netflix"),
+			amount: z.number().describe("The amount, in the given currency"),
+			currency: z.enum(["TWD", "USD"]),
+			category: z
+				.enum(Object.keys(CATEGORIES) as [string, ...string[]])
+				.optional()
+				.describe(`Which summary category to add it to (default ${DEFAULT_CATEGORY})`),
+			month: monthParam.optional().describe("Target month 1-12 (default: current month)"),
+		},
+		async (p) => {
+			try {
+				return ok(await addExpense(client, p));
+			} catch (e) {
+				return toError(e);
+			}
+		},
+	);
+
+	server.tool(
+		"month_summary",
+		"Get a month's numbers as clean JSON (unformatted): 花費總額, 上月透支, category totals, 薪水, 沛還, 剩餘, 美金支付. Defaults to the current month. Fields the sheet doesn't have yet come back null.",
+		{ month: monthParam.optional().describe("Month 1-12 (default: current month)") },
+		async ({ month }) => {
+			try {
+				return ok(await monthSummary(client, month));
+			} catch (e) {
+				return toError(e);
+			}
+		},
+	);
+
+	server.tool(
+		"start_month",
+		"Open a new month: duplicates the previous month's tab (keeping all formulas and recurring items like subscriptions), rewires 上月透支 to the month just ended, and clears one-off expenses. Refuses if the tab already exists.",
+		{ month: monthParam.describe("The month to create, 1-12") },
+		async ({ month }) => {
+			try {
+				return ok(await startMonth(client, month));
+			} catch (e) {
+				return toError(e);
+			}
+		},
+	);
+
+	server.tool(
+		"add_trip_entry",
+		"Log a purchase into a trip tab (e.g. 2026/07/25 京都東京). Finds the category block (模型, 書, ...), appends to its first empty row, and fills the ¥→TWD conversion columns following the block's existing formulas.",
+		{
+			tab: z.string().min(1).describe("Trip tab name, exactly as it appears"),
+			category: z.string().min(1).describe("Block title in row 2, e.g. 模型 or 書"),
+			date: z.string().min(1).describe("Date/time as you write it, e.g. 10/08 16:03"),
+			shop: z.string().describe("Store name"),
+			item: z.string().min(1).describe("What was bought"),
+			payment_method: z.string().describe("e.g. Suica, 現金, 信用卡"),
+			jpy: z.number().describe("Price in Japanese yen"),
+		},
+		async ({ tab, category, date, shop, item, payment_method, jpy }) => {
+			try {
+				return ok(await addTripEntry(client, { tab, category, date, shop, item, paymentMethod: payment_method, jpy }));
+			} catch (e) {
+				return toError(e);
+			}
+		},
+	);
+
+	server.tool(
+		"get_sheet_conventions",
+		"How this spreadsheet is organized: monthly tab layout, anchors like 花費總額, category formulas, trip blocks. Read this before doing raw range operations on unfamiliar tabs.",
+		{},
+		async () => ok({ conventions: CONVENTIONS_TEXT }),
+	);
+
+	server.tool(
+		"insert_rows",
+		"Insert empty rows at a 1-indexed position (existing rows shift down; formulas that span the position auto-extend). Prefer add_expense/add_trip_entry for their use cases.",
+		{
+			tab: z.string().min(1),
+			row: z.number().int().min(2).describe("1-indexed row where the first new row will land"),
+			count: z.number().int().min(1).max(50).default(1),
+		},
+		async ({ tab, row, count }) => {
+			try {
+				return ok(await client.insertRows(tab, row, count));
 			} catch (e) {
 				return toError(e);
 			}

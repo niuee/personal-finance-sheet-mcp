@@ -5,10 +5,16 @@ A personal [Model Context Protocol](https://modelcontextprotocol.io/introduction
 ## Tools
 
 - **list_tabs** — list the tabs in the spreadsheet with their row/column counts.
-- **read_range** — read cell values from a tab using A1 notation.
+- **read_range** — read cell values from a tab using A1 notation; `mode` selects `formatted` (default), `raw` (unformatted numbers, for math), or `formulas`.
 - **append_rows** — append new rows below the existing data in a tab.
 - **update_range** — overwrite cells in a range with new values.
 - **add_tab** — create a new empty tab.
+- **add_expense** — log an expense into a monthly tab (defaults to the current month).
+- **month_summary** — get a month's numbers as clean JSON.
+- **start_month** — open a new month by duplicating the previous month's tab.
+- **add_trip_entry** — log a purchase into a trip tab's category block.
+- **get_sheet_conventions** — read how the spreadsheet is organized.
+- **insert_rows** — insert empty rows at a 1-indexed position.
 
 ## Auth architecture
 
