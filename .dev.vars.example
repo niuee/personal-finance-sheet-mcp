@@ -1,0 +1,6 @@
+GITHUB_CLIENT_ID=<dev github oauth app client id>
+GITHUB_CLIENT_SECRET=<dev github oauth app client secret>
+COOKIE_ENCRYPTION_KEY=<any random string, e.g. from: openssl rand -hex 32>
+GOOGLE_SA_EMAIL=<service account client_email>
+GOOGLE_SA_PRIVATE_KEY=<service account private_key JSON value, with the literal \n sequences kept as-is>
+SPREADSHEET_ID=<COPY spreadsheet id — local dev targets the copy, not the real sheet>
