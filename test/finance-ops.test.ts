@@ -423,71 +423,164 @@ describe("startMonth", () => {
 	});
 });
 
-describe("addTripEntry", () => {
-	/** Trip grid: 模型 block at cols A-G (0-6), 書 block at I-O (8-14). */
-	function tripGrid(): unknown[][] {
-		const g: unknown[][] = [];
-		g[0] = ["日期", "店鋪", "品項", "支付方式", "日幣原價", "臺幣 0.22 匯率", "臺幣 進位", "", "日期", "店鋪", "品項", "支付方式", "日幣原價"];
-		g[1] = ["模型", "", "", "", "", "", "", "", "書"];
-		g[2] = ["10/08 16:03", "Yodobashi 京都", "鑷子", "Suica", 1373, "=E3*0.22", "=CEILING(F3)"];
-		return g;
-	}
+function tripClient(grid: unknown[][]): SheetsClient {
+	return {
+		readRange: vi.fn(async () => ({ range: "x", values: grid, truncated: false })),
+		getSheetId: vi.fn(async () => 111),
+		batchUpdate: vi.fn(async () => ({ replies: [{}] })),
+		updateRange: vi.fn(async () => ({ updatedRange: "written", updatedCells: 7 })),
+	} as unknown as SheetsClient;
+}
 
-	function tripClient(grid: unknown[][]): SheetsClient {
-		return {
-			readRange: vi.fn(async () => ({ range: "x", values: grid, truncated: false })),
-			updateRange: vi.fn(async () => ({ updatedRange: "'京都'!A4:G4", updatedCells: 7 })),
-		} as unknown as SheetsClient;
-	}
-
-	it("appends to the first empty row of the category block, adapting the previous row's formulas", async () => {
-		const client = tripClient(tripGrid());
+describe("addTripEntry (mosaic)", () => {
+	it("writes a JPY entry into the first empty row, adapting the previous row's formulas", async () => {
+		const client = tripClient(mosaicGrid());
 
 		const result = await addTripEntry(client, {
 			tab: "京都",
 			category: "模型",
-			date: "10/09 11:00",
+			date: "10/10",
 			shop: "Volks",
 			item: "N規小物",
 			paymentMethod: "Suica",
 			jpy: 2200,
 		});
 
+		// row 4 is the first empty band-A row; totals =SUM(E3:E5)/=SUM(G3:G5) already cover it
+		expect((client.batchUpdate as any).mock.calls.length).toBe(0);
 		expect((client.updateRange as any).mock.calls[0]).toEqual([
 			"'京都'!A4:G4",
-			[["10/09 11:00", "Volks", "N規小物", "Suica", 2200, "=E4*0.22", "=CEILING(F4)"]],
+			[["10/10", "Volks", "N規小物", "Suica", 2200, "=E4*0.22", "=CEILING(F4)"]],
 		]);
-		expect(result).toMatchObject({ row: 4, category: "模型" });
+		expect(result).toMatchObject({ category: "模型", row: 4, currency: "JPY" });
 	});
 
-	it("uses the 0.22 fallback when the block has no data rows, offset to the block's columns", async () => {
-		const client = tripClient(tripGrid());
+	it("writes a TWD-direct entry with an empty ¥ cell and a CEILING round", async () => {
+		const client = tripClient(mosaicGrid());
+
+		const result = await addTripEntry(client, {
+			tab: "京都",
+			category: "機票住宿",
+			date: "08/01",
+			shop: "",
+			item: "回程補付",
+			paymentMethod: "已算在預算",
+			twd: 1500,
+		});
+
+		expect((client.batchUpdate as any).mock.calls.length).toBe(0);
+		expect((client.updateRange as any).mock.calls[0]).toEqual([
+			"'京都'!I5:O5",
+			[["08/01", "", "回程補付", "已算在預算", "", 1500, "=CEILING(N5)"]],
+		]);
+		expect(result).toMatchObject({ category: "機票住宿", row: 5, currency: "TWD" });
+	});
+
+	it("extends a total whose SUM range does not cover the target row", async () => {
+		const g = mosaicGrid();
+		g[5] = ["", "", "", "分類總花費", "=SUM(E3:E3)", "", "=SUM(G3:G3)", "", "", "", "", "機票住宿分類總花費", "", "", "=SUM(O3:O5)"];
+		const client = tripClient(g);
 
 		await addTripEntry(client, {
 			tab: "京都",
-			category: "書",
-			date: "10/09",
-			shop: "京都鐵道博物館",
-			item: "Guide Book",
+			category: "模型",
+			date: "10/10",
+			shop: "x",
+			item: "y",
 			paymentMethod: "Suica",
-			jpy: 1100,
+			jpy: 100,
 		});
 
-		expect((client.updateRange as any).mock.calls[0]).toEqual([
-			"'京都'!I3:O3",
-			[["10/09", "京都鐵道博物館", "Guide Book", "Suica", 1100, "=M3*0.22", "=CEILING(N3)"]],
+		expect((client.batchUpdate as any).mock.calls[0][0]).toEqual([
+			{
+				updateCells: {
+					start: { sheetId: 111, rowIndex: 5, columnIndex: 4 },
+					rows: [{ values: [{ userEnteredValue: { formulaValue: "=SUM(E3:E4)" } }] }],
+					fields: "userEnteredValue",
+				},
+			},
+			{
+				updateCells: {
+					start: { sheetId: 111, rowIndex: 5, columnIndex: 6 },
+					rows: [{ values: [{ userEnteredValue: { formulaValue: "=SUM(G3:G4)" } }] }],
+					fields: "userEnteredValue",
+				},
+			},
 		]);
+		expect((client.updateRange as any).mock.calls[0][0]).toBe("'京都'!A4:G4");
 	});
 
-	it("names the available blocks when the category is missing", async () => {
-		const client = tripClient(tripGrid());
+	it("inserts band-scoped cells when the block is full and rewrites its totals", async () => {
+		const client = tripClient(mosaicGrid());
+
+		const result = await addTripEntry(client, {
+			tab: "京都",
+			category: "電子產品",
+			date: "10/10",
+			shop: "Sofmap",
+			item: "SSD",
+			paymentMethod: "Suica",
+			jpy: 9800,
+		});
+
+		expect((client.batchUpdate as any).mock.calls[0][0]).toEqual([
+			{
+				insertRange: {
+					range: { sheetId: 111, startRowIndex: 10, endRowIndex: 11, startColumnIndex: 8, endColumnIndex: 15 },
+					shiftDimension: "ROWS",
+				},
+			},
+			{
+				updateCells: {
+					start: { sheetId: 111, rowIndex: 11, columnIndex: 12 },
+					rows: [{ values: [{ userEnteredValue: { formulaValue: "=SUM(M10:M11)" } }] }],
+					fields: "userEnteredValue",
+				},
+			},
+			{
+				updateCells: {
+					start: { sheetId: 111, rowIndex: 11, columnIndex: 14 },
+					rows: [{ values: [{ userEnteredValue: { formulaValue: "=SUM(O10:O11)" } }] }],
+					fields: "userEnteredValue",
+				},
+			},
+		]);
+		expect((client.updateRange as any).mock.calls[0]).toEqual([
+			"'京都'!I11:O11",
+			[["10/10", "Sofmap", "SSD", "Suica", 9800, "=M11*0.22", "=CEILING(N11)"]],
+		]);
+		expect(result).toMatchObject({ category: "電子產品", row: 11, currency: "JPY" });
+	});
+
+	it("fails closed when a full block's total is not a plain SUM", async () => {
+		const g = mosaicGrid();
+		g[10] = ["", "", "", "", "", "", "", "", "", "", "", "分類總花費", "=SUM(M10:M10)+1", "", "=SUM(O10:O10)"];
+		const client = tripClient(g);
+
+		await expect(
+			addTripEntry(client, { tab: "京都", category: "電子產品", date: "x", shop: "x", item: "x", paymentMethod: "x", jpy: 1 }),
+		).rejects.toThrow("cannot safely extend");
+		expect((client.batchUpdate as any).mock.calls.length).toBe(0);
+		expect((client.updateRange as any).mock.calls.length).toBe(0);
+	});
+
+	it("requires exactly one of jpy and twd", async () => {
+		const client = tripClient(mosaicGrid());
+		const base = { tab: "京都", category: "模型", date: "x", shop: "x", item: "x", paymentMethod: "x" };
+		await expect(addTripEntry(client, { ...base })).rejects.toThrow("exactly one");
+		await expect(addTripEntry(client, { ...base, jpy: 1, twd: 1 })).rejects.toThrow("exactly one");
+		expect((client.updateRange as any).mock.calls.length).toBe(0);
+	});
+
+	it("names every discovered category when the block is missing", async () => {
+		const client = tripClient(mosaicGrid());
 		await expect(
 			addTripEntry(client, { tab: "京都", category: "食物", date: "x", shop: "x", item: "x", paymentMethod: "x", jpy: 1 }),
-		).rejects.toThrow("模型, 書");
+		).rejects.toThrow("模型, 機票住宿, 電子產品");
 	});
 
-	it("refuses to append when the trip read was truncated", async () => {
-		const grid = tripGrid();
+	it("refuses to operate on a truncated read", async () => {
+		const grid = mosaicGrid();
 		const client = tripClient(grid);
 		(client.readRange as any).mockResolvedValue({ range: "x", values: grid, truncated: true });
 		await expect(

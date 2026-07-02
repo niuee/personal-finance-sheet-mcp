@@ -337,57 +337,140 @@ export interface TripEntryParams {
 	shop: string;
 	item: string;
 	paymentMethod: string;
-	jpy: number;
+	jpy?: number;
+	twd?: number;
 }
 
-export async function addTripEntry(client: SheetsClient, p: TripEntryParams) {
-	const { values, truncated } = await client.readRange(`${quoteTab(p.tab)}!A1:AL200`, "FORMULA");
-	assertNotTruncated(truncated, p.tab, "A1:AL200");
+const TRIP_READ = "A1:AL200";
+/** Plain single-column SUM range, e.g. =SUM(M10:M12). */
+const PLAIN_SUM_RANGE_RE = /^=SUM\(([A-Z]{1,2})(\d+):\1(\d+)\)$/i;
 
-	const categoryRow = values[1] ?? [];
-	let startCol = -1;
-	for (let c = 0; c < categoryRow.length; c++) {
-		if (String(categoryRow[c] ?? "").trim() === p.category) {
-			startCol = c;
-			break;
-		}
+export async function addTripEntry(client: SheetsClient, p: TripEntryParams) {
+	if ((p.jpy === undefined) === (p.twd === undefined)) {
+		throw new Error("Provide exactly one of jpy or twd for a trip entry.");
 	}
-	if (startCol === -1) {
-		const blocks = categoryRow.map((v) => String(v ?? "").trim()).filter(Boolean);
+
+	const { values, truncated } = await client.readRange(`${quoteTab(p.tab)}!${TRIP_READ}`, "FORMULA");
+	assertNotTruncated(truncated, p.tab, TRIP_READ);
+
+	const blocks = findTripBlocks(values);
+	const block = blocks.find((b) => b.category === p.category.trim());
+	if (!block) {
 		throw new Error(
-			`Category block "${p.category}" not found in row 2 of ${p.tab}. Blocks present: ${blocks.join(", ")}`,
+			`Category block "${p.category}" not found in ${p.tab}. Blocks present: ${blocks.map((b) => b.category).join(", ")}`,
 		);
 	}
+	const { startCol, firstDataRow, endRow } = block;
+	const cellStr = (r: number, c: number) => String(values[r - 1]?.[c] ?? "").trim();
 
-	let targetRow = values.length + 1;
-	let lastDataRow = -1;
-	for (let r = 3; r <= values.length + 1; r++) {
-		const block = (values[r - 1] ?? []).slice(startCol, startCol + 7);
-		if (block.some((c) => c !== "" && c != null)) {
-			lastDataRow = r;
-		} else {
+	// The block's 分類總花費 row (endRow when terminated by one) and its two total cells.
+	const totalRow = Array.from({ length: 7 }, (_, i) => cellStr(endRow, startCol + i)).some((v) =>
+		v.includes(TRIP_TOTAL_LABEL),
+	)
+		? endRow
+		: null;
+	const totals = (totalRow === null ? [] : [4, 6]).map((off) => {
+		const formula = cellStr(totalRow!, startCol + off);
+		const m = formula.match(PLAIN_SUM_RANGE_RE);
+		return {
+			col: startCol + off,
+			formula,
+			parsed: m ? { col: m[1], a: Number(m[2]), b: Number(m[3]) } : null,
+		};
+	});
+
+	// Target: first fully-empty band row inside the region.
+	let targetRow: number | null = null;
+	for (let r = firstDataRow; r < endRow; r++) {
+		if (Array.from({ length: 7 }, (_, i) => cellStr(r, startCol + i)).every((v) => v === "")) {
 			targetRow = r;
 			break;
 		}
 	}
 
-	const jpyCol = colLetter(startCol + 4);
-	const twdCol = colLetter(startCol + 5);
-	let twdFormula = `=${jpyCol}${targetRow}*0.22`;
-	let roundFormula = `=CEILING(${twdCol}${targetRow})`;
-	if (lastDataRow > 2) {
-		const prevRow = values[lastDataRow - 1] ?? [];
-		const prevTwd = String(prevRow[startCol + 5] ?? "");
-		const prevRound = String(prevRow[startCol + 6] ?? "");
-		if (prevTwd.startsWith("=")) twdFormula = adaptRowFormula(prevTwd, lastDataRow, targetRow);
-		if (prevRound.startsWith("=")) roundFormula = adaptRowFormula(prevRound, lastDataRow, targetRow);
+	const insertNeeded = targetRow === null;
+	if (insertNeeded) {
+		if (totalRow === null) {
+			throw new Error(
+				`Block "${p.category}" in ${p.tab} is full and has no ${TRIP_TOTAL_LABEL} row to anchor a safe cell insert — add rows to it manually.`,
+			);
+		}
+		for (const t of totals) {
+			if (t.formula.startsWith("=") && t.parsed === null) {
+				throw new Error(
+					`Block "${p.category}" is full and its total formula "${t.formula}" is not a plain =SUM(range) — cannot safely extend it. Add a row to the block manually.`,
+				);
+			}
+		}
+		targetRow = totalRow;
+	}
+	const row = targetRow!;
+
+	// Totals whose SUM range doesn't cover the new row get rewritten.
+	const rewrites = totals.filter((t) => t.parsed !== null && (row < t.parsed.a || row > t.parsed.b));
+
+	if (insertNeeded || rewrites.length > 0) {
+		const sheetId = await client.getSheetId(p.tab);
+		const requests: object[] = [];
+		if (insertNeeded) {
+			requests.push({
+				insertRange: {
+					range: {
+						sheetId,
+						startRowIndex: row - 1,
+						endRowIndex: row,
+						startColumnIndex: startCol,
+						endColumnIndex: startCol + 7,
+					},
+					shiftDimension: "ROWS",
+				},
+			});
+		}
+		for (const t of rewrites) {
+			const a = Math.min(t.parsed!.a, row);
+			const b = Math.max(t.parsed!.b, row);
+			// A cell insert at `row` shifts the total row itself down by one.
+			const totalRowFinal = insertNeeded ? totalRow! + 1 : totalRow!;
+			requests.push({
+				updateCells: {
+					start: { sheetId, rowIndex: totalRowFinal - 1, columnIndex: t.col },
+					rows: [{ values: [cellData(`=SUM(${t.parsed!.col}${a}:${t.parsed!.col}${b})`)] }],
+					fields: "userEnteredValue",
+				},
+			});
+		}
+		await client.batchUpdate(requests);
 	}
 
-	const range = `${quoteTab(p.tab)}!${colLetter(startCol)}${targetRow}:${colLetter(startCol + 6)}${targetRow}`;
+	// Conversion columns: adapt the row above's formulas for JPY entries; TWD entries are direct.
+	const jpyCol = colLetter(startCol + 4);
+	const twdCol = colLetter(startCol + 5);
+	let twdValue: string | number;
+	let roundFormula = `=CEILING(${twdCol}${row})`;
+	if (p.twd !== undefined) {
+		twdValue = p.twd;
+	} else {
+		twdValue = `=${jpyCol}${row}*0.22`;
+		const prevRow = row - 1;
+		if (prevRow >= firstDataRow) {
+			const prevTwd = cellStr(prevRow, startCol + 5);
+			const prevRound = cellStr(prevRow, startCol + 6);
+			if (prevTwd.startsWith("=")) twdValue = adaptRowFormula(prevTwd, prevRow, row);
+			if (prevRound.startsWith("=")) roundFormula = adaptRowFormula(prevRound, prevRow, row);
+		}
+	}
+
+	const range = `${quoteTab(p.tab)}!${colLetter(startCol)}${row}:${colLetter(startCol + 6)}${row}`;
 	const result = await client.updateRange(range, [
-		[p.date, p.shop, p.item, p.paymentMethod, p.jpy, twdFormula, roundFormula],
+		[p.date, p.shop, p.item, p.paymentMethod, p.jpy ?? "", twdValue, roundFormula],
 	]);
-	return { tab: p.tab, category: p.category, row: targetRow, updatedRange: result.updatedRange };
+	return {
+		tab: p.tab,
+		category: block.category,
+		row,
+		updatedRange: result.updatedRange,
+		currency: p.jpy !== undefined ? ("JPY" as const) : ("TWD" as const),
+	};
 }
 
 export interface TripBlock {
