@@ -94,7 +94,7 @@ describe("SheetsClient reads", () => {
 	it("falls back to a generic message when the error body is not JSON", async () => {
 		vi.stubGlobal(
 			"fetch",
-			vi.fn(async () => new Response("<html>Server Error</html>", { status: 502 })),
+			vi.fn<FetchMock>(async () => new Response("<html>Server Error</html>", { status: 502 })),
 		);
 
 		const promise = makeClient().readRange("Transactions!A1");
@@ -106,7 +106,7 @@ describe("SheetsClient reads", () => {
 /**
  * `RequestInit.body` is typed as `BodyInit | null | undefined`; our client
  * always passes a JSON string, so this narrows just enough to call
- * `JSON.parse`. This is the one cast Fix 4 keeps (see final-review-fixes.md).
+ * `JSON.parse` — and fails loudly if the body is ever not a JSON string.
  */
 function parsedBody(init: RequestInit | undefined): unknown {
 	return JSON.parse(init?.body as string);
