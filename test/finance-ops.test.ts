@@ -554,6 +554,30 @@ describe("addTripEntry (mosaic)", () => {
 		expect(result).toMatchObject({ category: "電子產品", row: 11, currency: "JPY" });
 	});
 
+	it("extends a single-cell =SUM(E37)-style total when inserting into a full block", async () => {
+		const g = mosaicGrid();
+		g[10] = ["", "", "", "", "", "", "", "", "", "", "", "分類總花費", "=SUM(M10)", "", "=SUM(O10)"];
+		const client = tripClient(g);
+
+		await addTripEntry(client, {
+			tab: "京都",
+			category: "電子產品",
+			date: "x",
+			shop: "x",
+			item: "x",
+			paymentMethod: "x",
+			jpy: 1,
+		});
+
+		const requests = (client.batchUpdate as any).mock.calls[0][0];
+		expect(requests[1].updateCells.rows[0].values).toEqual([
+			{ userEnteredValue: { formulaValue: "=SUM(M10:M11)" } },
+		]);
+		expect(requests[2].updateCells.rows[0].values).toEqual([
+			{ userEnteredValue: { formulaValue: "=SUM(O10:O11)" } },
+		]);
+	});
+
 	it("fails closed when a full block's total is not a plain SUM", async () => {
 		const g = mosaicGrid();
 		g[10] = ["", "", "", "", "", "", "", "", "", "", "", "分類總花費", "=SUM(M10:M10)+1", "", "=SUM(O10:O10)"];

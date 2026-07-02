@@ -343,8 +343,8 @@ export interface TripEntryParams {
 }
 
 const TRIP_READ = "A1:AL200";
-/** Plain single-column SUM range, e.g. =SUM(M10:M12). */
-const PLAIN_SUM_RANGE_RE = /^=SUM\(([A-Z]{1,2})(\d+):\1(\d+)\)$/i;
+/** Plain single-column SUM: a range like =SUM(M10:M12) or a single cell like =SUM(E37). */
+const PLAIN_SUM_RANGE_RE = /^=SUM\(([A-Z]{1,2})(\d+)(?::\1(\d+))?\)$/i;
 /** Data columns per trip block (the band width minus its spacer column). */
 const BAND_COLS = TRIP_BLOCK_WIDTH - 1;
 
@@ -379,7 +379,7 @@ export async function addTripEntry(client: SheetsClient, p: TripEntryParams) {
 		return {
 			col: startCol + off,
 			formula,
-			parsed: m ? { col: m[1], a: Number(m[2]), b: Number(m[3]) } : null,
+			parsed: m ? { col: m[1], a: Number(m[2]), b: Number(m[3] ?? m[2]) } : null,
 		};
 	});
 
