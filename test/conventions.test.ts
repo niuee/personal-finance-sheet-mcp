@@ -1,0 +1,55 @@
+import { describe, expect, it } from "vitest";
+import {
+	CATEGORIES,
+	CONVENTIONS_TEXT,
+	currentMonthTab,
+	DEFAULT_CATEGORY,
+	monthTabName,
+	previousMonth,
+	RECURRING_ITEMS,
+	TOTAL_ROW_LABEL,
+} from "../src/conventions";
+
+describe("conventions", () => {
+	it("builds month tab names with the space Vincent uses", () => {
+		expect(monthTabName(9)).toBe("9 月");
+		expect(monthTabName(12)).toBe("12 月");
+	});
+
+	it("rejects invalid months", () => {
+		expect(() => monthTabName(0)).toThrow("Invalid month");
+		expect(() => monthTabName(13)).toThrow("Invalid month");
+		expect(() => monthTabName(1.5)).toThrow("Invalid month");
+	});
+
+	it("derives the current month tab from a date", () => {
+		expect(currentMonthTab(new Date("2026-07-02T12:00:00"))).toBe("7 月");
+		expect(currentMonthTab(new Date("2026-12-31T12:00:00"))).toBe("12 月");
+	});
+
+	it("wraps January's previous month to December", () => {
+		expect(previousMonth(1)).toBe(12);
+		expect(previousMonth(10)).toBe(9);
+	});
+
+	it("maps short category names to the exact sheet labels", () => {
+		expect(CATEGORIES["訂閱費"]).toBe("訂閱費");
+		expect(CATEGORIES["交通中餐雜支"]).toBe("交通中餐等等雜支");
+		expect(CATEGORIES["額外雜支"]).toBe("本月額外雜支");
+		expect(CATEGORIES[DEFAULT_CATEGORY]).toBeDefined();
+	});
+
+	it("knows the recurring items and the total-row anchor", () => {
+		expect(TOTAL_ROW_LABEL).toBe("花費總額");
+		for (const item of ["Google Cloud", "Netflix", "電話費", "上月透支", "Claude"]) {
+			expect(RECURRING_ITEMS.has(item)).toBe(true);
+		}
+		expect(RECURRING_ITEMS.has("近鐵 80000系")).toBe(false);
+	});
+
+	it("conventions text mentions the anchors Claude needs", () => {
+		for (const needle of ["花費總額", "GOOGLEFINANCE", "上月透支", "insert", "0.22"]) {
+			expect(CONVENTIONS_TEXT).toContain(needle);
+		}
+	});
+});
