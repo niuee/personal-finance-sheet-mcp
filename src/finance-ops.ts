@@ -536,7 +536,7 @@ export interface AnnotatedRows {
 
 /** Row-number a values grid using the A1 range the API echoed ("'9 月'!A3:F60" → startRow 3). Empty rows are omitted. */
 export function annotateRows(range: string, values: unknown[][]): AnnotatedRows {
-	const m = range.match(/![A-Z]*(\d+)/);
+	const m = range.match(/![A-Za-z]*(\d+)/);
 	const startRow = m ? Number(m[1]) : 1;
 	const rows: Array<{ row: number; values: unknown[] }> = [];
 	for (let i = 0; i < values.length; i++) {
@@ -555,6 +555,20 @@ export function colIndex(letter: string): number {
 	return n - 1;
 }
 
+/** Expand a single-cell anchor range to the rectangle `values` will actually cover ("'9 月'!A22" + 1x3 values → "'9 月'!A22:C22"). */
+export function expandAnchorRange(range: string, values: unknown[][]): string {
+	const m = range.match(/^(.*!)?\$?([A-Za-z]+)\$?(\d+)$/);
+	if (!m) return range; // already a rectangle or open-ended range
+	const sheet = m[1] ?? "";
+	const colLetters = m[2].toUpperCase();
+	const startRow = Number(m[3]);
+	const rows = values.length;
+	const cols = Math.max(1, ...values.map((r) => r.length));
+	if (rows <= 1 && cols <= 1) return range;
+	const startCol = colIndex(colLetters);
+	return `${sheet}${colLetters}${startRow}:${colLetter(startCol + cols - 1)}${startRow + rows - 1}`;
+}
+
 /**
  * update_range with a seatbelt: reads the target first (the read IS the
  * safety mechanism — two calls, deliberately not atomic), optionally refuses
@@ -566,16 +580,17 @@ export async function safeUpdateRange(
 	values: unknown[][],
 	expectEmpty = false,
 ): Promise<{ updatedRange: string; updatedCells: number; previousValues: AnnotatedRows }> {
-	const before = await client.readRange(range, "FORMULA");
+	const readTarget = expandAnchorRange(range, values);
+	const before = await client.readRange(readTarget, "FORMULA");
 	if (before.truncated) {
-		throw new Error(`Refusing to write: reading ${range} back was truncated, so its current contents cannot be verified.`);
+		throw new Error(`Refusing to write: reading ${readTarget} back was truncated, so its current contents cannot be verified.`);
 	}
 	const echoed = before.range || range;
 	const previousValues = annotateRows(echoed, before.values);
 
 	if (expectEmpty) {
-		const colMatch = echoed.match(/!([A-Z]+)\d*/);
-		const startCol = colMatch ? colIndex(colMatch[1]) : 0;
+		const colMatch = echoed.match(/!\$?([A-Za-z]+)\$?\d*/);
+		const startCol = colMatch ? colIndex(colMatch[1].toUpperCase()) : 0;
 		const occupied: string[] = [];
 		for (const r of previousValues.rows) {
 			r.values.forEach((c, j) => {

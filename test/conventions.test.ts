@@ -80,6 +80,8 @@ describe("conventions", () => {
 			"分類總花費",
 			"電子產品",
 			"機票住宿",
+			"find_cells",
+			"expect_empty",
 		]) {
 			expect(CONVENTIONS_TEXT).toContain(needle);
 		}

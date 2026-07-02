@@ -8,6 +8,7 @@ import {
 	cellData,
 	colIndex,
 	colLetter,
+	expandAnchorRange,
 	findCells,
 	FIND_CELLS_CAP,
 	findRowByValue,
@@ -781,6 +782,19 @@ describe("colIndex", () => {
 	});
 });
 
+describe("expandAnchorRange", () => {
+	it("expands a single-cell anchor to the rectangle the values will cover", () => {
+		expect(expandAnchorRange("'9 月'!A22", [["item", 120, 3600]])).toBe("'9 月'!A22:C22");
+		expect(expandAnchorRange("B5", [[1], [2], [3]])).toBe("B5:B7");
+	});
+
+	it("leaves rectangles, open-ended ranges, and 1x1 anchors alone", () => {
+		expect(expandAnchorRange("'T'!A22:C23", [["x", "y"]])).toBe("'T'!A22:C23");
+		expect(expandAnchorRange("'T'!A22:F", [["x"]])).toBe("'T'!A22:F");
+		expect(expandAnchorRange("'T'!A22", [["x"]])).toBe("'T'!A22");
+	});
+});
+
 describe("safeUpdateRange", () => {
 	function updateClient(readResult: { range: string; values: unknown[][]; truncated?: boolean }): SheetsClient {
 		return {
@@ -825,6 +839,16 @@ describe("safeUpdateRange", () => {
 		const client = updateClient({ range: "'T'!A1:Z999", values: [["x"]], truncated: true });
 
 		await expect(safeUpdateRange(client, "'T'!A1:Z999", [["y"]])).rejects.toThrow("truncated");
+		expect((client.updateRange as any).mock.calls.length).toBe(0);
+	});
+
+	it("expect_empty checks the FULL rectangle an anchor write will cover", async () => {
+		// A22 is empty, but the write's 3 columns would clobber the 花費總額 cells in B/C
+		const client = updateClient({ range: "'9 月'!A22:C22", values: [["", "花費總額", "=SUM(C3:C21)"]] });
+
+		const promise = safeUpdateRange(client, "'9 月'!A22", [["item", 120, 3600]], true);
+		await expect(promise).rejects.toThrow("B22=花費總額");
+		expect((client.readRange as any).mock.calls[0][0]).toBe("'9 月'!A22:C22");
 		expect((client.updateRange as any).mock.calls.length).toBe(0);
 	});
 });

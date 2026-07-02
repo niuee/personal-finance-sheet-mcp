@@ -97,4 +97,4 @@ TRIP TABS — e.g. "2026/07/25 京都東京".
 
 OTHER — "火車模型" is a hobby purchase planner; monthly tabs may cross-reference its cells.
 
-Prefer the tailored tools (add_expense, month_summary, start_month, add_trip_entry) over raw range edits. For math, read with mode "raw" — default reads return locale-formatted strings like "13,603.67".`;
+Prefer the tailored tools (add_expense, month_summary, start_month, add_trip_entry) over raw range edits. Locate rows with find_cells — never by reading a big range and counting rows. For any append-like update_range write, pass expect_empty: true (it refuses if the target is not empty); every update_range response includes previousValues so a mistaken overwrite can be reverted. For math, read with mode "raw" — default reads return locale-formatted strings like "13,603.67".`;

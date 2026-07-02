@@ -221,7 +221,7 @@ export function registerTailoredTools(server: McpServer, client: SheetsClient): 
 
 	server.tool(
 		"find_cells",
-		"Find cells containing a text and get their exact A1 addresses — use this instead of reading big ranges and counting rows. Searches one tab, or every tab if tab is omitted. Returns at most 50 matches; truncated:true means there may be more (narrow the query or name a tab).",
+		"Find cells whose DISPLAYED text contains a query (formatted values — '13,603.67' not 13603.67; formulas not searched) and get their exact A1 addresses — use this instead of reading big ranges and counting rows. Searches one tab, or every tab if tab is omitted. Returns at most 50 matches; truncated:true means there may be more (narrow the query or name a tab).",
 		{
 			query: z.string().min(1).describe("Text to look for, e.g. Haruka or 交通"),
 			tab: z.string().optional().describe("Tab to search; omit to search all tabs"),
