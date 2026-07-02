@@ -31,9 +31,16 @@ actually has 12 categories: 模型, 書, 餐(當下吃的), 機票住宿, 雜支
 
 ## Decisions made during brainstorming
 
-- **Fail closed on a full block** — never `insertDimension` on a trip tab: a
-  sheet-wide row insert would splice an empty line through neighboring
-  blocks in other bands.
+- **Full block → band-scoped cell insert** (revised with user approval after
+  discovering three real blocks — 送禮, 入場券, 電子產品 — are exactly full):
+  use the Sheets `insertRange` request with `shiftDimension: ROWS` scoped to
+  the block's 7 columns, which shifts only that band down and cannot damage
+  neighboring bands. Never `insertDimension` (whole sheet rows) on a trip
+  tab. When inserting, the block's `分類總花費` SUM formulas are rewritten to
+  cover the new row — and this requires them to be plain `=SUM(range)`
+  formulas; anything else fails closed with guidance to add a row manually.
+  The same rewrite extends a total whose range doesn't cover the target row
+  on the non-insert path.
 - **Support direct-TWD entries** in addition to JPY.
 - Discovery is dynamic (no hardcoded category list) so new blocks Vincent
   adds are picked up automatically.
@@ -87,11 +94,13 @@ expected in practice).
 - Target row = first row in `firstDataRow..endRow-1` whose 7 band cells are
   all empty. None → **fail closed**: "block 「X」 is full — add rows inside
   the block manually (a sheet-wide insert would damage neighboring blocks)".
-- SUM-window cross-check (best effort): if the block has a `分類總花費` row
-  and its ¥ cell (band col +4) parses as a plain `=SUM(<col><a>:<col><b>)`,
-  require `a ≤ targetRow ≤ b`, else fail closed. If the cell is anything
-  else (blank, literal, non-plain formula), skip the check — trip totals
-  are heterogeneous, and the write is still bounded by the block region.
+- Total-coverage handling: both total cells (band cols +4 ¥ and +6 NTD) are
+  read. When one parses as a plain `=SUM(<col><a>:<col><b>)` and its range
+  does not cover the target row, it is rewritten to
+  `SUM(min(a,target)..max(b,target))` — on both the empty-row and the
+  insert paths. Non-formula cells are left alone. A non-plain formula is
+  tolerated on the empty-row path (write proceeds; totals heterogeneous)
+  but fails closed on the insert path, where extension is mandatory.
 - Write via `updateRange` (USER_ENTERED), one row, band columns only:
   - JPY entry: `[date, shop, item, paymentMethod, jpy, twdFormula, roundFormula]`
     where the two formulas adapt the previous data row's (via
