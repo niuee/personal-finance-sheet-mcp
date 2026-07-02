@@ -101,9 +101,12 @@ Backward compatible.
 Anchor-based and fail-closed. If a tool cannot find its anchor — the month
 tab, the `花費總額` row, the category label/cell, the trip block header — it
 returns a descriptive tool error naming exactly what it searched for and
-**writes nothing**. Multi-step writes are single `batchUpdate` calls, so
-there are no partial states. `start_month` refuses to overwrite an existing
-tab.
+**writes nothing** — all validation happens before the first write call.
+`add_expense` performs its insert + cell writes + category-formula update in
+one atomic `batchUpdate` (no partial states). `start_month` is inherently
+sequential (duplicate → rewire/clear → scrub `#REF!`s); each step leaves the
+sheet in an inspectable, recoverable state, and it refuses to overwrite an
+existing tab.
 
 ### 5. Testing
 
