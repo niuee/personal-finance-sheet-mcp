@@ -1,10 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
-	CATEGORIES,
 	CONVENTIONS_TEXT,
 	currentMonthTab,
 	dateSerial,
-	DEFAULT_CATEGORY,
 	KNOWN_TAGS,
 	MONTH_COLS,
 	monthTabName,
@@ -51,13 +49,6 @@ describe("conventions", () => {
 		expect(previousMonth(10)).toBe(9);
 	});
 
-	it("maps short category names to the exact sheet labels", () => {
-		expect(CATEGORIES["訂閱費"]).toBe("訂閱費");
-		expect(CATEGORIES["交通中餐雜支"]).toBe("交通中餐等等雜支");
-		expect(CATEGORIES["額外雜支"]).toBe("本月額外雜支");
-		expect(CATEGORIES[DEFAULT_CATEGORY]).toBeDefined();
-	});
-
 	it("knows the recurring items and the total-row anchor", () => {
 		expect(TOTAL_ROW_LABEL).toBe("花費總額");
 		for (const item of ["Google Cloud", "Netflix", "電話費", "上月透支", "Claude"]) {
@@ -83,8 +74,6 @@ describe("conventions", () => {
 			twd: 4,
 			totalLabel: 3,
 			totalValue: 4,
-			categoryLabel: 6,
-			categoryFormula: 7,
 			budgetLabel: 1,
 			budgetValue: 3,
 		});
