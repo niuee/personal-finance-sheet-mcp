@@ -11,6 +11,7 @@ import {
 	MONTH_COLS,
 	monthTabName,
 	OVERDRAFT_LABEL,
+	parseDateInput,
 	previousMonth,
 	RECURRING_ITEMS,
 	REMAINDER_LABEL,
@@ -116,6 +117,8 @@ export interface AddExpenseParams {
 	currency: "TWD" | "USD";
 	category?: string;
 	month?: number;
+	/** M/D, MM/DD, YYYY/M/D, or YYYY-MM-DD; omitted = leave the 日期 cell blank. */
+	date?: string;
 }
 
 export async function addExpense(client: SheetsClient, p: AddExpenseParams) {
@@ -125,6 +128,8 @@ export async function addExpense(client: SheetsClient, p: AddExpenseParams) {
 	if (!categoryLabel) {
 		throw new Error(`Unknown category "${p.category}". Valid categories: ${Object.keys(CATEGORIES).join(", ")}`);
 	}
+	// Parse before any read/write so a bad date fails closed.
+	const dateSerialValue = p.date !== undefined ? parseDateInput(p.date) : null;
 
 	const { values, truncated } = await client.readRange(`${quoteTab(tab)}!${GRID_READ}`, "FORMULA");
 	assertNotTruncated(truncated, tab, GRID_READ);
@@ -190,6 +195,24 @@ export async function addExpense(client: SheetsClient, p: AddExpenseParams) {
 			fields: "userEnteredValue",
 		},
 	});
+	if (dateSerialValue !== null) {
+		requests.push({
+			updateCells: {
+				start: { sheetId, rowIndex: targetRow - 1, columnIndex: MONTH_COLS.date },
+				rows: [
+					{
+						values: [
+							{
+								userEnteredValue: { numberValue: dateSerialValue },
+								userEnteredFormat: { numberFormat: { type: "DATE", pattern: "mm/dd" } },
+							},
+						],
+					},
+				],
+				fields: "userEnteredValue,userEnteredFormat.numberFormat",
+			},
+		});
+	}
 
 	// The formula was read pre-insert; if we inserted, refs at/below the insert point shifted.
 	const baseFormula = inserted ? adjustColumnRefsForInsert(categoryFormula, TWD_COL, targetRow) : categoryFormula;
@@ -213,6 +236,7 @@ export async function addExpense(client: SheetsClient, p: AddExpenseParams) {
 		currency: p.currency,
 		category: categoryKey,
 		categoryFormula: newCategoryFormula,
+		date: p.date ?? null,
 	};
 }
 

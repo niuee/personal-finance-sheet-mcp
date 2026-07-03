@@ -247,6 +247,52 @@ describe("addExpense", () => {
 		expect(result).toMatchObject({ row: 5, inserted: true });
 	});
 
+	it("writes the date as a real date serial with mm/dd format when given", async () => {
+		const client = fakeClient(monthGrid());
+
+		const result = await addExpense(client, { item: "晚餐", amount: 250, currency: "TWD", month: 9, date: "2026/09/02" });
+
+		const requests = (client.batchUpdate as any).mock.calls[0][0];
+		expect(requests).toHaveLength(3);
+		expect(requests[1]).toEqual({
+			updateCells: {
+				start: { sheetId: 111, rowIndex: 8, columnIndex: 0 },
+				rows: [
+					{
+						values: [
+							{
+								userEnteredValue: { numberValue: 46267 },
+								userEnteredFormat: { numberFormat: { type: "DATE", pattern: "mm/dd" } },
+							},
+						],
+					},
+				],
+				fields: "userEnteredValue,userEnteredFormat.numberFormat",
+			},
+		});
+		expect(result).toMatchObject({ row: 9, date: "2026/09/02" });
+	});
+
+	it("leaves the date cell untouched when date is omitted", async () => {
+		const client = fakeClient(monthGrid());
+
+		const result = await addExpense(client, { item: "晚餐", amount: 250, currency: "TWD", month: 9 });
+
+		const requests = (client.batchUpdate as any).mock.calls[0][0];
+		expect(requests).toHaveLength(2);
+		expect(requests.every((r: any) => r.updateCells.start.columnIndex !== 0)).toBe(true);
+		expect(result).toMatchObject({ date: null });
+	});
+
+	it("rejects an invalid date before reading or writing anything", async () => {
+		const client = fakeClient(monthGrid());
+		await expect(
+			addExpense(client, { item: "x", amount: 1, currency: "TWD", month: 9, date: "not-a-date" }),
+		).rejects.toThrow("Unrecognized date");
+		expect((client.readRange as any).mock.calls.length).toBe(0);
+		expect((client.batchUpdate as any).mock.calls.length).toBe(0);
+	});
+
 	it("rejects unknown categories and missing anchors without writing", async () => {
 		const client = fakeClient(monthGrid());
 		await expect(addExpense(client, { item: "x", amount: 1, currency: "TWD", category: "咖啡", month: 9 })).rejects.toThrow(
