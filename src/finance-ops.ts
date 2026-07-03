@@ -284,6 +284,39 @@ export async function monthSummary(client: SheetsClient, month?: number) {
 	};
 }
 
+/** Probe window for the 類別 dropdown: row 3 is 上月透支, so scan a few rows deep. */
+const TAG_VALIDATION_ROWS = { start: 3, end: 15 } as const;
+
+/** The live 類別 tag list, read from the dropdown (data validation) on a monthly tab's 類別 column. */
+export async function getCategories(client: SheetsClient, month?: number) {
+	const tab = month !== undefined ? monthTabName(month) : currentMonthTab();
+	const rule = await client.getDataValidation(
+		tab,
+		TAG_VALIDATION_ROWS.start,
+		TAG_VALIDATION_ROWS.end,
+		colLetter(MONTH_COLS.tag),
+	);
+	if (!rule) {
+		throw new Error(
+			`No data validation found on the 類別 column of "${tab}" — the tab may predate the 類別 dropdown.`,
+		);
+	}
+	if (rule.type === "ONE_OF_LIST") {
+		return { tab, categories: [...new Set(rule.values)], source: "ONE_OF_LIST" as const };
+	}
+	if (rule.type === "ONE_OF_RANGE") {
+		const range = (rule.values[0] ?? "").replace(/^=/, "");
+		const { values } = await client.readRange(range);
+		const categories = [
+			...new Set(
+				values.flat().filter((v): v is string => typeof v === "string" && v.trim() !== ""),
+			),
+		];
+		return { tab, categories, source: "ONE_OF_RANGE" as const };
+	}
+	throw new Error(`類別 column validation on "${tab}" is ${rule.type}, not a dropdown list.`);
+}
+
 export async function startMonth(client: SheetsClient, month: number) {
 	const newTab = monthTabName(month);
 	const prevTab = monthTabName(previousMonth(month));
