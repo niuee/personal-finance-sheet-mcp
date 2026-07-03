@@ -6,6 +6,7 @@ import {
 	addTripEntry,
 	annotateRows,
 	findCells,
+	getCategories,
 	monthSummary,
 	safeUpdateRange,
 	startMonth,
@@ -137,7 +138,7 @@ export function registerTailoredTools(server: McpServer, client: SheetsClient): 
 				.min(1)
 				.optional()
 				.describe(
-					`The row's 類別 tag — usually one of ${KNOWN_TAGS.join(", ")} (free text, new tags allowed). Omit only if none fits.`,
+					`The row's 類別 tag — call get_categories for the live dropdown list (typically ${KNOWN_TAGS.join(", ")}). Free text, new tags allowed; omit only if none fits.`,
 				),
 			date: z
 				.string()
@@ -168,6 +169,19 @@ export function registerTailoredTools(server: McpServer, client: SheetsClient): 
 		async ({ month }) => {
 			try {
 				return ok(await monthSummary(client, month));
+			} catch (e) {
+				return toError(e);
+			}
+		},
+	);
+
+	server.tool(
+		"get_categories",
+		"List the canonical 類別 tags from the dropdown (data validation) on a monthly tab's 類別 column. Call this before add_expense when unsure which tag to use. Defaults to the current month.",
+		{ month: monthParam.optional().describe("Month 1-12 (default: current month)") },
+		async ({ month }) => {
+			try {
+				return ok(await getCategories(client, month));
 			} catch (e) {
 				return toError(e);
 			}

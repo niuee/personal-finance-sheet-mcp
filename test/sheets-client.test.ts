@@ -250,3 +250,102 @@ describe("SheetsClient generic additions", () => {
 		expect(fetchMock.mock.calls[2][0]).toBe(`${BASE}/values/A1?valueRenderOption=FORMULA`);
 	});
 });
+
+describe("SheetsClient.getDataValidation", () => {
+	it("requests only dataValidation fields for the probe range and extracts a ONE_OF_LIST rule", async () => {
+		const fetchMock = vi.fn<FetchMock>(async () =>
+			jsonResponse({
+				sheets: [
+					{
+						data: [
+							{
+								startRow: 2,
+								rowData: [
+									{}, // C3: no validation (recurring row)
+									{
+										values: [
+											{
+												dataValidation: {
+													condition: {
+														type: "ONE_OF_LIST",
+														values: [
+															{ userEnteredValue: "訂閱" },
+															{ userEnteredValue: "吃喝" },
+															{ userEnteredValue: "交通" },
+														],
+													},
+												},
+											},
+										],
+									},
+								],
+							},
+						],
+					},
+				],
+			}),
+		);
+		vi.stubGlobal("fetch", fetchMock);
+
+		const rule = await makeClient().getDataValidation("7 月", 3, 15, "C");
+
+		expect(fetchMock.mock.calls[0][0]).toBe(
+			`${BASE}?ranges=${encodeURIComponent("'7 月'!C3:C15")}&fields=sheets.data(startRow,rowData.values.dataValidation)`,
+		);
+		expect(rule).toEqual({ type: "ONE_OF_LIST", values: ["訂閱", "吃喝", "交通"] });
+	});
+
+	it("returns the range string for a ONE_OF_RANGE rule", async () => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn<FetchMock>(async () =>
+				jsonResponse({
+					sheets: [
+						{
+							data: [
+								{
+									startRow: 2,
+									rowData: [
+										{
+											values: [
+												{
+													dataValidation: {
+														condition: {
+															type: "ONE_OF_RANGE",
+															values: [{ userEnteredValue: "=Settings!A1:A20" }],
+														},
+													},
+												},
+											],
+										},
+									],
+								},
+							],
+						},
+					],
+				}),
+			),
+		);
+
+		const rule = await makeClient().getDataValidation("7 月", 3, 15, "C");
+
+		expect(rule).toEqual({ type: "ONE_OF_RANGE", values: ["=Settings!A1:A20"] });
+	});
+
+	it("returns null when no cell in the window has a rule", async () => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn<FetchMock>(async () =>
+				jsonResponse({ sheets: [{ data: [{ startRow: 2, rowData: [{}, { values: [{}] }] }] }] }),
+			),
+		);
+
+		expect(await makeClient().getDataValidation("6 月", 3, 15, "C")).toBeNull();
+	});
+
+	it("returns null when the response has no grid data at all", async () => {
+		vi.stubGlobal("fetch", vi.fn<FetchMock>(async () => jsonResponse({})));
+
+		expect(await makeClient().getDataValidation("6 月", 3, 15, "C")).toBeNull();
+	});
+});

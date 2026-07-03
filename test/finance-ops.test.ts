@@ -13,12 +13,14 @@ import {
 	FIND_CELLS_CAP,
 	findRowByValue,
 	findTripBlocks,
+	getCategories,
 	monthSummary,
 	safeUpdateRange,
 	spliceIntoSum,
 	startMonth,
 	stripRefErrors,
 } from "../src/finance-ops";
+import { currentMonthTab } from "../src/conventions";
 import type { SheetsClient } from "../src/sheets-client";
 
 describe("formula surgery", () => {
@@ -998,5 +1000,71 @@ describe("findCells", () => {
 
 		expect(result.matches).toEqual([]);
 		expect(result.truncated).toBe(true);
+	});
+});
+
+describe("getCategories", () => {
+	function validationClient(rule: { type: string; values: string[] } | null, rangeValues?: unknown[][]) {
+		return {
+			getDataValidation: vi.fn(async () => rule),
+			readRange: vi.fn(async () => ({ range: "x", values: rangeValues ?? [], truncated: false })),
+		} as unknown as SheetsClient;
+	}
+
+	it("returns deduped ONE_OF_LIST values from the 類別 column probe", async () => {
+		const client = validationClient({
+			type: "ONE_OF_LIST",
+			values: ["訂閱", "吃喝", "交通", "吃喝"],
+		});
+
+		const result = await getCategories(client, 7);
+
+		expect((client.getDataValidation as any).mock.calls[0]).toEqual(["7 月", 3, 15, "C"]);
+		expect(result).toEqual({ tab: "7 月", categories: ["訂閱", "吃喝", "交通"], source: "ONE_OF_LIST" });
+		expect(client.readRange).not.toHaveBeenCalled();
+	});
+
+	it("follows a ONE_OF_RANGE rule and flattens non-empty string cells", async () => {
+		const client = validationClient({ type: "ONE_OF_RANGE", values: ["=Settings!A1:A20"] }, [
+			["訂閱"],
+			["吃喝"],
+			[""],
+			["吃喝"],
+			[42],
+			["生活用品"],
+		]);
+
+		const result = await getCategories(client, 7);
+
+		expect((client.readRange as any).mock.calls[0]).toEqual(["Settings!A1:A20"]);
+		expect(result).toEqual({
+			tab: "7 月",
+			categories: ["訂閱", "吃喝", "生活用品"],
+			source: "ONE_OF_RANGE",
+		});
+	});
+
+	it("throws a tab-naming error when no rule exists", async () => {
+		const client = validationClient(null);
+
+		await expect(getCategories(client, 6)).rejects.toThrow(
+			'No data validation found on the 類別 column of "6 月" — the tab may predate the 類別 dropdown.',
+		);
+	});
+
+	it("throws on a rule type that is not a dropdown", async () => {
+		const client = validationClient({ type: "NUMBER_GREATER", values: ["0"] });
+
+		await expect(getCategories(client, 7)).rejects.toThrow(
+			'類別 column validation on "7 月" is NUMBER_GREATER, not a dropdown list.',
+		);
+	});
+
+	it("defaults to the current Taipei month when month is omitted", async () => {
+		const client = validationClient({ type: "ONE_OF_LIST", values: ["訂閱"] });
+
+		const result = await getCategories(client);
+
+		expect(result.tab).toBe(currentMonthTab());
 	});
 });
