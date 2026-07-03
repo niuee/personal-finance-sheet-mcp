@@ -316,6 +316,23 @@ export async function startMonth(client: SheetsClient, month: number) {
 		});
 	}
 
+	// The date column restarts each month — clear it across the expense window.
+	if (totalRow > 3) {
+		requests.push({
+			repeatCell: {
+				range: {
+					sheetId,
+					startRowIndex: 2,
+					endRowIndex: totalRow - 1,
+					startColumnIndex: MONTH_COLS.date,
+					endColumnIndex: MONTH_COLS.date + 1,
+				},
+				cell: {},
+				fields: "userEnteredValue",
+			},
+		});
+	}
+
 	const kept: string[] = [];
 	const cleared: string[] = [];
 	const rowsToDelete: number[] = [];

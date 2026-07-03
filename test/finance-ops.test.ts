@@ -410,8 +410,16 @@ describe("startMonth", () => {
 				fields: "userEnteredValue",
 			},
 		});
-		// 近鐵 80000系 (row 8) is the only non-recurring item in the fixture
+		// fixture totalRow is 11 → the clear covers rows 3-10 (0-indexed 2..10 exclusive)
 		expect(requests[2]).toEqual({
+			repeatCell: {
+				range: { sheetId: 555, startRowIndex: 2, endRowIndex: 10, startColumnIndex: 0, endColumnIndex: 1 },
+				cell: {},
+				fields: "userEnteredValue",
+			},
+		});
+		// 近鐵 80000系 (row 8) is the only non-recurring item in the fixture
+		expect(requests[3]).toEqual({
 			deleteDimension: { range: { sheetId: 555, dimension: "ROWS", startIndex: 7, endIndex: 8 } },
 		});
 		expect(result).toEqual({
