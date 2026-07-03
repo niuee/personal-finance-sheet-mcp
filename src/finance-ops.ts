@@ -8,8 +8,10 @@ import {
 	CATEGORIES,
 	currentMonthTab,
 	DEFAULT_CATEGORY,
+	MONTH_COLS,
 	monthTabName,
 	OVERDRAFT_LABEL,
+	parseDateInput,
 	previousMonth,
 	RECURRING_ITEMS,
 	REMAINDER_LABEL,
@@ -91,7 +93,11 @@ export function colLetter(index0: number): string {
 }
 
 /** The window that contains every anchor a monthly tab needs. */
-export const GRID_READ = "A1:F60";
+export const GRID_READ = "A1:H60";
+
+const USD_COL = colLetter(MONTH_COLS.usd);
+const TWD_COL = colLetter(MONTH_COLS.twd);
+const EXPENSE_WINDOW_RE = new RegExp(`^=SUM\\(${TWD_COL}(\\d+):${TWD_COL}(\\d+)\\)$`, "i");
 
 export function quoteTab(tab: string): string {
 	return `'${tab.replace(/'/g, "''")}'`;
@@ -111,6 +117,8 @@ export interface AddExpenseParams {
 	currency: "TWD" | "USD";
 	category?: string;
 	month?: number;
+	/** M/D, MM/DD, YYYY/M/D, or YYYY-MM-DD; omitted = leave the 日期 cell blank. */
+	date?: string;
 }
 
 export async function addExpense(client: SheetsClient, p: AddExpenseParams) {
@@ -120,28 +128,34 @@ export async function addExpense(client: SheetsClient, p: AddExpenseParams) {
 	if (!categoryLabel) {
 		throw new Error(`Unknown category "${p.category}". Valid categories: ${Object.keys(CATEGORIES).join(", ")}`);
 	}
+	// Parse before any read/write so a bad date fails closed.
+	const dateSerialValue = p.date !== undefined ? parseDateInput(p.date) : null;
 
 	const { values, truncated } = await client.readRange(`${quoteTab(tab)}!${GRID_READ}`, "FORMULA");
 	assertNotTruncated(truncated, tab, GRID_READ);
 
-	const totalRow = findRowByValue(values, 1, TOTAL_ROW_LABEL);
+	const totalRow = findRowByValue(values, MONTH_COLS.totalLabel, TOTAL_ROW_LABEL);
 	if (totalRow === null) {
-		throw new Error(`Could not find the "${TOTAL_ROW_LABEL}" row in ${tab} (searched column B of ${GRID_READ}).`);
+		throw new Error(
+			`Could not find the "${TOTAL_ROW_LABEL}" row in ${tab} (searched column ${colLetter(MONTH_COLS.totalLabel)} of ${GRID_READ}).`,
+		);
 	}
-	const totalFormula = String(values[totalRow - 1]?.[2] ?? "");
-	const windowMatch = totalFormula.match(/^=SUM\(C(\d+):C(\d+)\)$/i);
+	const totalFormula = String(values[totalRow - 1]?.[MONTH_COLS.totalValue] ?? "");
+	const windowMatch = totalFormula.match(EXPENSE_WINDOW_RE);
 	if (!windowMatch) {
 		throw new Error(
-			`The "${TOTAL_ROW_LABEL}" cell C${totalRow} in ${tab} is not a plain =SUM(Cstart:Cend) formula (got "${totalFormula}") — cannot locate the expense window safely.`,
+			`The "${TOTAL_ROW_LABEL}" cell ${TWD_COL}${totalRow} in ${tab} is not a plain =SUM(${TWD_COL}start:${TWD_COL}end) formula (got "${totalFormula}") — cannot locate the expense window safely.`,
 		);
 	}
 	const windowStart = Number(windowMatch[1]);
 	const windowEnd = Number(windowMatch[2]);
-	const categoryRow = findRowByValue(values, 4, categoryLabel);
+	const categoryRow = findRowByValue(values, MONTH_COLS.categoryLabel, categoryLabel);
 	if (categoryRow === null) {
-		throw new Error(`Could not find the category label "${categoryLabel}" in column E of ${tab}.`);
+		throw new Error(
+			`Could not find the category label "${categoryLabel}" in column ${colLetter(MONTH_COLS.categoryLabel)} of ${tab}.`,
+		);
 	}
-	const categoryFormula = String(values[categoryRow - 1]?.[5] ?? "");
+	const categoryFormula = String(values[categoryRow - 1]?.[MONTH_COLS.categoryFormula] ?? "");
 
 	// First fully-empty row inside the SUM window (and above the total row).
 	let targetRow: number | null = null;
@@ -172,23 +186,41 @@ export async function addExpense(client: SheetsClient, p: AddExpenseParams) {
 
 	const rowCells =
 		p.currency === "USD"
-			? [cellData(p.item), cellData(p.amount), cellData(`=B${targetRow}*GOOGLEFINANCE("CURRENCY:USDTWD")`)]
+			? [cellData(p.item), cellData(p.amount), cellData(`=${USD_COL}${targetRow}*GOOGLEFINANCE("CURRENCY:USDTWD")`)]
 			: [cellData(p.item), cellData(null), cellData(p.amount)];
 	requests.push({
 		updateCells: {
-			start: { sheetId, rowIndex: targetRow - 1, columnIndex: 0 },
+			start: { sheetId, rowIndex: targetRow - 1, columnIndex: MONTH_COLS.item },
 			rows: [{ values: rowCells }],
 			fields: "userEnteredValue",
 		},
 	});
+	if (dateSerialValue !== null) {
+		requests.push({
+			updateCells: {
+				start: { sheetId, rowIndex: targetRow - 1, columnIndex: MONTH_COLS.date },
+				rows: [
+					{
+						values: [
+							{
+								userEnteredValue: { numberValue: dateSerialValue },
+								userEnteredFormat: { numberFormat: { type: "DATE", pattern: "mm/dd" } },
+							},
+						],
+					},
+				],
+				fields: "userEnteredValue,userEnteredFormat.numberFormat",
+			},
+		});
+	}
 
 	// The formula was read pre-insert; if we inserted, refs at/below the insert point shifted.
-	const baseFormula = inserted ? adjustColumnRefsForInsert(categoryFormula, "C", targetRow) : categoryFormula;
+	const baseFormula = inserted ? adjustColumnRefsForInsert(categoryFormula, TWD_COL, targetRow) : categoryFormula;
 	const categoryRowFinal = inserted && categoryRow >= targetRow ? categoryRow + 1 : categoryRow;
-	const newCategoryFormula = spliceIntoSum(baseFormula, `C${targetRow}`);
+	const newCategoryFormula = spliceIntoSum(baseFormula, `${TWD_COL}${targetRow}`);
 	requests.push({
 		updateCells: {
-			start: { sheetId, rowIndex: categoryRowFinal - 1, columnIndex: 5 },
+			start: { sheetId, rowIndex: categoryRowFinal - 1, columnIndex: MONTH_COLS.categoryFormula },
 			rows: [{ values: [cellData(newCategoryFormula)] }],
 			fields: "userEnteredValue",
 		},
@@ -204,6 +236,7 @@ export async function addExpense(client: SheetsClient, p: AddExpenseParams) {
 		currency: p.currency,
 		category: categoryKey,
 		categoryFormula: newCategoryFormula,
+		date: p.date ?? null,
 	};
 }
 
@@ -215,22 +248,22 @@ export async function monthSummary(client: SheetsClient, month?: number) {
 	const num = (v: unknown): number | null => (typeof v === "number" ? v : null);
 	const cellAt = (row: number | null, col: number): number | null =>
 		row === null ? null : num(values[row - 1]?.[col]);
-	const rowByA = (label: string) => findRowByValue(values, 0, label);
+	const rowByItem = (label: string) => findRowByValue(values, MONTH_COLS.item, label);
 
 	const categories: Record<string, number | null> = {};
 	for (const [key, label] of Object.entries(CATEGORIES)) {
-		categories[key] = cellAt(findRowByValue(values, 4, label), 5);
+		categories[key] = cellAt(findRowByValue(values, MONTH_COLS.categoryLabel, label), MONTH_COLS.categoryFormula);
 	}
 
 	return {
 		tab,
-		花費總額: cellAt(findRowByValue(values, 1, TOTAL_ROW_LABEL), 2),
-		上月透支: cellAt(rowByA(OVERDRAFT_LABEL), 2),
+		花費總額: cellAt(findRowByValue(values, MONTH_COLS.totalLabel, TOTAL_ROW_LABEL), MONTH_COLS.totalValue),
+		上月透支: cellAt(rowByItem(OVERDRAFT_LABEL), MONTH_COLS.twd),
 		categories,
-		薪水: cellAt(rowByA(SALARY_LABEL), 1),
-		沛還: cellAt(rowByA(REPAYMENT_LABEL), 1),
-		剩餘: cellAt(rowByA(REMAINDER_LABEL), 1),
-		美金支付: cellAt(rowByA(USD_PAYMENT_LABEL), 1),
+		薪水: cellAt(rowByItem(SALARY_LABEL), MONTH_COLS.budgetValue),
+		沛還: cellAt(rowByItem(REPAYMENT_LABEL), MONTH_COLS.budgetValue),
+		剩餘: cellAt(rowByItem(REMAINDER_LABEL), MONTH_COLS.budgetValue),
+		美金支付: cellAt(rowByItem(USD_PAYMENT_LABEL), MONTH_COLS.budgetValue),
 	};
 }
 
@@ -255,7 +288,7 @@ export async function startMonth(client: SheetsClient, month: number) {
 
 	const { values, truncated } = await client.readRange(`${quoteTab(newTab)}!${GRID_READ}`, "FORMULA");
 	assertNotTruncated(truncated, newTab, GRID_READ);
-	const totalRow = findRowByValue(values, 1, TOTAL_ROW_LABEL);
+	const totalRow = findRowByValue(values, MONTH_COLS.totalLabel, TOTAL_ROW_LABEL);
 	if (totalRow === null) {
 		throw new Error(`Could not find the "${TOTAL_ROW_LABEL}" row in the duplicated tab ${newTab}.`);
 	}
@@ -270,14 +303,31 @@ export async function startMonth(client: SheetsClient, month: number) {
 		},
 	];
 
-	const overdraftRow = findRowByValue(values, 0, OVERDRAFT_LABEL);
+	const overdraftRow = findRowByValue(values, MONTH_COLS.item, OVERDRAFT_LABEL);
 	if (overdraftRow !== null) {
-		const formula = String(values[overdraftRow - 1]?.[2] ?? "");
+		const formula = String(values[overdraftRow - 1]?.[MONTH_COLS.twd] ?? "");
 		const rewired = formula.replace(/'\d+ 月'/g, `'${prevTab}'`);
 		requests.push({
 			updateCells: {
-				start: { sheetId, rowIndex: overdraftRow - 1, columnIndex: 2 },
+				start: { sheetId, rowIndex: overdraftRow - 1, columnIndex: MONTH_COLS.twd },
 				rows: [{ values: [cellData(rewired)] }],
+				fields: "userEnteredValue",
+			},
+		});
+	}
+
+	// The date column restarts each month — clear it across the expense window.
+	if (totalRow > 3) {
+		requests.push({
+			repeatCell: {
+				range: {
+					sheetId,
+					startRowIndex: 2,
+					endRowIndex: totalRow - 1,
+					startColumnIndex: MONTH_COLS.date,
+					endColumnIndex: MONTH_COLS.date + 1,
+				},
+				cell: {},
 				fields: "userEnteredValue",
 			},
 		});
@@ -287,7 +337,7 @@ export async function startMonth(client: SheetsClient, month: number) {
 	const cleared: string[] = [];
 	const rowsToDelete: number[] = [];
 	for (let r = 3; r < totalRow; r++) {
-		const item = String(values[r - 1]?.[0] ?? "").trim();
+		const item = String(values[r - 1]?.[MONTH_COLS.item] ?? "").trim();
 		if (item === "") continue;
 		if (RECURRING_ITEMS.has(item)) kept.push(item);
 		else {
@@ -312,13 +362,13 @@ export async function startMonth(client: SheetsClient, month: number) {
 		assertNotTruncated(afterTruncated, newTab, GRID_READ);
 		const fixes: object[] = [];
 		for (const label of Object.values(CATEGORIES)) {
-			const r = findRowByValue(afterValues, 4, label);
+			const r = findRowByValue(afterValues, MONTH_COLS.categoryLabel, label);
 			if (r === null) continue;
-			const formula = String(afterValues[r - 1]?.[5] ?? "");
+			const formula = String(afterValues[r - 1]?.[MONTH_COLS.categoryFormula] ?? "");
 			if (formula.includes("#REF!")) {
 				fixes.push({
 					updateCells: {
-						start: { sheetId, rowIndex: r - 1, columnIndex: 5 },
+						start: { sheetId, rowIndex: r - 1, columnIndex: MONTH_COLS.categoryFormula },
 						rows: [{ values: [cellData(stripRefErrors(formula))] }],
 						fields: "userEnteredValue",
 					},

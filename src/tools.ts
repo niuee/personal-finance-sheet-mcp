@@ -132,6 +132,13 @@ export function registerTailoredTools(server: McpServer, client: SheetsClient): 
 			item: z.string().min(1).describe("Expense name, e.g. 晚餐 or Netflix"),
 			amount: z.number().describe("The amount, in the given currency"),
 			currency: z.enum(["TWD", "USD"]),
+			date: z
+				.string()
+				.min(1)
+				.optional()
+				.describe(
+					"Expense date: M/D, MM/DD, or YYYY-MM-DD (year defaults to the current Taipei year). Omit to leave the 日期 cell blank, like recurring rows.",
+				),
 			category: z
 				.enum(Object.keys(CATEGORIES) as [string, ...string[]])
 				.optional()
