@@ -119,6 +119,8 @@ export interface AddExpenseParams {
 	month?: number;
 	/** M/D, MM/DD, YYYY/M/D, or YYYY-MM-DD; omitted = leave the 日期 cell blank. */
 	date?: string;
+	/** Per-row 類別 tag written into column C; omitted = leave the cell blank. */
+	tag?: string;
 }
 
 export async function addExpense(client: SheetsClient, p: AddExpenseParams) {
@@ -184,10 +186,11 @@ export async function addExpense(client: SheetsClient, p: AddExpenseParams) {
 		});
 	}
 
+	const tagCell = cellData(p.tag ?? null);
 	const rowCells =
 		p.currency === "USD"
-			? [cellData(p.item), cellData(p.amount), cellData(`=${USD_COL}${targetRow}*GOOGLEFINANCE("CURRENCY:USDTWD")`)]
-			: [cellData(p.item), cellData(null), cellData(p.amount)];
+			? [cellData(p.item), tagCell, cellData(p.amount), cellData(`=${USD_COL}${targetRow}*GOOGLEFINANCE("CURRENCY:USDTWD")`)]
+			: [cellData(p.item), tagCell, cellData(null), cellData(p.amount)];
 	requests.push({
 		updateCells: {
 			start: { sheetId, rowIndex: targetRow - 1, columnIndex: MONTH_COLS.item },
@@ -237,6 +240,7 @@ export async function addExpense(client: SheetsClient, p: AddExpenseParams) {
 		category: categoryKey,
 		categoryFormula: newCategoryFormula,
 		date: p.date ?? null,
+		tag: p.tag ?? null,
 	};
 }
 
@@ -255,11 +259,24 @@ export async function monthSummary(client: SheetsClient, month?: number) {
 		categories[key] = cellAt(findRowByValue(values, MONTH_COLS.categoryLabel, label), MONTH_COLS.categoryFormula);
 	}
 
+	// Per-row 類別 breakdown: sum the TWD column by tag across the expense window.
+	const totalRow = findRowByValue(values, MONTH_COLS.totalLabel, TOTAL_ROW_LABEL);
+	const tags: Record<string, number> = {};
+	if (totalRow !== null) {
+		for (let r = 3; r < totalRow; r++) {
+			const tag = String(values[r - 1]?.[MONTH_COLS.tag] ?? "").trim();
+			const twd = num(values[r - 1]?.[MONTH_COLS.twd]);
+			if (tag === "" || twd === null) continue;
+			tags[tag] = (tags[tag] ?? 0) + twd;
+		}
+	}
+
 	return {
 		tab,
-		花費總額: cellAt(findRowByValue(values, MONTH_COLS.totalLabel, TOTAL_ROW_LABEL), MONTH_COLS.totalValue),
+		花費總額: cellAt(totalRow, MONTH_COLS.totalValue),
 		上月透支: cellAt(rowByItem(OVERDRAFT_LABEL), MONTH_COLS.twd),
 		categories,
+		tags,
 		薪水: cellAt(rowByItem(SALARY_LABEL), MONTH_COLS.budgetValue),
 		沛還: cellAt(rowByItem(REPAYMENT_LABEL), MONTH_COLS.budgetValue),
 		剩餘: cellAt(rowByItem(REMAINDER_LABEL), MONTH_COLS.budgetValue),

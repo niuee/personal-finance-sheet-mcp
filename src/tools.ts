@@ -1,6 +1,6 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { CATEGORIES, CONVENTIONS_TEXT, DEFAULT_CATEGORY } from "./conventions";
+import { CATEGORIES, CONVENTIONS_TEXT, DEFAULT_CATEGORY, KNOWN_TAGS } from "./conventions";
 import {
 	addExpense,
 	addTripEntry,
@@ -127,11 +127,18 @@ const monthParam = z.number().int().min(1).max(12);
 export function registerTailoredTools(server: McpServer, client: SheetsClient): void {
 	server.tool(
 		"add_expense",
-		"Log an expense into a monthly tab (defaults to the current month). Writes into the expense window so 花費總額 picks it up, converts USD via GOOGLEFINANCE, and adds the entry to the chosen category's sum formula. Use this instead of append_rows/update_range for monthly expenses.",
+		"Log an expense into a monthly tab (defaults to the current month). Writes into the expense window so 花費總額 picks it up, converts USD via GOOGLEFINANCE, tags the row's 類別 cell, and adds the entry to the chosen summary category's sum formula. Use this instead of append_rows/update_range for monthly expenses.",
 		{
 			item: z.string().min(1).describe("Expense name, e.g. 晚餐 or Netflix"),
 			amount: z.number().describe("The amount, in the given currency"),
 			currency: z.enum(["TWD", "USD"]),
+			tag: z
+				.string()
+				.min(1)
+				.optional()
+				.describe(
+					`The row's 類別 tag — usually one of ${KNOWN_TAGS.join(", ")} (free text, new tags allowed). Omit only if none fits.`,
+				),
 			date: z
 				.string()
 				.min(1)
@@ -156,7 +163,7 @@ export function registerTailoredTools(server: McpServer, client: SheetsClient): 
 
 	server.tool(
 		"month_summary",
-		"Get a month's numbers as clean JSON (unformatted): 花費總額, 上月透支, category totals, 薪水, 沛還, 剩餘, 美金支付. Defaults to the current month. Fields the sheet doesn't have yet come back null.",
+		"Get a month's numbers as clean JSON (unformatted): 花費總額, 上月透支, summary category totals, per-類別 tag totals, 薪水, 沛還, 剩餘, 美金支付. Defaults to the current month. Fields the sheet doesn't have yet come back null.",
 		{ month: monthParam.optional().describe("Month 1-12 (default: current month)") },
 		async ({ month }) => {
 			try {

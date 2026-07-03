@@ -5,6 +5,7 @@ import {
 	currentMonthTab,
 	dateSerial,
 	DEFAULT_CATEGORY,
+	KNOWN_TAGS,
 	MONTH_COLS,
 	monthTabName,
 	parseDateInput,
@@ -73,19 +74,26 @@ describe("conventions", () => {
 		expect(USD_PAYMENT_LABEL).toBe("美金支付");
 	});
 
-	it("maps the monthly-tab columns (date-column layout)", () => {
+	it("maps the monthly-tab columns (類別-column layout)", () => {
 		expect(MONTH_COLS).toEqual({
 			date: 0,
 			item: 1,
-			usd: 2,
-			twd: 3,
-			totalLabel: 2,
-			totalValue: 3,
-			categoryLabel: 5,
-			categoryFormula: 6,
+			tag: 2,
+			usd: 3,
+			twd: 4,
+			totalLabel: 3,
+			totalValue: 4,
+			categoryLabel: 6,
+			categoryFormula: 7,
 			budgetLabel: 1,
-			budgetValue: 2,
+			budgetValue: 3,
 		});
+	});
+
+	it("documents the 類別 tags seen in the sheet", () => {
+		for (const tag of ["訂閱", "吃喝", "交通", "生活用品", "娛樂", "購物", "其他", "透支"]) {
+			expect(KNOWN_TAGS).toContain(tag);
+		}
 	});
 
 	it("converts calendar dates to Sheets serials", () => {
@@ -128,6 +136,7 @@ describe("conventions", () => {
 			"find_cells",
 			"expect_empty",
 			"日期",
+			"類別",
 			"新臺幣支付",
 		]) {
 			expect(CONVENTIONS_TEXT).toContain(needle);

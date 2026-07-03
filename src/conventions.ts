@@ -16,6 +16,9 @@ export const CATEGORIES: Record<string, string> = {
 
 export const DEFAULT_CATEGORY = "額外雜支";
 
+/** 類別 tags seen in the sheet's column C. Documentation, not validation — the cell is free text. */
+export const KNOWN_TAGS = ["訂閱", "吃喝", "交通", "生活用品", "娛樂", "購物", "其他", "透支"] as const;
+
 /** Column-A anchor labels for the budget/income section (values in the adjacent column). */
 export const OVERDRAFT_LABEL = "上月透支";
 export const SALARY_LABEL = "薪水";
@@ -56,28 +59,30 @@ export function monthTabName(month: number): string {
 /** The sheet's months follow Taipei time; Workers run in UTC. */
 export const SHEET_TIMEZONE = "Asia/Taipei";
 
-/** 0-indexed columns of a monthly tab (a 日期 column was inserted as column A in 2026-07). */
+/** 0-indexed columns of a monthly tab (日期 column added as A in 2026-07, 類別 column as C shortly after). */
 export const MONTH_COLS = {
 	/** A — 日期, a real date displayed mm/dd; blank on recurring rows. */
 	date: 0,
 	/** B — 項目 (also where 上月透支 and the budget-block labels live). */
 	item: 1,
-	/** C — 美金 (USD). */
-	usd: 2,
-	/** D — 新臺幣 (TWD). */
-	twd: 3,
-	/** C — the 花費總額 label. */
-	totalLabel: 2,
-	/** D — the 花費總額 =SUM window. */
-	totalValue: 3,
-	/** F — category labels (訂閱費 …). */
-	categoryLabel: 5,
-	/** G — category sum formulas. */
-	categoryFormula: 6,
+	/** C — 類別, the per-row tag (訂閱, 吃喝, …). */
+	tag: 2,
+	/** D — 美金 (USD). */
+	usd: 3,
+	/** E — 新臺幣 (TWD). */
+	twd: 4,
+	/** D — the 花費總額 label. */
+	totalLabel: 3,
+	/** E — the 花費總額 =SUM window. */
+	totalValue: 4,
+	/** G — summary category labels (訂閱費 …). */
+	categoryLabel: 6,
+	/** H — summary category sum formulas. */
+	categoryFormula: 7,
 	/** B — budget-block labels (沛還/薪水/剩餘/美金支付). */
 	budgetLabel: 1,
-	/** C — budget-block values. */
-	budgetValue: 2,
+	/** D — budget-block values. */
+	budgetValue: 3,
 } as const;
 
 /** Sheets date serial: days since 1899-12-30. */
@@ -129,13 +134,13 @@ export const TRIP_BLOCK_WIDTH = 8;
 
 export const CONVENTIONS_TEXT = `How this personal-finance spreadsheet is organized:
 
-MONTHLY TABS — named "N 月" (e.g. "9 月", with a space).
-- Header row 2: 日期 項目 美金 新臺幣. Expense list in columns A-D from row 3 down: A=日期 (a real date shown mm/dd; blank on recurring rows), B=item, C=美金 (USD), D=新臺幣 (TWD).
-- USD rows convert with D = C*GOOGLEFINANCE("CURRENCY:USDTWD").
-- The list ends at the "花費總額" row (label in column C, total in D, formula SUM over the window). New expenses must land INSIDE that window — write into an empty row above 花費總額, or insert a row inside the window so the SUM extends. Never append below 花費總額.
+MONTHLY TABS — named "N 月" (e.g. "9 月", with a space). Layout below applies from 7 月 2026 on; 6 月 and earlier lack the 類別 column.
+- Header row 2: 日期 項目 類別 美金 新臺幣. Expense list in columns A-E from row 3 down: A=日期 (a real date shown mm/dd; blank on recurring rows), B=item, C=類別 (per-row tag: 訂閱, 吃喝, 交通, 生活用品, 娛樂, 購物, 其他, 透支), D=美金 (USD), E=新臺幣 (TWD).
+- USD rows convert with E = D*GOOGLEFINANCE("CURRENCY:USDTWD").
+- The list ends at the "花費總額" row (label in column D, total in E, formula SUM over the window). New expenses must land INSIDE that window — write into an empty row above 花費總額, or insert a row inside the window so the SUM extends. Never append below 花費總額.
 - Row 3 "上月透支" carries last month's overdraft via a cross-tab formula.
-- Summary block, labels in column F / values in G: 訂閱費, 基本房租生活費 (fixed rent, not a sum), 交通中餐等等雜支, 本月額外雜支. The sums reference hand-picked cells (e.g. sum(D22,D3)) — adding an expense to a category means splicing its D-cell into that formula.
-- Below the list: 總預算 / 沛還 / 薪水 / 剩餘 / 美金支付 / 新臺幣支付 (labels in column B, values in column C).
+- Summary block, labels in column G / values in H: 訂閱費, 基本房租生活費 (fixed rent, not a sum), 交通中餐等等雜支, 本月額外雜支. The sums reference hand-picked cells (e.g. sum(E22,E3)) — adding an expense to a summary category means splicing its E-cell into that formula. This grouping is independent of the per-row 類別 tag.
+- Below the list: 總預算 / 沛還 / 薪水 / 剩餘 / 美金支付 / 新臺幣支付 (labels in column B, values in column D).
 
 TRIP TABS — e.g. "2026/07/25 京都東京".
 - A mosaic of category blocks in four column bands (A-G, I-O, Q-W, Z-AF), stacked vertically within each band.
