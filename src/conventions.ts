@@ -56,6 +56,56 @@ export function monthTabName(month: number): string {
 /** The sheet's months follow Taipei time; Workers run in UTC. */
 export const SHEET_TIMEZONE = "Asia/Taipei";
 
+/** 0-indexed columns of a monthly tab (a 日期 column was inserted as column A in 2026-07). */
+export const MONTH_COLS = {
+	/** A — 日期, a real date displayed mm/dd; blank on recurring rows. */
+	date: 0,
+	/** B — 項目 (also where 上月透支 and the budget-block labels live). */
+	item: 1,
+	/** C — 美金 (USD). */
+	usd: 2,
+	/** D — 新臺幣 (TWD). */
+	twd: 3,
+	/** C — the 花費總額 label. */
+	totalLabel: 2,
+	/** D — the 花費總額 =SUM window. */
+	totalValue: 3,
+	/** F — category labels (訂閱費 …). */
+	categoryLabel: 5,
+	/** G — category sum formulas. */
+	categoryFormula: 6,
+	/** B — budget-block labels (沛還/薪水/剩餘/美金支付). */
+	budgetLabel: 1,
+	/** C — budget-block values. */
+	budgetValue: 2,
+} as const;
+
+/** Sheets date serial: days since 1899-12-30. */
+export function dateSerial(year: number, month: number, day: number): number {
+	return Math.round((Date.UTC(year, month - 1, day) - Date.UTC(1899, 11, 30)) / 86_400_000);
+}
+
+const DATE_INPUT_RE = /^(?:(\d{4})[-/])?(\d{1,2})[-/](\d{1,2})$/;
+
+/** "M/D", "MM/DD", "YYYY/M/D", or "YYYY-MM-DD" → Sheets serial; a missing year means the current year in Taipei. */
+export function parseDateInput(input: string, now: Date = new Date()): number {
+	const m = input.trim().match(DATE_INPUT_RE);
+	if (!m) {
+		throw new Error(`Unrecognized date "${input}" (expected M/D, MM/DD, or YYYY-MM-DD).`);
+	}
+	const year =
+		m[1] !== undefined
+			? Number(m[1])
+			: Number(new Intl.DateTimeFormat("en-US", { timeZone: SHEET_TIMEZONE, year: "numeric" }).format(now));
+	const month = Number(m[2]);
+	const day = Number(m[3]);
+	const d = new Date(Date.UTC(year, month - 1, day));
+	if (d.getUTCFullYear() !== year || d.getUTCMonth() !== month - 1 || d.getUTCDate() !== day) {
+		throw new Error(`Invalid date "${input}".`);
+	}
+	return dateSerial(year, month, day);
+}
+
 export function currentMonthTab(now: Date = new Date()): string {
 	const month = Number(
 		new Intl.DateTimeFormat("en-US", { timeZone: SHEET_TIMEZONE, month: "numeric" }).format(now),
@@ -80,12 +130,12 @@ export const TRIP_BLOCK_WIDTH = 8;
 export const CONVENTIONS_TEXT = `How this personal-finance spreadsheet is organized:
 
 MONTHLY TABS — named "N 月" (e.g. "9 月", with a space).
-- Expense list in columns A-C from row 3 down: A=item, B=美金 (USD), C=新臺幣 (TWD).
-- USD rows convert with C = B*GOOGLEFINANCE("CURRENCY:USDTWD").
-- The list ends at the "花費總額" row (label in column B, total in C, formula SUM over the window). New expenses must land INSIDE that window — write into an empty row above 花費總額, or insert a row inside the window so the SUM extends. Never append below 花費總額.
+- Header row 2: 日期 項目 美金 新臺幣. Expense list in columns A-D from row 3 down: A=日期 (a real date shown mm/dd; blank on recurring rows), B=item, C=美金 (USD), D=新臺幣 (TWD).
+- USD rows convert with D = C*GOOGLEFINANCE("CURRENCY:USDTWD").
+- The list ends at the "花費總額" row (label in column C, total in D, formula SUM over the window). New expenses must land INSIDE that window — write into an empty row above 花費總額, or insert a row inside the window so the SUM extends. Never append below 花費總額.
 - Row 3 "上月透支" carries last month's overdraft via a cross-tab formula.
-- Summary block, labels in column E / values in F: 訂閱費, 基本房租生活費 (fixed rent, not a sum), 交通中餐等等雜支, 本月額外雜支. The sums reference hand-picked cells (e.g. sum(C22,C3)) — adding an expense to a category means splicing its C-cell into that formula.
-- Below the list: 總預算 / 沛還 / 薪水 / 剩餘 / 美金支付 (labels in column A, values in column B).
+- Summary block, labels in column F / values in G: 訂閱費, 基本房租生活費 (fixed rent, not a sum), 交通中餐等等雜支, 本月額外雜支. The sums reference hand-picked cells (e.g. sum(D22,D3)) — adding an expense to a category means splicing its D-cell into that formula.
+- Below the list: 總預算 / 沛還 / 薪水 / 剩餘 / 美金支付 / 新臺幣支付 (labels in column B, values in column C).
 
 TRIP TABS — e.g. "2026/07/25 京都東京".
 - A mosaic of category blocks in four column bands (A-G, I-O, Q-W, Z-AF), stacked vertically within each band.

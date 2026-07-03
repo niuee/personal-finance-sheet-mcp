@@ -3,8 +3,11 @@ import {
 	CATEGORIES,
 	CONVENTIONS_TEXT,
 	currentMonthTab,
+	dateSerial,
 	DEFAULT_CATEGORY,
+	MONTH_COLS,
 	monthTabName,
+	parseDateInput,
 	OVERDRAFT_LABEL,
 	previousMonth,
 	RECURRING_ITEMS,
@@ -70,6 +73,48 @@ describe("conventions", () => {
 		expect(USD_PAYMENT_LABEL).toBe("美金支付");
 	});
 
+	it("maps the monthly-tab columns (date-column layout)", () => {
+		expect(MONTH_COLS).toEqual({
+			date: 0,
+			item: 1,
+			usd: 2,
+			twd: 3,
+			totalLabel: 2,
+			totalValue: 3,
+			categoryLabel: 5,
+			categoryFormula: 6,
+			budgetLabel: 1,
+			budgetValue: 2,
+		});
+	});
+
+	it("converts calendar dates to Sheets serials", () => {
+		expect(dateSerial(1899, 12, 31)).toBe(1);
+		expect(dateSerial(2026, 7, 1)).toBe(46204); // matches the live sheet's 7月!A3
+	});
+
+	it("parses M/D input with the current Taipei year", () => {
+		const now = new Date("2026-07-02T12:00:00Z");
+		expect(parseDateInput("7/1", now)).toBe(46204);
+		expect(parseDateInput("07/01", now)).toBe(46204);
+	});
+
+	it("parses explicit years in slash and dash forms", () => {
+		expect(parseDateInput("2026/07/01")).toBe(46204);
+		expect(parseDateInput("2026-7-1")).toBe(46204);
+	});
+
+	it("resolves the default year in Taipei time across the UTC year boundary", () => {
+		// 2026-12-31T17:00:00Z is already 2027-01-01 01:00 in Taipei
+		expect(parseDateInput("1/1", new Date("2026-12-31T17:00:00Z"))).toBe(dateSerial(2027, 1, 1));
+	});
+
+	it("rejects unparseable and impossible dates", () => {
+		expect(() => parseDateInput("tomorrow")).toThrow("Unrecognized date");
+		expect(() => parseDateInput("13/40")).toThrow("Invalid date");
+		expect(() => parseDateInput("2026/02/30")).toThrow("Invalid date");
+	});
+
 	it("conventions text mentions the anchors Claude needs", () => {
 		for (const needle of [
 			"花費總額",
@@ -82,6 +127,8 @@ describe("conventions", () => {
 			"機票住宿",
 			"find_cells",
 			"expect_empty",
+			"日期",
+			"新臺幣支付",
 		]) {
 			expect(CONVENTIONS_TEXT).toContain(needle);
 		}
