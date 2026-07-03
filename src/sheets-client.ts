@@ -75,6 +75,36 @@ export class SheetsClient {
 		return `'${tab.replace(/'/g, "''")}'`;
 	}
 
+	/**
+	 * First data-validation rule found in the single-column window
+	 * `{col}{startRow}:{col}{endRow}` of `tab`, or null. For ONE_OF_LIST rules
+	 * `values` are the dropdown entries; for ONE_OF_RANGE (and anything else
+	 * with condition values) they are the raw userEnteredValue strings, e.g.
+	 * "=Settings!A1:A20".
+	 */
+	async getDataValidation(
+		tab: string,
+		startRow: number,
+		endRow: number,
+		col: string,
+	): Promise<{ type: string; values: string[] } | null> {
+		const range = `${this.quoteTab(tab)}!${col}${startRow}:${col}${endRow}`;
+		const data = await this.request(
+			`?ranges=${encodeURIComponent(range)}&fields=sheets.data(startRow,rowData.values.dataValidation)`,
+		);
+		for (const grid of data.sheets?.[0]?.data ?? []) {
+			for (const row of grid.rowData ?? []) {
+				const condition = row.values?.[0]?.dataValidation?.condition;
+				if (!condition?.type) continue;
+				const values = (condition.values ?? [])
+					.map((v: any) => v.userEnteredValue)
+					.filter((v: unknown): v is string => typeof v === "string");
+				return { type: condition.type, values };
+			}
+		}
+		return null;
+	}
+
 	async appendRows(tab: string, rows: unknown[][]): Promise<{ updatedRange: string; updatedRows: number }> {
 		const range = encodeURIComponent(`${this.quoteTab(tab)}!A1`);
 		const data = await this.request(
