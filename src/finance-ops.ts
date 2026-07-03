@@ -5,9 +5,7 @@
  */
 
 import {
-	CATEGORIES,
 	currentMonthTab,
-	DEFAULT_CATEGORY,
 	MONTH_COLS,
 	monthTabName,
 	OVERDRAFT_LABEL,
@@ -26,38 +24,6 @@ import {
 	USD_PAYMENT_LABEL,
 } from "./conventions";
 import type { SheetsClient } from "./sheets-client";
-
-const FLAT_SUM_RE =
-	/^=\s*sum\(\s*[A-Z]{1,3}\d+(?::[A-Z]{1,3}\d+)?(\s*,\s*[A-Z]{1,3}\d+(?::[A-Z]{1,3}\d+)?)*\s*\)$/i;
-
-/** Append a cell ref inside the final closing paren: "=sum(C22,C3)" + "C24" → "=sum(C22,C3,C24)". */
-export function spliceIntoSum(formula: string, cellRef: string): string {
-	if (!FLAT_SUM_RE.test(formula)) {
-		throw new Error(`Category formula is not a sum(...) that can be extended: "${formula}"`);
-	}
-	const i = formula.lastIndexOf(")");
-	return `${formula.slice(0, i)},${cellRef})`;
-}
-
-/**
- * Adjust a formula that was read BEFORE an insertDimension so it is correct
- * AFTER: 1-indexed refs to `column` at/below `insertedAt` shift down by one.
- */
-export function adjustColumnRefsForInsert(formula: string, column: string, insertedAt: number): string {
-	const re = new RegExp(`\\b${column}(\\d+)\\b`, "g");
-	return formula.replace(re, (_m, n: string) => {
-		const row = Number(n);
-		return `${column}${row >= insertedAt ? row + 1 : row}`;
-	});
-}
-
-/** Remove #REF! entries a row deletion leaves inside sum(...) lists. */
-export function stripRefErrors(formula: string): string {
-	return formula
-		.replace(/#REF!\s*,\s*/g, "")
-		.replace(/,\s*#REF!/g, "")
-		.replace(/\(\s*#REF!\s*\)/g, "(0)");
-}
 
 /** Re-target a single-row formula: "=E5*0.22" from row 5 to row 9 → "=E9*0.22". */
 export function adaptRowFormula(formula: string, fromRow: number, toRow: number): string {
@@ -115,7 +81,6 @@ export interface AddExpenseParams {
 	item: string;
 	amount: number;
 	currency: "TWD" | "USD";
-	category?: string;
 	month?: number;
 	/** M/D, MM/DD, YYYY/M/D, or YYYY-MM-DD; omitted = leave the 日期 cell blank. */
 	date?: string;
@@ -125,11 +90,6 @@ export interface AddExpenseParams {
 
 export async function addExpense(client: SheetsClient, p: AddExpenseParams) {
 	const tab = p.month !== undefined ? monthTabName(p.month) : currentMonthTab();
-	const categoryKey = p.category ?? DEFAULT_CATEGORY;
-	const categoryLabel = CATEGORIES[categoryKey];
-	if (!categoryLabel) {
-		throw new Error(`Unknown category "${p.category}". Valid categories: ${Object.keys(CATEGORIES).join(", ")}`);
-	}
 	// Parse before any read/write so a bad date fails closed.
 	const dateSerialValue = p.date !== undefined ? parseDateInput(p.date) : null;
 
@@ -151,13 +111,6 @@ export async function addExpense(client: SheetsClient, p: AddExpenseParams) {
 	}
 	const windowStart = Number(windowMatch[1]);
 	const windowEnd = Number(windowMatch[2]);
-	const categoryRow = findRowByValue(values, MONTH_COLS.categoryLabel, categoryLabel);
-	if (categoryRow === null) {
-		throw new Error(
-			`Could not find the category label "${categoryLabel}" in column ${colLetter(MONTH_COLS.categoryLabel)} of ${tab}.`,
-		);
-	}
-	const categoryFormula = String(values[categoryRow - 1]?.[MONTH_COLS.categoryFormula] ?? "");
 
 	// First fully-empty row inside the SUM window (and above the total row).
 	let targetRow: number | null = null;
@@ -217,18 +170,8 @@ export async function addExpense(client: SheetsClient, p: AddExpenseParams) {
 		});
 	}
 
-	// The formula was read pre-insert; if we inserted, refs at/below the insert point shifted.
-	const baseFormula = inserted ? adjustColumnRefsForInsert(categoryFormula, TWD_COL, targetRow) : categoryFormula;
-	const categoryRowFinal = inserted && categoryRow >= targetRow ? categoryRow + 1 : categoryRow;
-	const newCategoryFormula = spliceIntoSum(baseFormula, `${TWD_COL}${targetRow}`);
-	requests.push({
-		updateCells: {
-			start: { sheetId, rowIndex: categoryRowFinal - 1, columnIndex: MONTH_COLS.categoryFormula },
-			rows: [{ values: [cellData(newCategoryFormula)] }],
-			fields: "userEnteredValue",
-		},
-	});
-
+	// The expense lands inside the 花費總額 SUM window, so the total picks it up
+	// automatically (an insert at the window's edge auto-extends the range).
 	await client.batchUpdate(requests);
 	return {
 		tab,
@@ -237,8 +180,6 @@ export async function addExpense(client: SheetsClient, p: AddExpenseParams) {
 		item: p.item,
 		amount: p.amount,
 		currency: p.currency,
-		category: categoryKey,
-		categoryFormula: newCategoryFormula,
 		date: p.date ?? null,
 		tag: p.tag ?? null,
 	};
@@ -253,11 +194,6 @@ export async function monthSummary(client: SheetsClient, month?: number) {
 	const cellAt = (row: number | null, col: number): number | null =>
 		row === null ? null : num(values[row - 1]?.[col]);
 	const rowByItem = (label: string) => findRowByValue(values, MONTH_COLS.item, label);
-
-	const categories: Record<string, number | null> = {};
-	for (const [key, label] of Object.entries(CATEGORIES)) {
-		categories[key] = cellAt(findRowByValue(values, MONTH_COLS.categoryLabel, label), MONTH_COLS.categoryFormula);
-	}
 
 	// Per-row 類別 breakdown: sum the TWD column by tag across the expense window.
 	const totalRow = findRowByValue(values, MONTH_COLS.totalLabel, TOTAL_ROW_LABEL);
@@ -275,7 +211,6 @@ export async function monthSummary(client: SheetsClient, month?: number) {
 		tab,
 		花費總額: cellAt(totalRow, MONTH_COLS.totalValue),
 		上月透支: cellAt(rowByItem(OVERDRAFT_LABEL), MONTH_COLS.twd),
-		categories,
 		tags,
 		薪水: cellAt(rowByItem(SALARY_LABEL), MONTH_COLS.budgetValue),
 		沛還: cellAt(rowByItem(REPAYMENT_LABEL), MONTH_COLS.budgetValue),
@@ -402,31 +337,6 @@ export async function startMonth(client: SheetsClient, month: number) {
 		});
 	}
 	await client.batchUpdate(requests);
-
-	// Deleting referenced rows leaves #REF! inside the hand-picked category sums — scrub them.
-	if (rowsToDelete.length > 0) {
-		const { values: afterValues, truncated: afterTruncated } = await client.readRange(
-			`${quoteTab(newTab)}!${GRID_READ}`,
-			"FORMULA",
-		);
-		assertNotTruncated(afterTruncated, newTab, GRID_READ);
-		const fixes: object[] = [];
-		for (const label of Object.values(CATEGORIES)) {
-			const r = findRowByValue(afterValues, MONTH_COLS.categoryLabel, label);
-			if (r === null) continue;
-			const formula = String(afterValues[r - 1]?.[MONTH_COLS.categoryFormula] ?? "");
-			if (formula.includes("#REF!")) {
-				fixes.push({
-					updateCells: {
-						start: { sheetId, rowIndex: r - 1, columnIndex: MONTH_COLS.categoryFormula },
-						rows: [{ values: [cellData(stripRefErrors(formula))] }],
-						fields: "userEnteredValue",
-					},
-				});
-			}
-		}
-		if (fixes.length > 0) await client.batchUpdate(fixes);
-	}
 
 	return { tab: newTab, duplicatedFrom: prevTab, kept, cleared };
 }

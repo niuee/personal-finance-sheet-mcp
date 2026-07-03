@@ -7,15 +7,6 @@
 
 export const TOTAL_ROW_LABEL = "花費總額";
 
-/** Short category name (tool parameter) → exact label text in column E. */
-export const CATEGORIES: Record<string, string> = {
-	訂閱費: "訂閱費",
-	交通中餐雜支: "交通中餐等等雜支",
-	額外雜支: "本月額外雜支",
-};
-
-export const DEFAULT_CATEGORY = "額外雜支";
-
 /** 類別 tags seen in the sheet's column C. Documentation, not validation — the cell is free text. */
 export const KNOWN_TAGS = ["訂閱", "吃喝", "交通", "生活用品", "娛樂", "購物", "其他", "透支"] as const;
 
@@ -75,10 +66,6 @@ export const MONTH_COLS = {
 	totalLabel: 3,
 	/** E — the 花費總額 =SUM window. */
 	totalValue: 4,
-	/** G — summary category labels (訂閱費 …). */
-	categoryLabel: 6,
-	/** H — summary category sum formulas. */
-	categoryFormula: 7,
 	/** B — budget-block labels (沛還/薪水/剩餘/美金支付). */
 	budgetLabel: 1,
 	/** D — budget-block values. */
@@ -139,7 +126,7 @@ MONTHLY TABS — named "N 月" (e.g. "9 月", with a space). Layout below applie
 - USD rows convert with E = D*GOOGLEFINANCE("CURRENCY:USDTWD").
 - The list ends at the "花費總額" row (label in column D, total in E, formula SUM over the window). New expenses must land INSIDE that window — write into an empty row above 花費總額, or insert a row inside the window so the SUM extends. Never append below 花費總額.
 - Row 3 "上月透支" carries last month's overdraft via a cross-tab formula.
-- Summary block, labels in column G / values in H: 訂閱費, 基本房租生活費 (fixed rent, not a sum), 交通中餐等等雜支, 本月額外雜支. The sums reference hand-picked cells (e.g. sum(E22,E3)) — adding an expense to a summary category means splicing its E-cell into that formula. This grouping is independent of the per-row 類別 tag.
+- Categorization is the per-row 類別 tag in column C (see month_summary's per-類別 totals). Older tabs also carried a summary block in columns G/H (訂閱費 / 基本房租生活費 / 交通中餐等等雜支 / 本月額外雜支) built from hand-picked sums; that block is DEPRECATED and being removed. The tailored tools no longer read or maintain it — ignore any lingering G/H block and never splice into it.
 - Below the list: 總預算 / 沛還 / 薪水 / 剩餘 / 美金支付 / 新臺幣支付 (labels in column B, values in column D).
 
 TRIP TABS — e.g. "2026/07/25 京都東京".

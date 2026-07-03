@@ -1,7 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
 	adaptRowFormula,
-	adjustColumnRefsForInsert,
 	addExpense,
 	addTripEntry,
 	annotateRows,
@@ -16,46 +15,14 @@ import {
 	getCategories,
 	monthSummary,
 	safeUpdateRange,
-	spliceIntoSum,
 	startMonth,
-	stripRefErrors,
 } from "../src/finance-ops";
 import { currentMonthTab } from "../src/conventions";
 import type { SheetsClient } from "../src/sheets-client";
 
 describe("formula surgery", () => {
-	it("splices a cell ref into a sum formula", () => {
-		expect(spliceIntoSum("=sum(C22,C3)", "C24")).toBe("=sum(C22,C3,C24)");
-		expect(spliceIntoSum("=sum(C4,C5,C6,C7,C8,C9,C10,C11,C12,C18,C20,C16)", "C23")).toBe(
-			"=sum(C4,C5,C6,C7,C8,C9,C10,C11,C12,C18,C20,C16,C23)",
-		);
-		expect(spliceIntoSum("=SUM(C13,C14)", "C15")).toBe("=SUM(C13,C14,C15)");
-	});
-
-	it("refuses to splice into a non-sum formula", () => {
-		expect(() => spliceIntoSum("=20000", "C9")).toThrow("not a sum");
-	});
-
-	it("refuses to splice into nested or non-flat formulas (fail-closed)", () => {
-		expect(() => spliceIntoSum("=ROUND(SUM(C1:C10),2)", "C24")).toThrow("not a sum");
-		expect(() => spliceIntoSum('=SUM(A1:A10)+SUMIF(B:B,"x",C:C)', "C24")).toThrow("not a sum");
-	});
-
 	it("does not touch digit-bearing function names when re-targeting rows", () => {
 		expect(adaptRowFormula("=LOG10(E5)", 10, 99)).toBe("=LOG10(E5)");
-	});
-
-	it("shifts C-refs at/below the insertion row down by one", () => {
-		expect(adjustColumnRefsForInsert("=sum(C22,C3)", "C", 24)).toBe("=sum(C22,C3)");
-		expect(adjustColumnRefsForInsert("=sum(C22,C3)", "C", 22)).toBe("=sum(C23,C3)");
-		expect(adjustColumnRefsForInsert("=SUM(C3:C24)", "C", 10)).toBe("=SUM(C3:C25)");
-	});
-
-	it("strips #REF! entries left by row deletions", () => {
-		expect(stripRefErrors("=sum(#REF!,C3)")).toBe("=sum(C3)");
-		expect(stripRefErrors("=sum(C4,#REF!,C6)")).toBe("=sum(C4,C6)");
-		expect(stripRefErrors("=sum(C4,#REF!)")).toBe("=sum(C4)");
-		expect(stripRefErrors("=sum(#REF!)")).toBe("=sum(0)");
 	});
 
 	it("re-targets a single-row formula to another row", () => {
@@ -97,10 +64,10 @@ function monthGrid(): unknown[][] {
 	g[1] = ["日期", "項目", "類別", "美金", "新臺幣"];
 	g[2] = [46266, "上月透支", "透支", "", "=IF(-'8 月'!D32 > 0, -'8 月'!D32, 0)"];
 	g[3] = ["", "Google Cloud", "訂閱", 11.53, '=D4*GOOGLEFINANCE("CURRENCY:USDTWD")'];
-	g[4] = ["", "ElevenLabs", "訂閱", 6, '=D5*GOOGLEFINANCE("CURRENCY:USDTWD")', "", "訂閱費", "=sum(E4,E5)"];
-	g[5] = ["", "iCloud", "訂閱", 9.99, '=D6*GOOGLEFINANCE("CURRENCY:USDTWD")', "", "基本房租生活費", "=20000"];
-	g[6] = ["", "電話費", "生活用品", "", 1261, "", "交通中餐等等雜支", "=sum(E7)"];
-	g[7] = ["", "近鐵 80000系", "購物", "", "='火車模型'!D4", "", "本月額外雜支", "=sum(E8,E3)"];
+	g[4] = ["", "ElevenLabs", "訂閱", 6, '=D5*GOOGLEFINANCE("CURRENCY:USDTWD")'];
+	g[5] = ["", "iCloud", "訂閱", 9.99, '=D6*GOOGLEFINANCE("CURRENCY:USDTWD")'];
+	g[6] = ["", "電話費", "生活用品", "", 1261];
+	g[7] = ["", "近鐵 80000系", "購物", "", "='火車模型'!D4"];
 	// rows 9-10 (indices 8-9) empty inside the window
 	g[10] = ["", "", "", "花費總額", "=SUM(E3:E10)"];
 	g[12] = ["", "沛還", "", 20500];
@@ -119,7 +86,7 @@ function fakeClient(grid: unknown[][]): SheetsClient {
 }
 
 describe("addExpense", () => {
-	it("writes a TWD expense into the first empty window row and splices the category formula", async () => {
+	it("writes a TWD expense into the first empty window row", async () => {
 		const client = fakeClient(monthGrid());
 
 		const result = await addExpense(client, { item: "晚餐", amount: 250, currency: "TWD", month: 9 });
@@ -139,15 +106,8 @@ describe("addExpense", () => {
 					fields: "userEnteredValue",
 				},
 			},
-			{
-				updateCells: {
-					start: { sheetId: 111, rowIndex: 7, columnIndex: 7 },
-					rows: [{ values: [{ userEnteredValue: { formulaValue: "=sum(E8,E3,E9)" } }] }],
-					fields: "userEnteredValue",
-				},
-			},
 		]);
-		expect(result).toMatchObject({ tab: "9 月", row: 9, inserted: false, category: "額外雜支", categoryFormula: "=sum(E8,E3,E9)", tag: null });
+		expect(result).toMatchObject({ tab: "9 月", row: 9, inserted: false, tag: null });
 	});
 
 	it("writes the 類別 tag into the row when given", async () => {
@@ -168,7 +128,7 @@ describe("addExpense", () => {
 	it("writes a USD expense with the GOOGLEFINANCE conversion formula", async () => {
 		const client = fakeClient(monthGrid());
 
-		await addExpense(client, { item: "API credits", amount: 30, currency: "USD", category: "訂閱費", month: 9 });
+		await addExpense(client, { item: "API credits", amount: 30, currency: "USD", month: 9 });
 
 		const requests = (client.batchUpdate as any).mock.calls[0][0];
 		expect(requests).toEqual([
@@ -188,17 +148,10 @@ describe("addExpense", () => {
 					fields: "userEnteredValue",
 				},
 			},
-			{
-				updateCells: {
-					start: { sheetId: 111, rowIndex: 4, columnIndex: 7 },
-					rows: [{ values: [{ userEnteredValue: { formulaValue: "=sum(E4,E5,E9)" } }] }],
-					fields: "userEnteredValue",
-				},
-			},
 		]);
 	});
 
-	it("inserts a row inside the SUM window when no empty row exists, adjusting formula refs", async () => {
+	it("inserts a row inside the SUM window when no empty row exists", async () => {
 		const grid = monthGrid();
 		grid[8] = ["", "already", "雜", "", 1];
 		grid[9] = ["", "full", "雜", "", 2];
@@ -207,7 +160,7 @@ describe("addExpense", () => {
 		const result = await addExpense(client, { item: "加購", amount: 100, currency: "TWD", month: 9 });
 
 		const requests = (client.batchUpdate as any).mock.calls[0][0];
-		// new row is 10 (1-indexed); category 額外雜支 formula refs E8,E3 (< 10) stay put
+		// window is full, so insert at its last row (10) — the =SUM(E3:E10) auto-extends
 		expect(requests).toEqual([
 			{
 				insertDimension: {
@@ -231,40 +184,8 @@ describe("addExpense", () => {
 					fields: "userEnteredValue",
 				},
 			},
-			{
-				updateCells: {
-					start: { sheetId: 111, rowIndex: 7, columnIndex: 7 },
-					rows: [{ values: [{ userEnteredValue: { formulaValue: "=sum(E8,E3,E10)" } }] }],
-					fields: "userEnteredValue",
-				},
-			},
 		]);
 		expect(result).toMatchObject({ row: 10, inserted: true });
-	});
-
-	it("shifts the category formula row when it sits at/below the insertion point", async () => {
-		const g: unknown[][] = [];
-		g[0] = ["title"];
-		g[2] = ["", "a", "", "", 1];
-		g[3] = ["", "b", "", "", 2];
-		g[4] = ["", "c", "", "", 3, "", "本月額外雜支", "=sum(E3)"];
-		g[5] = ["", "", "", "花費總額", "=SUM(E3:E5)"];
-		const client = fakeClient(g);
-
-		const result = await addExpense(client, { item: "x", amount: 5, currency: "TWD", month: 9 });
-
-		const requests = (client.batchUpdate as any).mock.calls[0][0];
-		expect(requests[0].insertDimension.range).toEqual({
-			sheetId: 111,
-			dimension: "ROWS",
-			startIndex: 4,
-			endIndex: 5,
-		});
-		expect(requests[2].updateCells.start).toEqual({ sheetId: 111, rowIndex: 5, columnIndex: 7 });
-		expect(requests[2].updateCells.rows[0].values).toEqual([
-			{ userEnteredValue: { formulaValue: "=sum(E3,E5)" } },
-		]);
-		expect(result).toMatchObject({ row: 5, inserted: true });
 	});
 
 	it("writes the date as a real date serial with mm/dd format when given", async () => {
@@ -273,7 +194,7 @@ describe("addExpense", () => {
 		const result = await addExpense(client, { item: "晚餐", amount: 250, currency: "TWD", month: 9, date: "2026/09/02" });
 
 		const requests = (client.batchUpdate as any).mock.calls[0][0];
-		expect(requests).toHaveLength(3);
+		expect(requests).toHaveLength(2);
 		expect(requests[1]).toEqual({
 			updateCells: {
 				start: { sheetId: 111, rowIndex: 8, columnIndex: 0 },
@@ -299,7 +220,7 @@ describe("addExpense", () => {
 		const result = await addExpense(client, { item: "晚餐", amount: 250, currency: "TWD", month: 9 });
 
 		const requests = (client.batchUpdate as any).mock.calls[0][0];
-		expect(requests).toHaveLength(2);
+		expect(requests).toHaveLength(1);
 		expect(requests.every((r: any) => r.updateCells.start.columnIndex !== 0)).toBe(true);
 		expect(result).toMatchObject({ date: null });
 	});
@@ -313,12 +234,7 @@ describe("addExpense", () => {
 		expect((client.batchUpdate as any).mock.calls.length).toBe(0);
 	});
 
-	it("rejects unknown categories and missing anchors without writing", async () => {
-		const client = fakeClient(monthGrid());
-		await expect(addExpense(client, { item: "x", amount: 1, currency: "TWD", category: "咖啡", month: 9 })).rejects.toThrow(
-			'Unknown category "咖啡"',
-		);
-
+	it("rejects a missing 花費總額 anchor without writing", async () => {
 		const noTotal = fakeClient([["nothing here"]]);
 		await expect(addExpense(noTotal, { item: "x", amount: 1, currency: "TWD", month: 9 })).rejects.toThrow("花費總額");
 		expect((noTotal.batchUpdate as any).mock.calls.length).toBe(0);
@@ -357,9 +273,7 @@ describe("addExpense", () => {
 			startIndex: 7,
 			endIndex: 8,
 		});
-		expect(requests[2].updateCells.rows[0].values).toEqual([
-			{ userEnteredValue: { formulaValue: "=sum(E9,E3,E8)" } },
-		]);
+		expect(requests[1].updateCells.start).toEqual({ sheetId: 111, rowIndex: 7, columnIndex: 1 });
 		expect(result).toMatchObject({ row: 8, inserted: true });
 	});
 });
@@ -370,10 +284,10 @@ describe("monthSummary", () => {
 		const grid = monthGrid();
 		grid[2] = ["", "上月透支", "透支", "", 13603.67];
 		grid[3] = ["", "Google Cloud", "訂閱", 11.53, 368.44];
-		grid[4] = ["", "ElevenLabs", "訂閱", 6, 191.43, "", "訂閱費", 26843.6];
-		grid[5] = ["", "iCloud", "訂閱", 9.99, 319.23, "", "基本房租生活費", 20000];
-		grid[6] = ["", "電話費", "生活用品", "", 1261, "", "交通中餐等等雜支", 5511];
-		grid[7] = ["", "近鐵 80000系", "購物", "", 5690.37, "", "本月額外雜支", 19294.03];
+		grid[4] = ["", "ElevenLabs", "訂閱", 6, 191.43];
+		grid[5] = ["", "iCloud", "訂閱", 9.99, 319.23];
+		grid[6] = ["", "電話費", "生活用品", "", 1261];
+		grid[7] = ["", "近鐵 80000系", "購物", "", 5690.37];
 		grid[10] = ["", "", "", "花費總額", 72127.21];
 		grid[14] = ["", "剩餘", "", 12285.79];
 
@@ -385,7 +299,6 @@ describe("monthSummary", () => {
 			tab: "9 月",
 			花費總額: 72127.21,
 			上月透支: 13603.67,
-			categories: { 訂閱費: 26843.6, 交通中餐雜支: 5511, 額外雜支: 19294.03 },
 			tags: { 透支: 13603.67, 訂閱: 368.44 + 191.43 + 319.23, 生活用品: 1261, 購物: 5690.37 },
 			薪水: 63913,
 			沛還: 20500,
@@ -451,37 +364,6 @@ describe("startMonth", () => {
 			kept: ["上月透支", "Google Cloud", "ElevenLabs", "iCloud", "電話費"],
 			cleared: ["近鐵 80000系"],
 		});
-	});
-
-	it("scrubs #REF! from category formulas after deletions", async () => {
-		const grid = monthGrid();
-		const client = startMonthClient(grid, ["9 月", "8 月"]);
-		// After the deletion batch, the re-read returns a grid whose 額外雜支 formula has a #REF!
-		(client.readRange as any)
-			.mockResolvedValueOnce({ range: "x", values: grid, truncated: false })
-			.mockResolvedValueOnce({
-				range: "x",
-				values: (() => {
-					const g = monthGrid();
-					g[7] = ["", "", "", "", "", "", "本月額外雜支", "=sum(#REF!,E3)"];
-					return g;
-				})(),
-				truncated: false,
-			});
-
-		await startMonth(client, 10);
-
-		const batch = (client.batchUpdate as any).mock.calls;
-		const scrub = batch[2][0];
-		expect(scrub).toEqual([
-			{
-				updateCells: {
-					start: { sheetId: 555, rowIndex: 7, columnIndex: 7 },
-					rows: [{ values: [{ userEnteredValue: { formulaValue: "=sum(E3)" } }] }],
-					fields: "userEnteredValue",
-				},
-			},
-		]);
 	});
 
 	it("refuses to overwrite an existing tab and requires the previous month", async () => {
