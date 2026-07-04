@@ -17,6 +17,25 @@ export const REPAYMENT_LABEL = "沛還";
 export const REMAINDER_LABEL = "剩餘";
 export const USD_PAYMENT_LABEL = "美金支付";
 
+/**
+ * Labels for the 銀行餘額 (bank-balance reconciliation) block — a per-currency
+ * running balance that carries over month to month, for reality-checking the
+ * real USD and NTD bank accounts. USD and NTD are tracked as independent
+ * ledgers: USD expenses (column D) hit only the USD balance, native-NTD
+ * expenses hit only the NTD balance. Each currency's ending balance =
+ * last month's ending balance + this month's income − this month's spending,
+ * so both surplus and overdraft carry forward. All eight live in column B with
+ * their values in column D, like the rest of the budget block.
+ */
+export const USD_INCOME_LABEL = "美金收入";
+export const USD_SPENDING_LABEL = "美金支出";
+export const PREV_USD_BALANCE_LABEL = "上月美金餘額";
+export const USD_BALANCE_LABEL = "美金餘額";
+export const NTD_INCOME_LABEL = "新臺幣收入";
+export const NTD_SPENDING_LABEL = "新臺幣支出";
+export const PREV_NTD_BALANCE_LABEL = "上月新臺幣餘額";
+export const NTD_BALANCE_LABEL = "新臺幣餘額";
+
 /** Items start_month keeps when opening a new month; everything else is a one-off. */
 export const RECURRING_ITEMS = new Set<string>([
 	OVERDRAFT_LABEL,
@@ -127,7 +146,8 @@ MONTHLY TABS — named "N 月" (e.g. "9 月", with a space). Layout below applie
 - The list ends at the "花費總額" row (label in column D, total in E, formula SUM over the window). New expenses must land INSIDE that window — write into an empty row above 花費總額, or insert a row inside the window so the SUM extends. Never append below 花費總額.
 - Row 3 "上月透支" carries last month's overdraft via a cross-tab formula.
 - Categorization is the per-row 類別 tag in column C (see month_summary's per-類別 totals). Older tabs also carried a summary block in columns G/H (訂閱費 / 基本房租生活費 / 交通中餐等等雜支 / 本月額外雜支) built from hand-picked sums; that block is DEPRECATED and being removed. The tailored tools no longer read or maintain it — ignore any lingering G/H block and never splice into it.
-- Below the list: 總預算 / 沛還 / 薪水 / 剩餘 / 美金支付 / 新臺幣支付 (labels in column B, values in column D).
+- Below the list: 總預算 / 沛還 / 薪水 / 剩餘 / 美金支付 / 新臺幣支付 (labels in column B, values in column D). 剩餘 is the old single-currency budget view: income − 花費總額, carrying only overdraft (透支) into next month via row 3.
+- Further down, a 銀行餘額 block reconciles the real USD and NTD bank accounts as two INDEPENDENT running ledgers (labels in column B, values in column D): 美金收入 / 美金支出 / 上月美金餘額 / 美金餘額, then 新臺幣收入 / 新臺幣支出 / 上月新臺幣餘額 / 新臺幣餘額. 美金支出 = SUM of the USD column (D) over the expense window; 新臺幣支出 = SUMIF of the NTD column (E) for native-NTD rows only (D blank), so USD expenses never double-count against NTD. Each 餘額 = 上月餘額 + 收入 − 支出 (surplus AND overdraft both carry). 上月美金餘額 / 上月新臺幣餘額 point at the previous month's matching 餘額 cell (start_month rewires them); in the earliest month they are seeded by hand with the real bank balances. Coexists with 剩餘 — it does not replace it.
 
 TRIP TABS — e.g. "2026/07/25 京都東京".
 - A mosaic of category blocks in four column bands (A-G, I-O, Q-W, Z-AF), stacked vertically within each band.

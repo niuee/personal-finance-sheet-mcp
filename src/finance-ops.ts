@@ -8,8 +8,13 @@ import {
 	currentMonthTab,
 	MONTH_COLS,
 	monthTabName,
+	NTD_BALANCE_LABEL,
+	NTD_INCOME_LABEL,
+	NTD_SPENDING_LABEL,
 	OVERDRAFT_LABEL,
 	parseDateInput,
+	PREV_NTD_BALANCE_LABEL,
+	PREV_USD_BALANCE_LABEL,
 	previousMonth,
 	RECURRING_ITEMS,
 	REMAINDER_LABEL,
@@ -21,7 +26,10 @@ import {
 	TRIP_BLOCK_WIDTH,
 	TRIP_MAX_BLOCK_ROWS,
 	TRIP_TOTAL_LABEL,
+	USD_BALANCE_LABEL,
+	USD_INCOME_LABEL,
 	USD_PAYMENT_LABEL,
+	USD_SPENDING_LABEL,
 } from "./conventions";
 import type { SheetsClient } from "./sheets-client";
 
@@ -216,6 +224,15 @@ export async function monthSummary(client: SheetsClient, month?: number) {
 		沛還: cellAt(rowByItem(REPAYMENT_LABEL), MONTH_COLS.budgetValue),
 		剩餘: cellAt(rowByItem(REMAINDER_LABEL), MONTH_COLS.budgetValue),
 		美金支付: cellAt(rowByItem(USD_PAYMENT_LABEL), MONTH_COLS.budgetValue),
+		// 銀行餘額 block — per-currency running balance (null on tabs that predate it).
+		美金收入: cellAt(rowByItem(USD_INCOME_LABEL), MONTH_COLS.budgetValue),
+		美金支出: cellAt(rowByItem(USD_SPENDING_LABEL), MONTH_COLS.budgetValue),
+		上月美金餘額: cellAt(rowByItem(PREV_USD_BALANCE_LABEL), MONTH_COLS.budgetValue),
+		美金餘額: cellAt(rowByItem(USD_BALANCE_LABEL), MONTH_COLS.budgetValue),
+		新臺幣收入: cellAt(rowByItem(NTD_INCOME_LABEL), MONTH_COLS.budgetValue),
+		新臺幣支出: cellAt(rowByItem(NTD_SPENDING_LABEL), MONTH_COLS.budgetValue),
+		上月新臺幣餘額: cellAt(rowByItem(PREV_NTD_BALANCE_LABEL), MONTH_COLS.budgetValue),
+		新臺幣餘額: cellAt(rowByItem(NTD_BALANCE_LABEL), MONTH_COLS.budgetValue),
 	};
 }
 
@@ -313,6 +330,29 @@ export async function startMonth(client: SheetsClient, month: number) {
 					endColumnIndex: MONTH_COLS.date + 1,
 				},
 				cell: {},
+				fields: "userEnteredValue",
+			},
+		});
+	}
+
+	// Carry the 銀行餘額 running balances forward: point each 上月餘額 cell at the
+	// month-just-ended's matching 餘額. The new tab is a duplicate, so its 餘額
+	// rows sit at the same positions as in prevTab. These writes precede the
+	// row deletes below; a delete above only shifts the written cell (with its
+	// label) up in lockstep, and the cross-tab reference into prevTab is
+	// unaffected. Skipped on tabs that predate the block (rows not found).
+	for (const [prevLabel, balanceLabel] of [
+		[PREV_USD_BALANCE_LABEL, USD_BALANCE_LABEL],
+		[PREV_NTD_BALANCE_LABEL, NTD_BALANCE_LABEL],
+	] as const) {
+		const prevBalanceRow = findRowByValue(values, MONTH_COLS.budgetLabel, prevLabel);
+		const balanceRow = findRowByValue(values, MONTH_COLS.budgetLabel, balanceLabel);
+		if (prevBalanceRow === null || balanceRow === null) continue;
+		const ref = `=${quoteTab(prevTab)}!${colLetter(MONTH_COLS.budgetValue)}${balanceRow}`;
+		requests.push({
+			updateCells: {
+				start: { sheetId, rowIndex: prevBalanceRow - 1, columnIndex: MONTH_COLS.budgetValue },
+				rows: [{ values: [cellData(ref)] }],
 				fields: "userEnteredValue",
 			},
 		});
