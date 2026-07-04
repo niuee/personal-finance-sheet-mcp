@@ -160,7 +160,7 @@ export function registerTailoredTools(server: McpServer, client: SheetsClient): 
 
 	server.tool(
 		"month_summary",
-		"Get a month's numbers as clean JSON (unformatted): 花費總額, 上月透支, per-類別 tag totals, 薪水, 沛還, 剩餘, 美金支付. Defaults to the current month. Fields the sheet doesn't have yet come back null.",
+		"Get a month's numbers as clean JSON (unformatted): 花費總額, 上月透支, per-類別 tag totals, 薪水, 沛還, 剩餘, 美金支付, plus the 銀行餘額 running-balance block (美金收入/美金支出/上月美金餘額/美金餘額 and 新臺幣收入/新臺幣支出/上月新臺幣餘額/新臺幣餘額). Defaults to the current month. Fields the sheet doesn't have yet come back null.",
 		{ month: monthParam.optional().describe("Month 1-12 (default: current month)") },
 		async ({ month }) => {
 			try {

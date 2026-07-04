@@ -17,7 +17,7 @@ import {
 	safeUpdateRange,
 	startMonth,
 } from "../src/finance-ops";
-import { currentMonthTab } from "../src/conventions";
+import { currentMonthTab, MONTH_COLS } from "../src/conventions";
 import type { SheetsClient } from "../src/sheets-client";
 
 describe("formula surgery", () => {
@@ -74,6 +74,16 @@ function monthGrid(): unknown[][] {
 	g[13] = ["", "薪水", "", 63913];
 	g[14] = ["", "剩餘", "", "=sum(D13:D14)-E11"];
 	g[15] = ["", "美金支付", "", 640.42];
+	// 銀行餘額 running-balance block (labels col B, values col D).
+	g[17] = ["", "銀行餘額", "", ""];
+	g[18] = ["", "美金收入", "", 0];
+	g[19] = ["", "美金支出", "", "=SUM(D4:D10)"];
+	g[20] = ["", "上月美金餘額", "", "='8 月'!D22"];
+	g[21] = ["", "美金餘額", "", "=D21+D19-D20"];
+	g[22] = ["", "新臺幣收入", "", 0];
+	g[23] = ["", "新臺幣支出", "", '=SUMIF(D4:D10,"",E4:E10)'];
+	g[24] = ["", "上月新臺幣餘額", "", "='8 月'!D26"];
+	g[25] = ["", "新臺幣餘額", "", "=D25+D23-D24"];
 	return g;
 }
 
@@ -290,6 +300,15 @@ describe("monthSummary", () => {
 		grid[7] = ["", "近鐵 80000系", "購物", "", 5690.37];
 		grid[10] = ["", "", "", "花費總額", 72127.21];
 		grid[14] = ["", "剩餘", "", 12285.79];
+		// UNFORMATTED render of the 銀行餘額 block: the sheet's computed numbers.
+		grid[18] = ["", "美金收入", "", 500];
+		grid[19] = ["", "美金支出", "", 640.42];
+		grid[20] = ["", "上月美金餘額", "", 1000];
+		grid[21] = ["", "美金餘額", "", 859.58];
+		grid[22] = ["", "新臺幣收入", "", 63913];
+		grid[23] = ["", "新臺幣支出", "", 20000];
+		grid[24] = ["", "上月新臺幣餘額", "", 5000];
+		grid[25] = ["", "新臺幣餘額", "", 48913];
 
 		const client = fakeClient(grid);
 		const result = await monthSummary(client, 9);
@@ -304,6 +323,14 @@ describe("monthSummary", () => {
 			沛還: 20500,
 			剩餘: 12285.79,
 			美金支付: 640.42,
+			美金收入: 500,
+			美金支出: 640.42,
+			上月美金餘額: 1000,
+			美金餘額: 859.58,
+			新臺幣收入: 63913,
+			新臺幣支出: 20000,
+			上月新臺幣餘額: 5000,
+			新臺幣餘額: 48913,
 		});
 	});
 });
@@ -354,8 +381,23 @@ describe("startMonth", () => {
 				fields: "userEnteredValue",
 			},
 		});
-		// 近鐵 80000系 (row 8) is the only non-recurring item in the fixture
+		// 銀行餘額 carry-over: 上月美金餘額 (row 21) ← 9 月's 美金餘額 (row 22); 上月新臺幣餘額 (row 25) ← 新臺幣餘額 (row 26).
 		expect(requests[3]).toEqual({
+			updateCells: {
+				start: { sheetId: 555, rowIndex: 20, columnIndex: 3 },
+				rows: [{ values: [{ userEnteredValue: { formulaValue: "='9 月'!D22" } }] }],
+				fields: "userEnteredValue",
+			},
+		});
+		expect(requests[4]).toEqual({
+			updateCells: {
+				start: { sheetId: 555, rowIndex: 24, columnIndex: 3 },
+				rows: [{ values: [{ userEnteredValue: { formulaValue: "='9 月'!D26" } }] }],
+				fields: "userEnteredValue",
+			},
+		});
+		// 近鐵 80000系 (row 8) is the only non-recurring item in the fixture
+		expect(requests[5]).toEqual({
 			deleteDimension: { range: { sheetId: 555, dimension: "ROWS", startIndex: 7, endIndex: 8 } },
 		});
 		expect(result).toEqual({
@@ -387,6 +429,21 @@ describe("startMonth", () => {
 		const deletes = requests.filter((r: any) => r.deleteDimension);
 		expect(deletes.map((r: any) => r.deleteDimension.range.startIndex)).toEqual([9, 8, 7]);
 		expect(result.cleared).toEqual(["近鐵 80000系", "一次性A", "一次性B"]);
+	});
+
+	it("skips the 銀行餘額 carry-over on tabs that predate the block", async () => {
+		const stripped = monthGrid();
+		stripped.length = 17; // drop the 銀行餘額 rows (indices 17+)
+		const client = startMonthClient(stripped, ["9 月", "8 月"]);
+
+		await startMonth(client, 10);
+
+		const requests = (client.batchUpdate as any).mock.calls[1][0];
+		// No 上月餘額 rows to rewire → nothing writes into the budget-value column (D).
+		const carryWrites = requests.filter(
+			(r: any) => r.updateCells && r.updateCells.start.columnIndex === MONTH_COLS.budgetValue,
+		);
+		expect(carryWrites).toEqual([]);
 	});
 });
 
