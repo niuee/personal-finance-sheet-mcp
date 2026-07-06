@@ -31,6 +31,9 @@ import {
 	TOTAL_NTD_BALANCE_LABEL,
 	TOTAL_ROW_LABEL,
 	TOTAL_USD_BALANCE_LABEL,
+	TRANSFER_COLS,
+	TRANSFER_SECTION_LABEL,
+	TRANSFER_TOTAL_LABEL,
 	TRIP_HEADER_DATE,
 	TRIP_HEADER_SHOP,
 	TRIP_BLOCK_WIDTH,
@@ -115,6 +118,39 @@ export function findExpenseWindow(values: unknown[][], tab: string): ExpenseWind
 		);
 	}
 	return { totalRow, start: Number(m[1]), end: Number(m[2]) };
+}
+
+/** The 乾坤大挪移 section spans G–M, wider than GRID_READ — read the full width. */
+export const TRANSFER_GRID_READ = "A1:M60";
+
+export interface TransferSection {
+	/** 1-indexed row of the 日期/新臺幣/… header. */
+	headerRow: number;
+	/** 1-indexed row of the 總和 totals. */
+	totalRow: number;
+}
+
+/** Locate the 乾坤大挪移 block (FORMULA-render grid of TRANSFER_GRID_READ). Throws when absent or malformed. */
+export function findTransferSection(values: unknown[][], tab: string): TransferSection {
+	const dateCol = TRANSFER_COLS.date;
+	const anchorRow = findRowByValue(values, dateCol, TRANSFER_SECTION_LABEL);
+	if (anchorRow === null) {
+		throw new Error(
+			`No ${TRANSFER_SECTION_LABEL} section in ${tab} (searched column ${colLetter(dateCol)} of ${TRANSFER_GRID_READ}) — the transfer log exists from 7月 2026 on.`,
+		);
+	}
+	const headerRow = anchorRow + 1;
+	if (String(values[headerRow - 1]?.[dateCol] ?? "").trim() !== "日期") {
+		throw new Error(
+			`The row under the ${TRANSFER_SECTION_LABEL} anchor in ${tab} is not the 日期/新臺幣/… header row.`,
+		);
+	}
+	for (let r = headerRow + 1; r <= values.length; r++) {
+		if (String(values[r - 1]?.[dateCol] ?? "").trim() === TRANSFER_TOTAL_LABEL) {
+			return { headerRow, totalRow: r };
+		}
+	}
+	throw new Error(`No ${TRANSFER_TOTAL_LABEL} row under the ${TRANSFER_SECTION_LABEL} header in ${tab}.`);
 }
 
 export interface IncomeWindow {

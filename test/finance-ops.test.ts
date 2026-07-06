@@ -14,6 +14,7 @@ import {
 	findIncomeWindow,
 	findRowByLabels,
 	findRowByValue,
+	findTransferSection,
 	findTripBlocks,
 	getCategories,
 	migrateIncomeLayout,
@@ -148,6 +149,16 @@ function migratedMonthGrid(): unknown[][] {
 	g[28] = ["", "新臺幣支出", "", '=SUMIF(F3:F10,"TWD",E3:E10)'];
 	g[29] = ["", "上月新臺幣餘額", "", "='8 月'!D31"];
 	g[30] = ["", "總新臺幣餘額", "", "=D30+D28-D29"];
+	return g;
+}
+
+/** migratedMonthGrid + a 乾坤大挪移 transfer block at G33:M36 (data slot row 35 empty). */
+function transferGrid(): unknown[][] {
+	const g = migratedMonthGrid();
+	g[32] = ["", "", "", "", "", "", "乾坤大挪移"];
+	g[33] = ["", "", "", "", "", "", "日期", "新臺幣", "當下美金", "實際美金", "匯差", "手續費", "當筆總額外花費"];
+	// row 35 empty — the first data slot
+	g[35] = ["", "", "", "", "", "", "總和", "=sum(H35)", "=sum(I35)", "=sum(J35)", "=sum(K35)", "=sum(L35)", "=sum(M35)"];
 	return g;
 }
 
@@ -350,6 +361,28 @@ describe("migrateIncomeLayout", () => {
 		expect(monthRows.updateCells.rows[3]).toEqual({
 			values: [{ userEnteredValue: { stringValue: "新臺幣透支沖銷" } }, {}, { userEnteredValue: { formulaValue: "=IF(AND(D18<0,D31>=0),-D18,0)" } }],
 		});
+	});
+});
+
+describe("findTransferSection", () => {
+	it("locates the header and 總和 rows from the anchor", () => {
+		expect(findTransferSection(transferGrid(), "9 月")).toEqual({ headerRow: 34, totalRow: 36 });
+	});
+
+	it("throws when the tab has no 乾坤大挪移 section", () => {
+		expect(() => findTransferSection(migratedMonthGrid(), "6 月")).toThrow("乾坤大挪移");
+	});
+
+	it("throws when the header row under the anchor is missing", () => {
+		const g = transferGrid();
+		g[33] = [];
+		expect(() => findTransferSection(g, "9 月")).toThrow("日期");
+	});
+
+	it("throws when there is no 總和 row", () => {
+		const g = transferGrid();
+		g[35] = [];
+		expect(() => findTransferSection(g, "9 月")).toThrow("總和");
 	});
 });
 
