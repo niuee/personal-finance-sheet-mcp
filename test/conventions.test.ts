@@ -176,6 +176,9 @@ describe("conventions", () => {
 			"set_income",
 			"幣別",
 			"透支沖銷",
+			"乾坤大挪移",
+			"add_transfer",
+			"當筆總額外花費",
 		]) {
 			expect(CONVENTIONS_TEXT).toContain(needle);
 		}

@@ -3,6 +3,7 @@ import { z } from "zod";
 import { CONVENTIONS_TEXT, KNOWN_TAGS } from "./conventions";
 import {
 	addExpense,
+	addTransfer,
 	addTripEntry,
 	annotateRows,
 	findCells,
@@ -238,6 +239,29 @@ export function registerTailoredTools(server: McpServer, client: SheetsClient): 
 		async ({ tab, category, date, shop, item, payment_method, jpy, twd }) => {
 			try {
 				return ok(await addTripEntry(client, { tab, category, date, shop, item, paymentMethod: payment_method, jpy, twd }));
+			} catch (e) {
+				return toError(e);
+			}
+		},
+	);
+
+	server.tool(
+		"add_transfer",
+		"Log a 乾坤大挪移 NTD→USD transfer into a monthly tab (defaults to the current month): writes the entry into the transfer block (columns G-M), pins 當下美金/匯差 to the USDTWD spot rate at entry time, and keeps the 總和 sums covering every row. The 銀行餘額 ledgers pick it up automatically: +實際美金 into 總美金餘額, −新臺幣 from 總新臺幣餘額, and 匯差+手續費 into 新臺幣支出 as this month's NTD spending. Use this instead of update_range for transfers.",
+		{
+			ntd: z.number().positive().describe("NTD debited from the bank (新臺幣)"),
+			usd: z.number().positive().describe("USD that actually arrived (實際美金)"),
+			fee: z.number().min(0).describe("手續費 in NTD"),
+			date: z
+				.string()
+				.min(1)
+				.optional()
+				.describe("Transfer date: M/D, MM/DD, or YYYY-MM-DD (defaults to today in Taipei)"),
+			month: monthParam.optional().describe("Target month 1-12 (default: current month)"),
+		},
+		async (p) => {
+			try {
+				return ok(await addTransfer(client, p));
 			} catch (e) {
 				return toError(e);
 			}
