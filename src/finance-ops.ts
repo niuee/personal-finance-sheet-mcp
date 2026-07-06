@@ -160,8 +160,10 @@ export function findTransferSection(values: unknown[][], tab: string): TransferS
 	throw new Error(`No ${TRANSFER_TOTAL_LABEL} row under the ${TRANSFER_SECTION_LABEL} header in ${tab}.`);
 }
 
-/** The 中餐預算 section spans O–Q — read past the transfer block's M. */
-export const LUNCH_GRID_READ = "A1:Q60";
+// The lunch section grows one row per entry and pushes the 銀行餘額 block
+// below it downward, so the window must hold a full month of daily entries —
+// a too-shallow read makes startMonth's 上月…餘額 rewire silently skip.
+export const LUNCH_GRID_READ = "A1:Q120";
 
 export interface LunchSection {
 	/** 1-indexed row holding the 編列預算 / 剩餘 values. */
@@ -181,13 +183,27 @@ export function findLunchSection(values: unknown[][], tab: string): LunchSection
 			`No ${LUNCH_SECTION_LABEL} section in ${tab} (searched column ${colLetter(dateCol)} of ${LUNCH_GRID_READ}) — the lunch-budget log exists from 7月 2026 on.`,
 		);
 	}
-	const budgetRow = anchorRow + 2;
-	const headerRow = anchorRow + 3;
-	if (String(values[headerRow - 1]?.[dateCol] ?? "").trim() !== "日期") {
+	// add_transfer's full-section path inserts a whole sheet row directly above
+	// the transfer 總和 row; on live geometry that lands between this section's
+	// label row and its values row, opening a blank row here. A fixed
+	// anchor+3 offset would then miss the header, so scan for it instead.
+	let headerRow: number | null = null;
+	for (let r = anchorRow + 1; r <= anchorRow + 8; r++) {
+		if (String(values[r - 1]?.[dateCol] ?? "").trim() === "日期") {
+			headerRow = r;
+			break;
+		}
+	}
+	if (headerRow === null) {
 		throw new Error(
-			`Row ${headerRow} under the ${LUNCH_SECTION_LABEL} anchor in ${tab} is not the 日期/項目/金額 header row.`,
+			`No 日期/項目/金額 header row found within 8 rows of the ${LUNCH_SECTION_LABEL} anchor in ${tab}.`,
 		);
 	}
+	// The 編列預算/剩餘 values row always sits directly above the header — a
+	// whole-row insert above the transfer 總和 shifts the values row and the
+	// header down together, so this adjacency holds no matter how many blank
+	// rows opened up between the anchor and the header.
+	const budgetRow = headerRow - 1;
 	for (let r = headerRow + 1; r <= values.length; r++) {
 		if (String(values[r - 1]?.[LUNCH_COLS.item] ?? "").trim() === LUNCH_TOTAL_LABEL) {
 			return { budgetRow, headerRow, totalRow: r };
@@ -914,15 +930,21 @@ export async function monthSummary(client: SheetsClient, month?: number) {
 		}
 	}
 
-	// 中餐預算 lunch-budget section (O–Q); null on tabs that predate it.
+	// 中餐預算 lunch-budget section (O–Q); null on tabs that predate it, and
+	// also null (not thrown) when the section is torn beyond recognition —
+	// this read-only summary must not die over a malformed lunch block.
 	let lunch: { 編列預算: number | null; 總和: number | null; 剩餘: number | null } | null = null;
 	if (findRowByValue(values, LUNCH_COLS.date, LUNCH_SECTION_LABEL) !== null) {
-		const sec = findLunchSection(values, tab);
-		lunch = {
-			編列預算: num(values[sec.budgetRow - 1]?.[LUNCH_COLS.date]),
-			總和: num(values[sec.totalRow - 1]?.[LUNCH_COLS.amount]),
-			剩餘: num(values[sec.budgetRow - 1]?.[LUNCH_COLS.amount]),
-		};
+		try {
+			const sec = findLunchSection(values, tab);
+			lunch = {
+				編列預算: num(values[sec.budgetRow - 1]?.[LUNCH_COLS.date]),
+				總和: num(values[sec.totalRow - 1]?.[LUNCH_COLS.amount]),
+				剩餘: num(values[sec.budgetRow - 1]?.[LUNCH_COLS.amount]),
+			};
+		} catch {
+			lunch = null;
+		}
 	}
 
 	return {
@@ -1089,25 +1111,33 @@ export async function startMonth(client: SheetsClient, month: number) {
 	// The lunch log restarts each month: clear the 中餐預算 data rows (O–Q).
 	// Cells are cleared, not deleted, so nothing shifts; the 總和 =SUM over the
 	// empty window reads 0 and 剩餘 resets to the full budget. The anchor probe
-	// keeps pre-section tabs silent while a malformed section still fails loudly.
+	// keeps pre-section tabs silent. A malformed section (e.g. torn by a
+	// transfer insert) must not fail month-open after duplicateSheet has
+	// already committed, so the clear is skipped and the reason surfaced
+	// instead of thrown.
 	let lunchCleared = false;
+	let lunchWarning: string | undefined;
 	if (findRowByValue(values, LUNCH_COLS.date, LUNCH_SECTION_LABEL) !== null) {
-		const lunch = findLunchSection(values, newTab);
-		if (lunch.totalRow > lunch.headerRow + 1) {
-			requests.push({
-				repeatCell: {
-					range: {
-						sheetId,
-						startRowIndex: lunch.headerRow,
-						endRowIndex: lunch.totalRow - 1,
-						startColumnIndex: LUNCH_COLS.date,
-						endColumnIndex: LUNCH_COLS.amount + 1,
+		try {
+			const lunch = findLunchSection(values, newTab);
+			if (lunch.totalRow > lunch.headerRow + 1) {
+				requests.push({
+					repeatCell: {
+						range: {
+							sheetId,
+							startRowIndex: lunch.headerRow,
+							endRowIndex: lunch.totalRow - 1,
+							startColumnIndex: LUNCH_COLS.date,
+							endColumnIndex: LUNCH_COLS.amount + 1,
+						},
+						cell: {},
+						fields: "userEnteredValue",
 					},
-					cell: {},
-					fields: "userEnteredValue",
-				},
-			});
-			lunchCleared = true;
+				});
+				lunchCleared = true;
+			}
+		} catch (err) {
+			lunchWarning = err instanceof Error ? err.message : String(err);
 		}
 	}
 
@@ -1157,7 +1187,7 @@ export async function startMonth(client: SheetsClient, month: number) {
 	}
 	await client.batchUpdate(requests);
 
-	return { tab: newTab, duplicatedFrom: prevTab, kept, cleared, clearedIncomes, lunchCleared };
+	return { tab: newTab, duplicatedFrom: prevTab, kept, cleared, clearedIncomes, lunchCleared, lunchWarning };
 }
 
 export interface TripEntryParams {

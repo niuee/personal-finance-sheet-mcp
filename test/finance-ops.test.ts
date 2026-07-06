@@ -430,6 +430,15 @@ describe("findLunchSection", () => {
 		(g[37] as unknown[])[15] = "";
 		expect(() => findLunchSection(g, "9 月")).toThrow("總和");
 	});
+
+	it("scans past a blank row that a transfer insert opened between the labels and values rows", () => {
+		const g = lunchGrid();
+		// simulate one add_transfer full-section insert landing between the
+		// labels row (idx 33) and the values row (idx 34): values row shifts to
+		// idx 35, header to idx 36, data slot to idx 37, 總和 to idx 38.
+		g.splice(34, 0, []);
+		expect(findLunchSection(g, "9 月")).toEqual({ budgetRow: 36, headerRow: 37, totalRow: 39 });
+	});
 });
 
 /** Like fakeClient, but the single-cell scratch read returns `rate` instead of the grid. */
@@ -570,7 +579,7 @@ describe("addTransfer", () => {
 function lunchClient(grid: unknown[][], budgetRow: unknown[] = [3900, "", 3547]): SheetsClient {
 	return {
 		readRange: vi.fn(async (range: string) =>
-			range.includes("A1:Q60")
+			range.includes("A1:Q120")
 				? { range, values: grid, truncated: false }
 				: { range, values: [budgetRow], truncated: false },
 		),
@@ -584,7 +593,7 @@ describe("addLunch", () => {
 		const client = lunchClient(lunchGrid());
 		const result = await addLunch(client, { amount: 143, month: 9, date: "9/2" });
 
-		expect((client.readRange as any).mock.calls[0]).toEqual(["'9 月'!A1:Q60", "FORMULA"]);
+		expect((client.readRange as any).mock.calls[0]).toEqual(["'9 月'!A1:Q120", "FORMULA"]);
 		const requests = (client.batchUpdate as any).mock.calls[0][0];
 		expect(requests).toHaveLength(3); // date cell, item+amount, 總和 rewrite — no insert needed
 		const dateCell = requests[0].updateCells;
@@ -626,6 +635,7 @@ describe("addLunch", () => {
 		const result = await addLunch(client, { amount: 210, month: 9, date: "9/9" });
 
 		const requests = (client.batchUpdate as any).mock.calls[0][0];
+		expect(requests).toHaveLength(4);
 		expect(requests[0].insertDimension).toEqual({
 			range: { sheetId: 111, dimension: "ROWS", startIndex: 37, endIndex: 38 },
 			inheritFromBefore: true,
@@ -919,7 +929,7 @@ describe("monthSummary", () => {
 		const client = fakeClient(grid);
 		const result = await monthSummary(client, 9);
 
-		expect((client.readRange as any).mock.calls[0]).toEqual(["'9 月'!A1:Q60", "UNFORMATTED_VALUE"]);
+		expect((client.readRange as any).mock.calls[0]).toEqual(["'9 月'!A1:Q120", "UNFORMATTED_VALUE"]);
 		expect(result).toEqual({
 			tab: "9 月",
 			花費總額: 72127.21,
@@ -1018,6 +1028,16 @@ describe("monthSummary", () => {
 
 		expect(result.中餐預算).toEqual({ 編列預算: 3900, 總和: 353, 剩餘: 3547 });
 		expect(result.午餐超支或回補).toBe(3547);
+	});
+
+	it("resolves with 中餐預算 null when the lunch section is torn beyond recognition", async () => {
+		const g = lunchGrid();
+		(g[35] as unknown[])[14] = ""; // no 日期 header within 8 rows of the anchor
+		const client = fakeClient(g);
+
+		const result = await monthSummary(client, 9);
+
+		expect(result.中餐預算).toBeNull();
 	});
 });
 
@@ -1190,7 +1210,7 @@ describe("startMonth", () => {
 
 		const result = await startMonth(client, 10);
 
-		expect((client.readRange as any).mock.calls[0]).toEqual(["'10 月'!A1:Q60", "FORMULA"]);
+		expect((client.readRange as any).mock.calls[0]).toEqual(["'10 月'!A1:Q120", "FORMULA"]);
 		const requests = (client.batchUpdate as any).mock.calls[1][0];
 		// data rows 37..37 (0-indexed 36..37), columns O–Q (14..17) — cells cleared, nothing shifts
 		const clear = requests.find((r: any) => r.repeatCell && r.repeatCell.range.startColumnIndex === 14);
@@ -1202,6 +1222,17 @@ describe("startMonth", () => {
 			},
 		});
 		expect(result.lunchCleared).toBe(true);
+	});
+
+	it("skips the lunch clear and surfaces a warning instead of throwing when the section is torn", async () => {
+		const g = lunchGrid();
+		(g[35] as unknown[])[14] = ""; // no 日期 header within 8 rows of the anchor
+		const client = startMonthClient(g, ["9 月", "8 月"]);
+
+		const result = await startMonth(client, 10);
+
+		expect(result.lunchCleared).toBe(false);
+		expect(result.lunchWarning).toMatch(/日期|中餐預算/);
 	});
 });
 

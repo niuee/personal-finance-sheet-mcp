@@ -55,16 +55,29 @@ New tailored tool `add_lunch`:
 
 ## Section location (`src/finance-ops.ts`)
 
-New grid constant `LUNCH_GRID_READ = "A1:Q60"` (the section sits right
-of the transfer block's M).
+New grid constant `LUNCH_GRID_READ = "A1:Q120"` (the section sits right
+of the transfer block's M; the deeper window is needed because the lunch
+section grows one row per entry and pushes the 銀行餘額 block below it
+downward — a too-shallow read makes start_month's 上月…餘額 rewire
+silently skip).
 
-`findLunchSection(values, tab)` mirrors `findTransferSection`:
+`findLunchSection(values, tab)` mirrors `findTransferSection`, but does
+not assume a fixed offset from the anchor to the header: add_transfer's
+full-section path inserts a whole sheet row directly above the transfer
+總和 row, and on live geometry that insert can land between this
+section's anchor and its header, opening a blank row that a fixed
+anchor+3 offset would miss.
 
-1. Anchor: `中餐預算` in column O → `budgetRow` = anchor+2 (the
-   編列預算/剩餘 values row).
-2. Validate that anchor+3 has `日期` in column O (the header row) —
-   descriptive error otherwise.
-3. Scan column P below the header for `總和` → `totalRow`; error when
+1. Anchor: `中餐預算` in column O.
+2. Scan column O from anchor+1 through anchor+8 (inclusive) for `日期`
+   → `headerRow`; descriptive error (naming the 8-row window) when not
+   found.
+3. `budgetRow` = `headerRow` − 1 — the 編列預算/剩餘 values row always
+   sits directly above the header, because a whole-row insert above the
+   transfer 總和 shifts the values row and the header down together, so
+   this adjacency holds regardless of how many blank rows opened up
+   between the anchor and the header.
+4. Scan column P below the header for `總和` → `totalRow`; error when
    missing.
 
 Returns `{ budgetRow, headerRow, totalRow }`. Missing anchor →
@@ -108,7 +121,7 @@ and the excess is counting against 總新臺幣餘額.
 Two changes, both in `startMonth`:
 
 1. **Widen the read** from `GRID_READ` (A1:H60) to `LUNCH_GRID_READ`
-   (A1:Q60) so the lunch section is visible.
+   (A1:Q120) so the lunch section is visible.
 2. **Clear the lunch data rows**: when `findLunchSection` succeeds on
    the duplicated tab, add a `repeatCell` clearing `userEnteredValue`
    over O–Q between the header and 總和 rows. Cells are cleared, not
