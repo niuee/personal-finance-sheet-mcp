@@ -288,11 +288,16 @@ export async function migrateIncomeLayout(
 	const usd = colLetter(MONTH_COLS.usd);
 	const twd = colLetter(MONTH_COLS.twd);
 	const incRange = (col: string) => `${col}${win.start}:${col}${win.end}`;
-	const expRange = (col: string) => `${col}${expense.start}:${col}${expense.end}`;
+	// The 支出 SUMIFs exclude a leading 上月透支 row: the carry is not a cash
+	// outflow this month (the debt already flowed through last month's 總…餘額),
+	// so counting it would double-book the overdraft against the bank ledgers.
+	const overdraftRow = findRowByValue(values, MONTH_COLS.item, OVERDRAFT_LABEL);
+	const spendStart = overdraftRow === expense.start ? expense.start + 1 : expense.start;
+	const spendRange = (col: string) => `${col}${spendStart}:${col}${expense.end}`;
 	write(finalRow(usdIncRow), MONTH_COLS.budgetValue, `=SUMIF(${incRange(C)},"USD",${incRange(D)})`, cellStr(usdIncRow, MONTH_COLS.budgetValue));
-	write(finalRow(usdSpRow), MONTH_COLS.budgetValue, `=SUMIF(${expRange(F)},"USD",${expRange(usd)})`, cellStr(usdSpRow, MONTH_COLS.budgetValue));
+	write(finalRow(usdSpRow), MONTH_COLS.budgetValue, `=SUMIF(${spendRange(F)},"USD",${spendRange(usd)})`, cellStr(usdSpRow, MONTH_COLS.budgetValue));
 	write(finalRow(ntdIncRow), MONTH_COLS.budgetValue, `=SUMIF(${incRange(C)},"TWD",${incRange(D)})`, cellStr(ntdIncRow, MONTH_COLS.budgetValue));
-	write(finalRow(ntdSpRow), MONTH_COLS.budgetValue, `=SUMIF(${expRange(F)},"TWD",${expRange(twd)})`, cellStr(ntdSpRow, MONTH_COLS.budgetValue));
+	write(finalRow(ntdSpRow), MONTH_COLS.budgetValue, `=SUMIF(${spendRange(F)},"TWD",${spendRange(twd)})`, cellStr(ntdSpRow, MONTH_COLS.budgetValue));
 	write(finalRow(usdBalRow), MONTH_COLS.item, TOTAL_USD_BALANCE_LABEL, USD_BALANCE_LABEL);
 	write(finalRow(ntdBalRow), MONTH_COLS.item, TOTAL_NTD_BALANCE_LABEL, NTD_BALANCE_LABEL);
 
