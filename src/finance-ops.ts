@@ -9,6 +9,7 @@ import {
 	BUDGET_HEADER_LABEL,
 	currentMonthTab,
 	LUNCH_COLS,
+	LUNCH_DEFAULT_ITEM,
 	LUNCH_SECTION_LABEL,
 	LUNCH_TOTAL_LABEL,
 	MONTH_COLS,
@@ -770,6 +771,108 @@ export async function addTransfer(client: SheetsClient, p: AddTransferParams) {
 		spread: round2(spread),
 		fee: p.fee,
 		extraCost: round2(spread + p.fee),
+	};
+}
+
+export interface AddLunchParams {
+	/** 金額 in NTD. */
+	amount: number;
+	/** 項目; defaults to 中餐. */
+	item?: string;
+	/** M/D, MM/DD, YYYY/M/D, or YYYY-MM-DD; omitted = today in Taipei. */
+	date?: string;
+	month?: number;
+}
+
+export async function addLunch(client: SheetsClient, p: AddLunchParams) {
+	const tab = p.month !== undefined ? monthTabName(p.month) : currentMonthTab();
+	// Parse before any read/write so a bad date fails closed.
+	const dateSerialValue = p.date !== undefined ? parseDateInput(p.date) : todaySerial();
+	const item = (p.item ?? LUNCH_DEFAULT_ITEM).trim() || LUNCH_DEFAULT_ITEM;
+
+	const { values, truncated } = await client.readRange(`${quoteTab(tab)}!${LUNCH_GRID_READ}`, "FORMULA");
+	assertNotTruncated(truncated, tab, LUNCH_GRID_READ);
+	const { budgetRow, headerRow, totalRow } = findLunchSection(values, tab);
+
+	// First row between the header and 總和 that is empty across O–Q.
+	let targetRow: number | null = null;
+	for (let r = headerRow + 1; r < totalRow; r++) {
+		const cells = (values[r - 1] ?? []).slice(LUNCH_COLS.date, LUNCH_COLS.amount + 1);
+		if (!cells.some((c) => c !== "" && c != null)) {
+			targetRow = r;
+			break;
+		}
+	}
+
+	const sheetId = await client.getSheetId(tab);
+	const inserted = targetRow === null;
+	let finalTotalRow = totalRow;
+	const requests: object[] = [];
+	if (targetRow === null) {
+		// Insert directly above 總和; the ledger's 午餐超支或回補 =Q reference
+		// tracks the 剩餘 cell (above the insert) and needs no rewiring.
+		targetRow = totalRow;
+		finalTotalRow = totalRow + 1;
+		requests.push({
+			insertDimension: {
+				range: { sheetId, dimension: "ROWS", startIndex: targetRow - 1, endIndex: targetRow },
+				inheritFromBefore: true,
+			},
+		});
+	}
+	const Q = colLetter(LUNCH_COLS.amount);
+	requests.push(
+		{
+			updateCells: {
+				start: { sheetId, rowIndex: targetRow - 1, columnIndex: LUNCH_COLS.date },
+				rows: [
+					{
+						values: [
+							{
+								userEnteredValue: { numberValue: dateSerialValue },
+								userEnteredFormat: { numberFormat: { type: "DATE", pattern: "mm/dd" } },
+							},
+						],
+					},
+				],
+				fields: "userEnteredValue,userEnteredFormat.numberFormat",
+			},
+		},
+		{
+			updateCells: {
+				start: { sheetId, rowIndex: targetRow - 1, columnIndex: LUNCH_COLS.item },
+				rows: [{ values: [cellData(item), cellData(p.amount)] }],
+				fields: "userEnteredValue",
+			},
+		},
+		// Rewrite 總和 over the whole data window: the sheet's original
+		// =sum(Q38:Q39) cannot auto-extend, so the op owns the range from now on.
+		{
+			updateCells: {
+				start: { sheetId, rowIndex: finalTotalRow - 1, columnIndex: LUNCH_COLS.amount },
+				rows: [{ values: [cellData(`=SUM(${Q}${headerRow + 1}:${Q}${finalTotalRow - 1})`)] }],
+				fields: "userEnteredValue",
+			},
+		},
+	);
+	await client.batchUpdate(requests);
+
+	// Echo the section state AFTER the write so the caller sees the new leftover.
+	const O = colLetter(LUNCH_COLS.date);
+	const readBack = await client.readRange(`${quoteTab(tab)}!${O}${budgetRow}:${Q}${budgetRow}`, "UNFORMATTED_VALUE");
+	const num = (v: unknown): number | null => (typeof v === "number" ? v : null);
+	const budget = num(readBack.values[0]?.[0]);
+	const leftover = num(readBack.values[0]?.[2]);
+	return {
+		tab,
+		row: targetRow,
+		inserted,
+		date: serialToIso(dateSerialValue),
+		item,
+		amount: p.amount,
+		budget,
+		spent: budget !== null && leftover !== null ? round2(budget - leftover) : null,
+		leftover,
 	};
 }
 

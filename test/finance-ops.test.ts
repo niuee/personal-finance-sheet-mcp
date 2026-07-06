@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
 	adaptRowFormula,
 	addExpense,
+	addLunch,
 	addTransfer,
 	addTripEntry,
 	annotateRows,
@@ -561,6 +562,112 @@ describe("addTransfer", () => {
 		const client = transferClient(transferGrid());
 		(client.readRange as any).mockResolvedValue({ range: "x", values: transferGrid(), truncated: true });
 		await expect(addTransfer(client, { ntd: 100, usd: 3, fee: 0, month: 9 })).rejects.toThrow("truncated");
+		expect((client.batchUpdate as any).mock.calls).toHaveLength(0);
+	});
+});
+
+/** Like fakeClient, but the post-write 編列預算/剩餘 read-back returns `budgetRow`. */
+function lunchClient(grid: unknown[][], budgetRow: unknown[] = [3900, "", 3547]): SheetsClient {
+	return {
+		readRange: vi.fn(async (range: string) =>
+			range.includes("A1:Q60")
+				? { range, values: grid, truncated: false }
+				: { range, values: [budgetRow], truncated: false },
+		),
+		getSheetId: vi.fn(async () => 111),
+		batchUpdate: vi.fn(async () => ({ replies: [{}] })),
+	} as unknown as SheetsClient;
+}
+
+describe("addLunch", () => {
+	it("writes into the first empty row and rewrites 總和 over the data window", async () => {
+		const client = lunchClient(lunchGrid());
+		const result = await addLunch(client, { amount: 143, month: 9, date: "9/2" });
+
+		expect((client.readRange as any).mock.calls[0]).toEqual(["'9 月'!A1:Q60", "FORMULA"]);
+		const requests = (client.batchUpdate as any).mock.calls[0][0];
+		expect(requests).toHaveLength(3); // date cell, item+amount, 總和 rewrite — no insert needed
+		const dateCell = requests[0].updateCells;
+		expect(dateCell.start).toEqual({ sheetId: 111, rowIndex: 36, columnIndex: 14 });
+		expect(dateCell.rows[0].values[0].userEnteredFormat).toEqual({
+			numberFormat: { type: "DATE", pattern: "mm/dd" },
+		});
+		const rowCells = requests[1].updateCells;
+		expect(rowCells.start).toEqual({ sheetId: 111, rowIndex: 36, columnIndex: 15 });
+		expect(rowCells.rows[0].values.map((v: any) => v.userEnteredValue)).toEqual([
+			{ stringValue: "中餐" }, // P 項目 defaults
+			{ numberValue: 143 }, // Q 金額
+		]);
+		const sum = requests[2].updateCells;
+		expect(sum.start).toEqual({ sheetId: 111, rowIndex: 37, columnIndex: 16 });
+		expect(sum.rows[0].values[0].userEnteredValue).toEqual({ formulaValue: "=SUM(Q37:Q37)" });
+
+		// the 編列預算/剩餘 row is read back AFTER the write so the echo includes this entry
+		expect((client.readRange as any).mock.calls[1]).toEqual(["'9 月'!O35:Q35", "UNFORMATTED_VALUE"]);
+		expect(result).toEqual({
+			tab: "9 月",
+			row: 37,
+			inserted: false,
+			date: "2026-09-02",
+			item: "中餐",
+			amount: 143,
+			budget: 3900,
+			spent: 353, // 編列預算 − 剩餘
+			leftover: 3547,
+		});
+	});
+
+	it("inserts a row above 總和 when the section is full and widens the sum", async () => {
+		const g = lunchGrid();
+		(g[36] ??= [])[14] = 46266;
+		(g[36] as unknown[])[15] = "中餐";
+		(g[36] as unknown[])[16] = 143;
+		const client = lunchClient(g);
+		const result = await addLunch(client, { amount: 210, month: 9, date: "9/9" });
+
+		const requests = (client.batchUpdate as any).mock.calls[0][0];
+		expect(requests[0].insertDimension).toEqual({
+			range: { sheetId: 111, dimension: "ROWS", startIndex: 37, endIndex: 38 },
+			inheritFromBefore: true,
+		});
+		expect(requests[1].updateCells.start).toEqual({ sheetId: 111, rowIndex: 37, columnIndex: 14 });
+		expect(requests[3].updateCells.start).toEqual({ sheetId: 111, rowIndex: 38, columnIndex: 16 });
+		expect(requests[3].updateCells.rows[0].values[0].userEnteredValue).toEqual({
+			formulaValue: "=SUM(Q37:Q38)",
+		});
+		expect(result).toMatchObject({ row: 38, inserted: true });
+	});
+
+	it("accepts a custom 項目 and defaults 日期 to today in Taipei", async () => {
+		const client = lunchClient(lunchGrid());
+		await addLunch(client, { amount: 95, item: "午餐咖啡", month: 9 });
+		const requests = (client.batchUpdate as any).mock.calls[0][0];
+		expect(requests[0].updateCells.rows[0].values[0].userEnteredValue).toEqual({
+			numberValue: todaySerial(),
+		});
+		expect(requests[1].updateCells.rows[0].values[0].userEnteredValue).toEqual({
+			stringValue: "午餐咖啡",
+		});
+	});
+
+	it("refuses when the tab has no 中餐預算 section", async () => {
+		const client = lunchClient(transferGrid());
+		await expect(addLunch(client, { amount: 100, month: 6 })).rejects.toThrow("中餐預算");
+		expect((client.batchUpdate as any).mock.calls).toHaveLength(0);
+	});
+
+	it("rejects a bad date before any read or write", async () => {
+		const client = lunchClient(lunchGrid());
+		await expect(addLunch(client, { amount: 100, month: 9, date: "not-a-date" })).rejects.toThrow(
+			"Unrecognized date",
+		);
+		expect((client.readRange as any).mock.calls).toHaveLength(0);
+	});
+
+	it("refuses when the grid read is truncated", async () => {
+		const client = lunchClient(lunchGrid());
+		(client.readRange as any).mockResolvedValue({ range: "x", values: lunchGrid(), truncated: true });
+		await expect(addLunch(client, { amount: 100, month: 9 })).rejects.toThrow("truncated");
 		expect((client.batchUpdate as any).mock.calls).toHaveLength(0);
 	});
 });

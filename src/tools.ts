@@ -3,6 +3,7 @@ import { z } from "zod";
 import { CONVENTIONS_TEXT, KNOWN_TAGS } from "./conventions";
 import {
 	addExpense,
+	addLunch,
 	addTransfer,
 	addTripEntry,
 	annotateRows,
@@ -262,6 +263,28 @@ export function registerTailoredTools(server: McpServer, client: SheetsClient): 
 		async (p) => {
 			try {
 				return ok(await addTransfer(client, p));
+			} catch (e) {
+				return toError(e);
+			}
+		},
+	);
+
+	server.tool(
+		"add_lunch",
+		"Log a lunch into the 中餐預算 section of a monthly tab (columns O-Q; defaults to the current month): writes 日期/項目/金額 and keeps the section's 總和 covering every row. The month's lunch BUDGET is the recurring 中餐 row in the expense list — never also add_expense a lunch. The leftover (剩餘 = 編列預算 − 總和) feeds the 銀行餘額 block's 午餐超支或回補 row: unspent budget returns to 總新臺幣餘額, an overdraft deducts more. Returns budget/spent/leftover after the entry.",
+		{
+			amount: z.number().positive().describe("金額 in NTD"),
+			item: z.string().min(1).optional().describe("項目 (default: 中餐)"),
+			date: z
+				.string()
+				.min(1)
+				.optional()
+				.describe("Lunch date: M/D, MM/DD, or YYYY-MM-DD (defaults to today in Taipei)"),
+			month: monthParam.optional().describe("Target month 1-12 (default: current month)"),
+		},
+		async (p) => {
+			try {
+				return ok(await addLunch(client, p));
 			} catch (e) {
 				return toError(e);
 			}
