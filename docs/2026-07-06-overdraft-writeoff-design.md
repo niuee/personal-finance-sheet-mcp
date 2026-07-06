@@ -35,6 +35,12 @@ unless the month itself overspends.
    settled month's 月剩餘 closes at exactly 0. A carried 上月透支 is part of
    the deficit (it sits in the expense window), so it is settled with
    everything else.
+   Corrected 2026-07-06 (v3): split per currency. 美金透支沖銷 sits under
+   月美金餘額 and settles the USD month-deficit against 總美金餘額;
+   新臺幣透支沖銷 sits under 月新臺幣餘額 and settles the NTD deficit
+   against 總新臺幣餘額 — each =IF(AND(月…餘額<0, 總…餘額>=0), -月…餘額, 0).
+   月剩餘 = (月美+美沖)×rate + 月新+新沖. Each currency settles independently
+   from its own bank ledger.
 3. **Visible row**: the write-off is a labeled row, not an invisible
    term inside 月剩餘's formula — auditable at a glance, reportable by
    month_summary.
@@ -46,12 +52,13 @@ values in D, like the rest of the block). Using 7月's current rows as the
 example:
 
 ```
-37  月美金餘額    =D46-D47
-38  月新臺幣餘額  =D50-D51
-39  透支沖銷      =IF(AND(D37*GF+D38<0, D53>=0), -(D37*GF+D38), 0)  ← new row
-40  月剩餘        =D37*GOOGLEFINANCE("CURRENCY:USDTWD")+D38+D39
+37  月美金餘額      =D47-D48
+38  美金透支沖銷    =IF(AND(D37<0, D50>=0), -D37, 0)   ← new row
+39  月新臺幣餘額    =D51-D52
+40  新臺幣透支沖銷  =IF(AND(D39<0, D54>=0), -D39, 0)   ← new row
+41  月剩餘          =(D37+D38)*GOOGLEFINANCE("CURRENCY:USDTWD")+D39+D40
      …
-53  總新臺幣餘額  (bank block shifted +1 by the insert)
+50  總美金餘額 / 54  總新臺幣餘額  (bank block shifted +2 by the inserts)
 ```
 
 - `D53` = the tab's own 總新臺幣餘額 cell, `E3` = the tab's own 上月透支

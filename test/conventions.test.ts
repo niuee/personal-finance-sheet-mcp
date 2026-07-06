@@ -27,7 +27,8 @@ import {
 	TRIP_MAX_BLOCK_ROWS,
 	TRIP_TOTAL_LABEL,
 	USD_PAYMENT_LABEL,
-	WRITEOFF_LABEL,
+	USD_WRITEOFF_LABEL,
+	NTD_WRITEOFF_LABEL,
 } from "../src/conventions";
 
 describe("conventions", () => {
@@ -80,7 +81,8 @@ describe("conventions", () => {
 		expect(MONTH_USD_NET_LABEL).toBe("月美金餘額");
 		expect(MONTH_NTD_NET_LABEL).toBe("月新臺幣餘額");
 		expect(MONTH_REMAINDER_LABEL).toBe("月剩餘");
-		expect(WRITEOFF_LABEL).toBe("透支沖銷");
+		expect(USD_WRITEOFF_LABEL).toBe("美金透支沖銷");
+		expect(NTD_WRITEOFF_LABEL).toBe("新臺幣透支沖銷");
 		expect(TOTAL_USD_BALANCE_LABEL).toBe("總美金餘額");
 		expect(TOTAL_NTD_BALANCE_LABEL).toBe("總新臺幣餘額");
 	});
