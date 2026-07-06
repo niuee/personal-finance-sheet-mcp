@@ -326,7 +326,7 @@ After the PR merges and `bun run deploy` ships the Worker, run a scratch script 
 
 1. Read `GRID_READ` (FORMULA). Locate 月剩餘, 月新臺幣餘額, 上月透支, 總新臺幣餘額 by label; skip the tab (log) if 透支沖銷 already exists.
 2. `insertDimension` one row at the 月剩餘 position (`startIndex = 月剩餘row − 1`) — the new row lands where 月剩餘 was; 月剩餘 and everything below shifts +1, and cross-tab references to this tab's 月剩餘 auto-shift (verified behavior).
-3. Write into the new row: B = `透支沖銷`, D = `=IF(D{總新臺幣餘額row+1}>={上月透支 E-cell}, {上月透支 E-cell}, 0)` (the +1 because the bank block shifted below the insert; the 上月透支 row is above and does not shift).
+3. Write into the new row: B = `透支沖銷`, D = `=IF(D{總新臺幣餘額row+1}>=0, {上月透支 E-cell}, 0)` (the +1 because the bank block shifted below the insert; the 上月透支 row is above and does not shift).
 4. Re-read the shifted 月剩餘 formula and append `+D{沖銷row}` to it.
 5. Log every write with its previous value; verify the computed 月剩餘/透支沖銷 afterwards.
 
