@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
 	adaptRowFormula,
 	addExpense,
+	addLunch,
 	addTransfer,
 	addTripEntry,
 	annotateRows,
@@ -13,11 +14,13 @@ import {
 	FIND_CELLS_CAP,
 	findExpenseWindow,
 	findIncomeWindow,
+	findLunchSection,
 	findRowByLabels,
 	findRowByValue,
 	findTransferSection,
 	findTripBlocks,
 	getCategories,
+	LUNCH_GRID_READ,
 	migrateIncomeLayout,
 	monthSummary,
 	safeUpdateRange,
@@ -153,6 +156,35 @@ function migratedMonthGrid(): unknown[][] {
 	return g;
 }
 
+/**
+ * migratedMonthGrid with the split carry: 上月美金透支 (row 3) + 上月新臺幣透支 (row 4);
+ * everything below shifts one row down. The formula strings below the splice keep
+ * their pre-splice row numbers — the fake client never evaluates formulas, and the
+ * code under test matches rows by label, not by the numbers embedded in these strings.
+ */
+function splitCarryGrid(): unknown[][] {
+	const g = migratedMonthGrid();
+	g.splice(
+		2,
+		1,
+		["", "上月美金透支", "透支", "=IF(-('8 月'!D17+'8 月'!D18) > 0, -('8 月'!D17+'8 月'!D18), 0)", '=D3*GOOGLEFINANCE("CURRENCY:USDTWD")', "USD"],
+		["", "上月新臺幣透支", "透支", "", "=IF(-('8 月'!D19+'8 月'!D20) > 0, -('8 月'!D19+'8 月'!D20), 0)", "TWD"],
+	);
+	return g;
+}
+
+/** Old-layout monthGrid with the split carry rows but no 月 view — the degenerate rebuild case (剩餘 shifts to row 16). */
+function splitCarryOldLayoutGrid(): unknown[][] {
+	const g = monthGrid();
+	g.splice(
+		2,
+		1,
+		["", "上月美金透支", "透支", 0, '=D3*GOOGLEFINANCE("CURRENCY:USDTWD")', "USD"],
+		["", "上月新臺幣透支", "透支", "", "=IF(-'8 月'!D15 > 0, -'8 月'!D15, 0)", "TWD"],
+	);
+	return g;
+}
+
 /** migratedMonthGrid + a 乾坤大挪移 transfer block at G33:M36 (data slot row 35 empty). */
 function transferGrid(): unknown[][] {
 	const g = migratedMonthGrid();
@@ -160,6 +192,26 @@ function transferGrid(): unknown[][] {
 	g[33] = ["", "", "", "", "", "", "日期", "新臺幣", "當下美金", "實際美金", "匯差", "手續費", "當筆總額外花費"];
 	// row 35 empty — the first data slot
 	g[35] = ["", "", "", "", "", "", "總和", "=sum(H35)", "=sum(I35)", "=sum(J35)", "=sum(K35)", "=sum(L35)", "=sum(M35)"];
+	return g;
+}
+
+/** transferGrid + a 中餐預算 lunch block at O33:Q38 (data slot row 37 empty). */
+function lunchGrid(): unknown[][] {
+	const g = transferGrid();
+	const put = (idx: number, col: number, v: unknown) => {
+		(g[idx] ??= [])[col] = v;
+	};
+	put(32, 14, "中餐預算");
+	put(33, 14, "編列預算");
+	put(33, 16, "剩餘 (負數會加回去支出）");
+	put(34, 14, "=E5"); // 編列預算 ← the 中餐 expense cell
+	put(34, 16, "=O35-Q38"); // 剩餘 = 編列預算 − 總和
+	put(35, 14, "日期");
+	put(35, 15, "項目");
+	put(35, 16, "金額");
+	// row 37 (index 36) empty — the first data slot
+	put(37, 15, "總和");
+	put(37, 16, "=sum(Q37)");
 	return g;
 }
 
@@ -387,6 +439,37 @@ describe("findTransferSection", () => {
 	});
 });
 
+describe("findLunchSection", () => {
+	it("locates the budget, header and 總和 rows from the anchor", () => {
+		expect(findLunchSection(lunchGrid(), "9 月")).toEqual({ budgetRow: 35, headerRow: 36, totalRow: 38 });
+	});
+
+	it("throws when the tab has no 中餐預算 section", () => {
+		expect(() => findLunchSection(transferGrid(), "6 月")).toThrow("中餐預算");
+	});
+
+	it("throws when the header row under the anchor is missing", () => {
+		const g = lunchGrid();
+		(g[35] as unknown[])[14] = "";
+		expect(() => findLunchSection(g, "9 月")).toThrow("日期");
+	});
+
+	it("throws when there is no 總和 row", () => {
+		const g = lunchGrid();
+		(g[37] as unknown[])[15] = "";
+		expect(() => findLunchSection(g, "9 月")).toThrow("總和");
+	});
+
+	it("scans past a blank row that a transfer insert opened between the labels and values rows", () => {
+		const g = lunchGrid();
+		// simulate one add_transfer full-section insert landing between the
+		// labels row (idx 33) and the values row (idx 34): values row shifts to
+		// idx 35, header to idx 36, data slot to idx 37, 總和 to idx 38.
+		g.splice(34, 0, []);
+		expect(findLunchSection(g, "9 月")).toEqual({ budgetRow: 36, headerRow: 37, totalRow: 39 });
+	});
+});
+
 /** Like fakeClient, but the single-cell scratch read returns `rate` instead of the grid. */
 function transferClient(grid: unknown[][], rate: unknown = 29.85): SheetsClient {
 	return {
@@ -517,6 +600,113 @@ describe("addTransfer", () => {
 		const client = transferClient(transferGrid());
 		(client.readRange as any).mockResolvedValue({ range: "x", values: transferGrid(), truncated: true });
 		await expect(addTransfer(client, { ntd: 100, usd: 3, fee: 0, month: 9 })).rejects.toThrow("truncated");
+		expect((client.batchUpdate as any).mock.calls).toHaveLength(0);
+	});
+});
+
+/** Like fakeClient, but the post-write 編列預算/剩餘 read-back returns `budgetRow`. */
+function lunchClient(grid: unknown[][], budgetRow: unknown[] = [3900, "", 3547]): SheetsClient {
+	return {
+		readRange: vi.fn(async (range: string) =>
+			range.includes("A1:Q120")
+				? { range, values: grid, truncated: false }
+				: { range, values: [budgetRow], truncated: false },
+		),
+		getSheetId: vi.fn(async () => 111),
+		batchUpdate: vi.fn(async () => ({ replies: [{}] })),
+	} as unknown as SheetsClient;
+}
+
+describe("addLunch", () => {
+	it("writes into the first empty row and rewrites 總和 over the data window", async () => {
+		const client = lunchClient(lunchGrid());
+		const result = await addLunch(client, { amount: 143, month: 9, date: "9/2" });
+
+		expect((client.readRange as any).mock.calls[0]).toEqual(["'9 月'!A1:Q120", "FORMULA"]);
+		const requests = (client.batchUpdate as any).mock.calls[0][0];
+		expect(requests).toHaveLength(3); // date cell, item+amount, 總和 rewrite — no insert needed
+		const dateCell = requests[0].updateCells;
+		expect(dateCell.start).toEqual({ sheetId: 111, rowIndex: 36, columnIndex: 14 });
+		expect(dateCell.rows[0].values[0].userEnteredFormat).toEqual({
+			numberFormat: { type: "DATE", pattern: "mm/dd" },
+		});
+		const rowCells = requests[1].updateCells;
+		expect(rowCells.start).toEqual({ sheetId: 111, rowIndex: 36, columnIndex: 15 });
+		expect(rowCells.rows[0].values.map((v: any) => v.userEnteredValue)).toEqual([
+			{ stringValue: "中餐" }, // P 項目 defaults
+			{ numberValue: 143 }, // Q 金額
+		]);
+		const sum = requests[2].updateCells;
+		expect(sum.start).toEqual({ sheetId: 111, rowIndex: 37, columnIndex: 16 });
+		expect(sum.rows[0].values[0].userEnteredValue).toEqual({ formulaValue: "=SUM(Q37:Q37)" });
+
+		// the 編列預算/剩餘 row is read back AFTER the write so the echo includes this entry
+		expect((client.readRange as any).mock.calls[1]).toEqual(["'9 月'!O35:Q35", "UNFORMATTED_VALUE"]);
+		expect(result).toEqual({
+			tab: "9 月",
+			row: 37,
+			inserted: false,
+			date: "2026-09-02",
+			item: "中餐",
+			amount: 143,
+			budget: 3900,
+			spent: 353, // 編列預算 − 剩餘
+			leftover: 3547,
+		});
+	});
+
+	it("inserts a row above 總和 when the section is full and widens the sum", async () => {
+		const g = lunchGrid();
+		(g[36] ??= [])[14] = 46266;
+		(g[36] as unknown[])[15] = "中餐";
+		(g[36] as unknown[])[16] = 143;
+		const client = lunchClient(g);
+		const result = await addLunch(client, { amount: 210, month: 9, date: "9/9" });
+
+		const requests = (client.batchUpdate as any).mock.calls[0][0];
+		expect(requests).toHaveLength(4);
+		expect(requests[0].insertDimension).toEqual({
+			range: { sheetId: 111, dimension: "ROWS", startIndex: 37, endIndex: 38 },
+			inheritFromBefore: true,
+		});
+		expect(requests[1].updateCells.start).toEqual({ sheetId: 111, rowIndex: 37, columnIndex: 14 });
+		expect(requests[3].updateCells.start).toEqual({ sheetId: 111, rowIndex: 38, columnIndex: 16 });
+		expect(requests[3].updateCells.rows[0].values[0].userEnteredValue).toEqual({
+			formulaValue: "=SUM(Q37:Q38)",
+		});
+		expect(result).toMatchObject({ row: 38, inserted: true });
+	});
+
+	it("accepts a custom 項目 and defaults 日期 to today in Taipei", async () => {
+		const client = lunchClient(lunchGrid());
+		await addLunch(client, { amount: 95, item: "午餐咖啡", month: 9 });
+		const requests = (client.batchUpdate as any).mock.calls[0][0];
+		expect(requests[0].updateCells.rows[0].values[0].userEnteredValue).toEqual({
+			numberValue: todaySerial(),
+		});
+		expect(requests[1].updateCells.rows[0].values[0].userEnteredValue).toEqual({
+			stringValue: "午餐咖啡",
+		});
+	});
+
+	it("refuses when the tab has no 中餐預算 section", async () => {
+		const client = lunchClient(transferGrid());
+		await expect(addLunch(client, { amount: 100, month: 6 })).rejects.toThrow("中餐預算");
+		expect((client.batchUpdate as any).mock.calls).toHaveLength(0);
+	});
+
+	it("rejects a bad date before any read or write", async () => {
+		const client = lunchClient(lunchGrid());
+		await expect(addLunch(client, { amount: 100, month: 9, date: "not-a-date" })).rejects.toThrow(
+			"Unrecognized date",
+		);
+		expect((client.readRange as any).mock.calls).toHaveLength(0);
+	});
+
+	it("refuses when the grid read is truncated", async () => {
+		const client = lunchClient(lunchGrid());
+		(client.readRange as any).mockResolvedValue({ range: "x", values: lunchGrid(), truncated: true });
+		await expect(addLunch(client, { amount: 100, month: 9 })).rejects.toThrow("truncated");
 		expect((client.batchUpdate as any).mock.calls).toHaveLength(0);
 	});
 });
@@ -768,11 +958,15 @@ describe("monthSummary", () => {
 		const client = fakeClient(grid);
 		const result = await monthSummary(client, 9);
 
-		expect((client.readRange as any).mock.calls[0]).toEqual(["'9 月'!A1:H60", "UNFORMATTED_VALUE"]);
+		expect((client.readRange as any).mock.calls[0]).toEqual(["'9 月'!A1:Q120", "UNFORMATTED_VALUE"]);
 		expect(result).toEqual({
 			tab: "9 月",
 			花費總額: 72127.21,
 			上月透支: 13603.67,
+			上月美金透支: null,
+			上月新臺幣透支: null,
+			中餐預算: null,
+			午餐超支或回補: null,
 			tags: { 透支: 13603.67, 訂閱: 368.44 + 191.43 + 319.23, 生活用品: 1261, 購物: 5690.37 },
 			incomes: [],
 			薪水: 63913,
@@ -822,6 +1016,10 @@ describe("monthSummary", () => {
 			tab: "9 月",
 			花費總額: 15233.11,
 			上月透支: 13603.67,
+			上月美金透支: null,
+			上月新臺幣透支: null,
+			中餐預算: null,
+			午餐超支或回補: null,
 			tags: { 透支: 13603.67, 訂閱: 368.44, 生活用品: 1261 },
 			incomes: [
 				{ item: "沛還", currency: "TWD", amount: 20500 },
@@ -845,6 +1043,50 @@ describe("monthSummary", () => {
 			上月新臺幣餘額: 5000,
 			總新臺幣餘額: 138296.33,
 		});
+	});
+
+	it("reports the 中餐預算 section and 午餐超支或回補", async () => {
+		const grid = lunchGrid();
+		// UNFORMATTED render: formulas come back as computed numbers
+		(grid[34] as unknown[])[14] = 3900; // 編列預算
+		(grid[34] as unknown[])[16] = 3547; // 剩餘
+		(grid[36] ??= [])[14] = 46204;
+		(grid[36] as unknown[])[15] = "中餐";
+		(grid[36] as unknown[])[16] = 353;
+		(grid[37] as unknown[])[16] = 353; // 總和
+		grid[31] = ["", "午餐超支或回補", "", 3547];
+		const client = fakeClient(grid);
+
+		const result = await monthSummary(client, 9);
+
+		expect(result.中餐預算).toEqual({ 編列預算: 3900, 總和: 353, 剩餘: 3547 });
+		expect(result.午餐超支或回補).toBe(3547);
+	});
+
+	it("resolves with 中餐預算 null when the lunch section is torn beyond recognition", async () => {
+		const g = lunchGrid();
+		(g[35] as unknown[])[14] = ""; // no 日期 header within 8 rows of the anchor
+		const client = fakeClient(g);
+
+		const result = await monthSummary(client, 9);
+
+		expect(result.中餐預算).toBeNull();
+	});
+
+	it("reports the split carry rows and nulls the legacy 上月透支", async () => {
+		const grid = splitCarryGrid();
+		// UNFORMATTED render: formulas come back as computed numbers
+		grid[2] = ["", "上月美金透支", "透支", 20.5, 612.05, "USD"];
+		grid[3] = ["", "上月新臺幣透支", "透支", "", 968.57, "TWD"];
+		const client = fakeClient(grid);
+
+		const result = await monthSummary(client, 9);
+
+		expect(result.上月美金透支).toBe(20.5);
+		expect(result.上月新臺幣透支).toBe(968.57);
+		expect(result.上月透支).toBeNull();
+		// both rows are tagged 透支; the USD row's E holds the converted view
+		expect(result.tags.透支).toBeCloseTo(612.05 + 968.57, 2);
 	});
 });
 
@@ -910,8 +1152,12 @@ describe("startMonth", () => {
 			},
 		});
 		// 近鐵 80000系 (row 8) is the only non-recurring item in the fixture
+		// Scoped to A–F: the 乾坤大挪移 / 中餐預算 sections share these sheet rows.
 		expect(requests[5]).toEqual({
-			deleteDimension: { range: { sheetId: 555, dimension: "ROWS", startIndex: 7, endIndex: 8 } },
+			deleteRange: {
+				range: { sheetId: 555, startRowIndex: 7, endRowIndex: 8, startColumnIndex: 0, endColumnIndex: 6 },
+				shiftDimension: "ROWS",
+			},
 		});
 		expect(result).toEqual({
 			tab: "10 月",
@@ -919,6 +1165,7 @@ describe("startMonth", () => {
 			kept: ["上月透支", "Google Cloud", "ElevenLabs", "iCloud", "電話費"],
 			cleared: ["近鐵 80000系"],
 			clearedIncomes: [],
+			lunchCleared: false,
 		});
 	});
 
@@ -940,8 +1187,8 @@ describe("startMonth", () => {
 		const result = await startMonth(client, 10);
 
 		const requests = (client.batchUpdate as any).mock.calls[1][0];
-		const deletes = requests.filter((r: any) => r.deleteDimension);
-		expect(deletes.map((r: any) => r.deleteDimension.range.startIndex)).toEqual([9, 8, 7]);
+		const deletes = requests.filter((r: any) => r.deleteRange);
+		expect(deletes.map((r: any) => r.deleteRange.range.startRowIndex)).toEqual([9, 8, 7]);
 		expect(result.cleared).toEqual(["近鐵 80000系", "一次性A", "一次性B"]);
 	});
 
@@ -994,12 +1241,120 @@ describe("startMonth", () => {
 			{ userEnteredValue: { formulaValue: "=IF(-'9 月'!D21 > 0, -'9 月'!D21, 0)" } },
 		]);
 		// 多一個月薪水 (row 16) is the only ad-hoc income; expense rows are all recurring
-		const deletes = requests.filter((r: any) => r.deleteDimension);
+		const deletes = requests.filter((r: any) => r.deleteRange);
 		expect(deletes).toEqual([
-			{ deleteDimension: { range: { sheetId: 555, dimension: "ROWS", startIndex: 15, endIndex: 16 } } },
+			{
+				deleteRange: {
+					range: { sheetId: 555, startRowIndex: 15, endRowIndex: 16, startColumnIndex: 0, endColumnIndex: 6 },
+					shiftDimension: "ROWS",
+				},
+			},
 		]);
 		expect(result.cleared).toEqual([]);
 		expect(result.clearedIncomes).toEqual(["多一個月薪水"]);
+	});
+
+	it("clears the 中餐預算 data rows so the new month starts empty", async () => {
+		const client = startMonthClient(lunchGrid(), ["9 月", "8 月"]);
+
+		const result = await startMonth(client, 10);
+
+		expect((client.readRange as any).mock.calls[0]).toEqual(["'10 月'!A1:Q120", "FORMULA"]);
+		const requests = (client.batchUpdate as any).mock.calls[1][0];
+		// data rows 37..37 (0-indexed 36..37), columns O–Q (14..17) — cells cleared, nothing shifts
+		const clear = requests.find((r: any) => r.repeatCell && r.repeatCell.range.startColumnIndex === 14);
+		expect(clear).toEqual({
+			repeatCell: {
+				range: { sheetId: 555, startRowIndex: 36, endRowIndex: 37, startColumnIndex: 14, endColumnIndex: 17 },
+				cell: {},
+				fields: "userEnteredValue",
+			},
+		});
+		expect(result.lunchCleared).toBe(true);
+	});
+
+	it("skips the lunch clear and surfaces a warning instead of throwing when the section is torn", async () => {
+		const g = lunchGrid();
+		(g[35] as unknown[])[14] = ""; // no 日期 header within 8 rows of the anchor
+		const client = startMonthClient(g, ["9 月", "8 月"]);
+
+		const result = await startMonth(client, 10);
+
+		expect(result.lunchCleared).toBe(false);
+		expect(result.lunchWarning).toMatch(/日期|中餐預算/);
+	});
+
+	it("rebuilds both carry rows per currency on the split layout", async () => {
+		const client = startMonthClient(splitCarryGrid(), ["9 月", "8 月"]);
+
+		const result = await startMonth(client, 10);
+
+		const requests = (client.batchUpdate as any).mock.calls[1][0];
+		// 上月美金透支 (row 3) D ← the prev month's unsettled USD deficit:
+		// 月美金餘額 (row 18) + 美金透支沖銷 (row 19) in the shifted grid.
+		const usdWrite = requests.find(
+			(r: any) => r.updateCells && r.updateCells.start.rowIndex === 2 && r.updateCells.start.columnIndex === 3,
+		);
+		expect(usdWrite.updateCells.rows[0].values).toEqual([
+			{ userEnteredValue: { formulaValue: "=IF(-('9 月'!D18+'9 月'!D19) > 0, -('9 月'!D18+'9 月'!D19), 0)" } },
+		]);
+		// 上月新臺幣透支 (row 4) E ← 月新臺幣餘額 (20) + 新臺幣透支沖銷 (21).
+		const ntdWrite = requests.find(
+			(r: any) => r.updateCells && r.updateCells.start.rowIndex === 3 && r.updateCells.start.columnIndex === 4,
+		);
+		expect(ntdWrite.updateCells.rows[0].values).toEqual([
+			{ userEnteredValue: { formulaValue: "=IF(-('9 月'!D20+'9 月'!D21) > 0, -('9 月'!D20+'9 月'!D21), 0)" } },
+		]);
+		// Both carry rows are recurring — kept, never deleted.
+		expect(result.kept).toContain("上月美金透支");
+		expect(result.kept).toContain("上月新臺幣透支");
+		// the USD row's E conversion formula is row-relative — never rewritten
+		expect(
+			requests.find((r: any) => r.updateCells && r.updateCells.start.rowIndex === 2 && r.updateCells.start.columnIndex === 4),
+		).toBeUndefined();
+	});
+
+	it("degenerate split rows over an un-migrated month: USD gets 0, NTD falls back to the 剩餘 anchor", async () => {
+		const client = startMonthClient(splitCarryOldLayoutGrid(), ["9 月", "8 月"]);
+
+		await startMonth(client, 10);
+
+		const requests = (client.batchUpdate as any).mock.calls[1][0];
+		const usdWrite = requests.find(
+			(r: any) => r.updateCells && r.updateCells.start.rowIndex === 2 && r.updateCells.start.columnIndex === 3,
+		);
+		expect(usdWrite.updateCells.rows[0].values).toEqual([{ userEnteredValue: { numberValue: 0 } }]);
+		const ntdWrite = requests.find(
+			(r: any) => r.updateCells && r.updateCells.start.rowIndex === 3 && r.updateCells.start.columnIndex === 4,
+		);
+		// 剩餘 sits at row 16 after the two carry rows shifted the old grid down one.
+		expect(ntdWrite.updateCells.rows[0].values).toEqual([
+			{ userEnteredValue: { formulaValue: "=IF(-'9 月'!D16 > 0, -'9 月'!D16, 0)" } },
+		]);
+	});
+
+	it("re-anchors the legacy TWD carry on a half-converted tab (USD row inserted, old row not yet renamed)", async () => {
+		const g = migratedMonthGrid();
+		g.splice(2, 0, ["", "上月美金透支", "透支", 0, '=D3*GOOGLEFINANCE("CURRENCY:USDTWD")', "USD"]);
+		const client = startMonthClient(g, ["9 月", "8 月"]);
+
+		await startMonth(client, 10);
+
+		const requests = (client.batchUpdate as any).mock.calls[1][0];
+		// New USD row (row 3) gets the unsettled formula anchored at the shifted 月美金餘額/美金透支沖銷 (rows 18/19).
+		const usdWrite = requests.find(
+			(r: any) => r.updateCells && r.updateCells.start.rowIndex === 2 && r.updateCells.start.columnIndex === 3,
+		);
+		expect(usdWrite.updateCells.rows[0].values).toEqual([
+			{ userEnteredValue: { formulaValue: "=IF(-('9 月'!D18+'9 月'!D19) > 0, -('9 月'!D18+'9 月'!D19), 0)" } },
+		]);
+		// Legacy 上月透支 row (shifted to row 4) is re-anchored to 月剩餘 (shifted to row 22), not left pointing two months back.
+		const legacyWrite = requests.find(
+			(r: any) => r.updateCells && r.updateCells.start.rowIndex === 3 && r.updateCells.start.columnIndex === 4,
+		);
+		expect(legacyWrite.updateCells.rows[0].values).toEqual([
+			{ userEnteredValue: { formulaValue: "=IF(-'9 月'!D22 > 0, -'9 月'!D22, 0)" } },
+		]);
 	});
 });
 
@@ -1659,6 +2014,7 @@ describe("setIncome", () => {
 		await expect(setIncome(client, { item: "花費總額", amount: 1, currency: "TWD", month: 9 })).rejects.toThrow("layout label");
 		await expect(setIncome(client, { item: "美金透支沖銷", amount: 1, currency: "TWD", month: 9 })).rejects.toThrow("layout label");
 		await expect(setIncome(client, { item: "新臺幣透支沖銷", amount: 1, currency: "TWD", month: 9 })).rejects.toThrow("layout label");
+		await expect(setIncome(client, { item: "上月美金透支", amount: 1, currency: "USD", month: 9 })).rejects.toThrow("layout label");
 		expect((client.readRange as any).mock.calls).toHaveLength(0);
 	});
 

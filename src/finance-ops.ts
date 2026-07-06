@@ -8,6 +8,11 @@ import {
 	BANK_BLOCK_LABEL,
 	BUDGET_HEADER_LABEL,
 	currentMonthTab,
+	LUNCH_ADJUST_LABEL,
+	LUNCH_COLS,
+	LUNCH_DEFAULT_ITEM,
+	LUNCH_SECTION_LABEL,
+	LUNCH_TOTAL_LABEL,
 	MONTH_COLS,
 	MONTH_NTD_NET_LABEL,
 	MONTH_REMAINDER_LABEL,
@@ -21,7 +26,9 @@ import {
 	OVERDRAFT_LABEL,
 	parseDateInput,
 	PREV_NTD_BALANCE_LABEL,
+	PREV_NTD_OVERDRAFT_LABEL,
 	PREV_USD_BALANCE_LABEL,
+	PREV_USD_OVERDRAFT_LABEL,
 	previousMonth,
 	RECURRING_INCOME,
 	RECURRING_ITEMS,
@@ -153,6 +160,58 @@ export function findTransferSection(values: unknown[][], tab: string): TransferS
 		}
 	}
 	throw new Error(`No ${TRANSFER_TOTAL_LABEL} row under the ${TRANSFER_SECTION_LABEL} header in ${tab}.`);
+}
+
+// The lunch section grows one row per entry and pushes the 銀行餘額 block
+// below it downward, so the window must hold a full month of daily entries —
+// a too-shallow read makes startMonth's 上月…餘額 rewire silently skip.
+export const LUNCH_GRID_READ = "A1:Q120";
+
+export interface LunchSection {
+	/** 1-indexed row holding the 編列預算 / 剩餘 values. */
+	budgetRow: number;
+	/** 1-indexed row of the 日期/項目/金額 header. */
+	headerRow: number;
+	/** 1-indexed row of the 總和 total. */
+	totalRow: number;
+}
+
+/** Locate the 中餐預算 block (grid of LUNCH_GRID_READ; labels match in any render). Throws when absent or malformed. */
+export function findLunchSection(values: unknown[][], tab: string): LunchSection {
+	const dateCol = LUNCH_COLS.date;
+	const anchorRow = findRowByValue(values, dateCol, LUNCH_SECTION_LABEL);
+	if (anchorRow === null) {
+		throw new Error(
+			`No ${LUNCH_SECTION_LABEL} section in ${tab} (searched column ${colLetter(dateCol)} of ${LUNCH_GRID_READ}) — the lunch-budget log exists from 7月 2026 on.`,
+		);
+	}
+	// add_transfer's full-section path inserts a whole sheet row directly above
+	// the transfer 總和 row; on live geometry that lands between this section's
+	// label row and its values row, opening a blank row here. A fixed
+	// anchor+3 offset would then miss the header, so scan for it instead.
+	let headerRow: number | null = null;
+	for (let r = anchorRow + 1; r <= anchorRow + 8; r++) {
+		if (String(values[r - 1]?.[dateCol] ?? "").trim() === "日期") {
+			headerRow = r;
+			break;
+		}
+	}
+	if (headerRow === null) {
+		throw new Error(
+			`No 日期/項目/金額 header row found within 8 rows of the ${LUNCH_SECTION_LABEL} anchor in ${tab}.`,
+		);
+	}
+	// The 編列預算/剩餘 values row always sits directly above the header — a
+	// whole-row insert above the transfer 總和 shifts the values row and the
+	// header down together, so this adjacency holds no matter how many blank
+	// rows opened up between the anchor and the header.
+	const budgetRow = headerRow - 1;
+	for (let r = headerRow + 1; r <= values.length; r++) {
+		if (String(values[r - 1]?.[LUNCH_COLS.item] ?? "").trim() === LUNCH_TOTAL_LABEL) {
+			return { budgetRow, headerRow, totalRow: r };
+		}
+	}
+	throw new Error(`No ${LUNCH_TOTAL_LABEL} row under the ${LUNCH_SECTION_LABEL} header in ${tab}.`);
 }
 
 export interface IncomeWindow {
@@ -310,7 +369,7 @@ export async function migrateIncomeLayout(
 	// 剩餘 row + the four inserted rows become the 月 view. Each currency's
 	// write-off settles ITS month-deficit from ITS bank when that 總…餘額 stays
 	// non-negative; a fully settled month's 月剩餘 closes at 0 and nothing
-	// rolls to next month's 上月透支.
+	// rolls to next month's 上月…透支.
 	const usd = colLetter(MONTH_COLS.usd);
 	const twd = colLetter(MONTH_COLS.twd);
 	const usdNet = `=${D}${finalRow(usdIncRow)}-${D}${finalRow(usdSpRow)}`;
@@ -368,6 +427,8 @@ const NON_INCOME_LABELS = new Set<string>([
 	NTD_PAYMENT_LABEL,
 	TOTAL_ROW_LABEL,
 	OVERDRAFT_LABEL,
+	PREV_USD_OVERDRAFT_LABEL,
+	PREV_NTD_OVERDRAFT_LABEL,
 	USD_INCOME_LABEL,
 	USD_SPENDING_LABEL,
 	PREV_USD_BALANCE_LABEL,
@@ -734,10 +795,112 @@ export async function addTransfer(client: SheetsClient, p: AddTransferParams) {
 	};
 }
 
+export interface AddLunchParams {
+	/** 金額 in NTD. */
+	amount: number;
+	/** 項目; defaults to 中餐. */
+	item?: string;
+	/** M/D, MM/DD, YYYY/M/D, or YYYY-MM-DD; omitted = today in Taipei. */
+	date?: string;
+	month?: number;
+}
+
+export async function addLunch(client: SheetsClient, p: AddLunchParams) {
+	const tab = p.month !== undefined ? monthTabName(p.month) : currentMonthTab();
+	// Parse before any read/write so a bad date fails closed.
+	const dateSerialValue = p.date !== undefined ? parseDateInput(p.date) : todaySerial();
+	const item = (p.item ?? LUNCH_DEFAULT_ITEM).trim() || LUNCH_DEFAULT_ITEM;
+
+	const { values, truncated } = await client.readRange(`${quoteTab(tab)}!${LUNCH_GRID_READ}`, "FORMULA");
+	assertNotTruncated(truncated, tab, LUNCH_GRID_READ);
+	const { budgetRow, headerRow, totalRow } = findLunchSection(values, tab);
+
+	// First row between the header and 總和 that is empty across O–Q.
+	let targetRow: number | null = null;
+	for (let r = headerRow + 1; r < totalRow; r++) {
+		const cells = (values[r - 1] ?? []).slice(LUNCH_COLS.date, LUNCH_COLS.amount + 1);
+		if (!cells.some((c) => c !== "" && c != null)) {
+			targetRow = r;
+			break;
+		}
+	}
+
+	const sheetId = await client.getSheetId(tab);
+	const inserted = targetRow === null;
+	let finalTotalRow = totalRow;
+	const requests: object[] = [];
+	if (targetRow === null) {
+		// Insert directly above 總和; the ledger's 午餐超支或回補 =Q reference
+		// tracks the 剩餘 cell (above the insert) and needs no rewiring.
+		targetRow = totalRow;
+		finalTotalRow = totalRow + 1;
+		requests.push({
+			insertDimension: {
+				range: { sheetId, dimension: "ROWS", startIndex: targetRow - 1, endIndex: targetRow },
+				inheritFromBefore: true,
+			},
+		});
+	}
+	const Q = colLetter(LUNCH_COLS.amount);
+	requests.push(
+		{
+			updateCells: {
+				start: { sheetId, rowIndex: targetRow - 1, columnIndex: LUNCH_COLS.date },
+				rows: [
+					{
+						values: [
+							{
+								userEnteredValue: { numberValue: dateSerialValue },
+								userEnteredFormat: { numberFormat: { type: "DATE", pattern: "mm/dd" } },
+							},
+						],
+					},
+				],
+				fields: "userEnteredValue,userEnteredFormat.numberFormat",
+			},
+		},
+		{
+			updateCells: {
+				start: { sheetId, rowIndex: targetRow - 1, columnIndex: LUNCH_COLS.item },
+				rows: [{ values: [cellData(item), cellData(p.amount)] }],
+				fields: "userEnteredValue",
+			},
+		},
+		// Rewrite 總和 over the whole data window: the sheet's original
+		// =sum(Q38:Q39) cannot auto-extend, so the op owns the range from now on.
+		{
+			updateCells: {
+				start: { sheetId, rowIndex: finalTotalRow - 1, columnIndex: LUNCH_COLS.amount },
+				rows: [{ values: [cellData(`=SUM(${Q}${headerRow + 1}:${Q}${finalTotalRow - 1})`)] }],
+				fields: "userEnteredValue",
+			},
+		},
+	);
+	await client.batchUpdate(requests);
+
+	// Echo the section state AFTER the write so the caller sees the new leftover.
+	const O = colLetter(LUNCH_COLS.date);
+	const readBack = await client.readRange(`${quoteTab(tab)}!${O}${budgetRow}:${Q}${budgetRow}`, "UNFORMATTED_VALUE");
+	const num = (v: unknown): number | null => (typeof v === "number" ? v : null);
+	const budget = num(readBack.values[0]?.[0]);
+	const leftover = num(readBack.values[0]?.[2]);
+	return {
+		tab,
+		row: targetRow,
+		inserted,
+		date: serialToIso(dateSerialValue),
+		item,
+		amount: p.amount,
+		budget,
+		spent: budget !== null && leftover !== null ? round2(budget - leftover) : null,
+		leftover,
+	};
+}
+
 export async function monthSummary(client: SheetsClient, month?: number) {
 	const tab = month !== undefined ? monthTabName(month) : currentMonthTab();
-	const { values, truncated } = await client.readRange(`${quoteTab(tab)}!${GRID_READ}`, "UNFORMATTED_VALUE");
-	assertNotTruncated(truncated, tab, GRID_READ);
+	const { values, truncated } = await client.readRange(`${quoteTab(tab)}!${LUNCH_GRID_READ}`, "UNFORMATTED_VALUE");
+	assertNotTruncated(truncated, tab, LUNCH_GRID_READ);
 
 	const num = (v: unknown): number | null => (typeof v === "number" ? v : null);
 	const cellAt = (row: number | null, col: number): number | null =>
@@ -771,10 +934,31 @@ export async function monthSummary(client: SheetsClient, month?: number) {
 		}
 	}
 
+	// 中餐預算 lunch-budget section (O–Q); null on tabs that predate it, and
+	// also null (not thrown) when the section is torn beyond recognition —
+	// this read-only summary must not die over a malformed lunch block.
+	let lunch: { 編列預算: number | null; 總和: number | null; 剩餘: number | null } | null = null;
+	if (findRowByValue(values, LUNCH_COLS.date, LUNCH_SECTION_LABEL) !== null) {
+		try {
+			const sec = findLunchSection(values, tab);
+			lunch = {
+				編列預算: num(values[sec.budgetRow - 1]?.[LUNCH_COLS.date]),
+				總和: num(values[sec.totalRow - 1]?.[LUNCH_COLS.amount]),
+				剩餘: num(values[sec.budgetRow - 1]?.[LUNCH_COLS.amount]),
+			};
+		} catch {
+			lunch = null;
+		}
+	}
+
 	return {
 		tab,
 		花費總額: cellAt(totalRow, MONTH_COLS.totalValue),
 		上月透支: cellAt(rowByItem(OVERDRAFT_LABEL), MONTH_COLS.twd),
+		上月美金透支: cellAt(rowByItem(PREV_USD_OVERDRAFT_LABEL), MONTH_COLS.usd),
+		上月新臺幣透支: cellAt(rowByItem(PREV_NTD_OVERDRAFT_LABEL), MONTH_COLS.twd),
+		中餐預算: lunch,
+		午餐超支或回補: cellAt(rowByItem(LUNCH_ADJUST_LABEL), MONTH_COLS.budgetValue),
 		tags,
 		incomes,
 		薪水: cellAt(rowByItem(SALARY_LABEL), MONTH_COLS.budgetValue),
@@ -798,7 +982,7 @@ export async function monthSummary(client: SheetsClient, month?: number) {
 	};
 }
 
-/** Probe window for the 類別 dropdown: row 3 is 上月透支, so scan a few rows deep. */
+/** Probe window for the 類別 dropdown: rows 3-4 are the 上月…透支 carries, so scan a few rows deep. */
 const TAG_VALIDATION_ROWS = { start: 3, end: 15 } as const;
 
 /** The live 類別 tag list, read from the dropdown (data validation) on a monthly tab's 類別 column. */
@@ -850,8 +1034,8 @@ export async function startMonth(client: SheetsClient, month: number) {
 	const sheetId = dup.replies?.[0]?.duplicateSheet?.properties?.sheetId;
 	if (sheetId == null) throw new Error("duplicateSheet did not return the new tab's sheetId.");
 
-	const { values, truncated } = await client.readRange(`${quoteTab(newTab)}!${GRID_READ}`, "FORMULA");
-	assertNotTruncated(truncated, newTab, GRID_READ);
+	const { values, truncated } = await client.readRange(`${quoteTab(newTab)}!${LUNCH_GRID_READ}`, "FORMULA");
+	assertNotTruncated(truncated, newTab, LUNCH_GRID_READ);
 	const totalRow = findRowByValue(values, MONTH_COLS.totalLabel, TOTAL_ROW_LABEL);
 	if (totalRow === null) {
 		throw new Error(`Could not find the "${TOTAL_ROW_LABEL}" row in the duplicated tab ${newTab}.`);
@@ -867,27 +1051,65 @@ export async function startMonth(client: SheetsClient, month: number) {
 		},
 	];
 
-	const overdraftRow = findRowByValue(values, MONTH_COLS.item, OVERDRAFT_LABEL);
-	if (overdraftRow !== null) {
-		// The duplicated grid mirrors prevTab's layout, so the previous month's
-		// remainder row is findable here: 月剩餘 (migrated) or 剩餘 (old layout).
-		// Rebuild the carry formula against it — a plain tab-name swap would keep
-		// a stale row reference from whichever layout the formula was born in.
-		const remainderRow = findRowByLabels(values, MONTH_COLS.budgetLabel, [MONTH_REMAINDER_LABEL, REMAINDER_LABEL]);
-		let formula: string;
-		if (remainderRow !== null) {
-			const cell = `${quoteTab(prevTab)}!${colLetter(MONTH_COLS.budgetValue)}${remainderRow}`;
-			formula = `=IF(-${cell} > 0, -${cell}, 0)`;
-		} else {
-			formula = String(values[overdraftRow - 1]?.[MONTH_COLS.twd] ?? "").replace(/'\d+ 月'/g, `'${prevTab}'`);
-		}
+	// Carry rebuild. Split layout: each currency rolls its own UNSETTLED
+	// deficit — 月…餘額+…透支沖銷 is negative exactly when the 沖銷 could not
+	// fire — independently of the other currency and of 月剩餘. Legacy tabs
+	// keep the single TWD carry anchored at 月剩餘/剩餘. The duplicated grid
+	// mirrors prevTab's layout, so every anchor row is findable here — a plain
+	// tab-name swap would keep a stale row reference from whichever layout the
+	// formula was born in.
+	const carryWrite = (row: number, col: number, value: string | number) => {
 		requests.push({
 			updateCells: {
-				start: { sheetId, rowIndex: overdraftRow - 1, columnIndex: MONTH_COLS.twd },
-				rows: [{ values: [cellData(formula)] }],
+				start: { sheetId, rowIndex: row - 1, columnIndex: col },
+				rows: [{ values: [cellData(value)] }],
 				fields: "userEnteredValue",
 			},
 		});
+	};
+	const legacyCarryFormula = (fallbackRow: number): string => {
+		const remainderRow = findRowByLabels(values, MONTH_COLS.budgetLabel, [MONTH_REMAINDER_LABEL, REMAINDER_LABEL]);
+		if (remainderRow !== null) {
+			const cell = `${quoteTab(prevTab)}!${colLetter(MONTH_COLS.budgetValue)}${remainderRow}`;
+			return `=IF(-${cell} > 0, -${cell}, 0)`;
+		}
+		return String(values[fallbackRow - 1]?.[MONTH_COLS.twd] ?? "").replace(/'\d+ 月'/g, `'${prevTab}'`);
+	};
+	const usdCarryRow = findRowByValue(values, MONTH_COLS.item, PREV_USD_OVERDRAFT_LABEL);
+	const ntdCarryRow = findRowByValue(values, MONTH_COLS.item, PREV_NTD_OVERDRAFT_LABEL);
+	if (usdCarryRow !== null || ntdCarryRow !== null) {
+		const unsettled = (netLabel: string, writeoffLabel: string): string | null => {
+			const netRow = findRowByValue(values, MONTH_COLS.budgetLabel, netLabel);
+			const writeoffRow = findRowByValue(values, MONTH_COLS.budgetLabel, writeoffLabel);
+			if (netRow === null || writeoffRow === null) return null;
+			const D = colLetter(MONTH_COLS.budgetValue);
+			const sum = `${quoteTab(prevTab)}!${D}${netRow}+${quoteTab(prevTab)}!${D}${writeoffRow}`;
+			return `=IF(-(${sum}) > 0, -(${sum}), 0)`;
+		};
+		if (usdCarryRow !== null) {
+			// Degenerate (previous month predates the 月 view): nothing to anchor
+			// the USD side on — carry 0. The row's E conversion formula is
+			// row-relative and survives duplication; only D is rewritten.
+			carryWrite(usdCarryRow, MONTH_COLS.usd, unsettled(MONTH_USD_NET_LABEL, USD_WRITEOFF_LABEL) ?? 0);
+		}
+		if (ntdCarryRow !== null) {
+			carryWrite(
+				ntdCarryRow,
+				MONTH_COLS.twd,
+				unsettled(MONTH_NTD_NET_LABEL, NTD_WRITEOFF_LABEL) ?? legacyCarryFormula(ntdCarryRow),
+			);
+		} else {
+			// Mid-backfill tab (USD row inserted, old row not yet renamed): re-anchor the legacy TWD carry to this month rather than leave it pointing two months back.
+			const legacyRow = findRowByValue(values, MONTH_COLS.item, OVERDRAFT_LABEL);
+			if (legacyRow !== null) {
+				carryWrite(legacyRow, MONTH_COLS.twd, legacyCarryFormula(legacyRow));
+			}
+		}
+	} else {
+		const overdraftRow = findRowByValue(values, MONTH_COLS.item, OVERDRAFT_LABEL);
+		if (overdraftRow !== null) {
+			carryWrite(overdraftRow, MONTH_COLS.twd, legacyCarryFormula(overdraftRow));
+		}
 	}
 
 	// The date column restarts each month — clear it across the expense window.
@@ -930,6 +1152,39 @@ export async function startMonth(client: SheetsClient, month: number) {
 		});
 	}
 
+	// The lunch log restarts each month: clear the 中餐預算 data rows (O–Q).
+	// Cells are cleared, not deleted, so nothing shifts; the 總和 =SUM over the
+	// empty window reads 0 and 剩餘 resets to the full budget. The anchor probe
+	// keeps pre-section tabs silent. A malformed section (e.g. torn by a
+	// transfer insert) must not fail month-open after duplicateSheet has
+	// already committed, so the clear is skipped and the reason surfaced
+	// instead of thrown.
+	let lunchCleared = false;
+	let lunchWarning: string | undefined;
+	if (findRowByValue(values, LUNCH_COLS.date, LUNCH_SECTION_LABEL) !== null) {
+		try {
+			const lunch = findLunchSection(values, newTab);
+			if (lunch.totalRow > lunch.headerRow + 1) {
+				requests.push({
+					repeatCell: {
+						range: {
+							sheetId,
+							startRowIndex: lunch.headerRow,
+							endRowIndex: lunch.totalRow - 1,
+							startColumnIndex: LUNCH_COLS.date,
+							endColumnIndex: LUNCH_COLS.amount + 1,
+						},
+						cell: {},
+						fields: "userEnteredValue",
+					},
+				});
+				lunchCleared = true;
+			}
+		} catch (err) {
+			lunchWarning = err instanceof Error ? err.message : String(err);
+		}
+	}
+
 	const kept: string[] = [];
 	const cleared: string[] = [];
 	const rowsToDelete: number[] = [];
@@ -956,15 +1211,27 @@ export async function startMonth(client: SheetsClient, month: number) {
 		}
 	}
 
-	// Bottom-up so earlier deletions don't shift later indices.
+	// Bottom-up so earlier deletions don't shift later indices. Scoped to A–F:
+	// a whole-row delete would rip through the 乾坤大挪移 / 中餐預算 sections
+	// (G–Q) that share these sheet rows; references across the column boundary
+	// adjust on their own in both directions.
 	for (const r of [...rowsToDelete].sort((a, b) => b - a)) {
 		requests.push({
-			deleteDimension: { range: { sheetId, dimension: "ROWS", startIndex: r - 1, endIndex: r } },
+			deleteRange: {
+				range: {
+					sheetId,
+					startRowIndex: r - 1,
+					endRowIndex: r,
+					startColumnIndex: 0,
+					endColumnIndex: MONTH_COLS.paidWith + 1,
+				},
+				shiftDimension: "ROWS",
+			},
 		});
 	}
 	await client.batchUpdate(requests);
 
-	return { tab: newTab, duplicatedFrom: prevTab, kept, cleared, clearedIncomes };
+	return { tab: newTab, duplicatedFrom: prevTab, kept, cleared, clearedIncomes, lunchCleared, lunchWarning };
 }
 
 export interface TripEntryParams {

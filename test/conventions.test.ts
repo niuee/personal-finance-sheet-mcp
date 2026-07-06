@@ -5,6 +5,11 @@ import {
 	currentMonthTab,
 	dateSerial,
 	KNOWN_TAGS,
+	LUNCH_ADJUST_LABEL,
+	LUNCH_COLS,
+	LUNCH_DEFAULT_ITEM,
+	LUNCH_SECTION_LABEL,
+	LUNCH_TOTAL_LABEL,
 	MONTH_COLS,
 	MONTH_NTD_NET_LABEL,
 	MONTH_REMAINDER_LABEL,
@@ -13,6 +18,8 @@ import {
 	NTD_PAYMENT_LABEL,
 	parseDateInput,
 	OVERDRAFT_LABEL,
+	PREV_NTD_OVERDRAFT_LABEL,
+	PREV_USD_OVERDRAFT_LABEL,
 	previousMonth,
 	RECURRING_INCOME,
 	RECURRING_ITEMS,
@@ -67,10 +74,14 @@ describe("conventions", () => {
 			expect(RECURRING_ITEMS.has(item)).toBe(true);
 		}
 		expect(RECURRING_ITEMS.has("近鐵 80000系")).toBe(false);
+		expect(RECURRING_ITEMS.has("上月美金透支")).toBe(true);
+		expect(RECURRING_ITEMS.has("上月新臺幣透支")).toBe(true);
 	});
 
 	it("exports the summary row labels", () => {
 		expect(OVERDRAFT_LABEL).toBe("上月透支");
+		expect(PREV_USD_OVERDRAFT_LABEL).toBe("上月美金透支");
+		expect(PREV_NTD_OVERDRAFT_LABEL).toBe("上月新臺幣透支");
 		expect(SALARY_LABEL).toBe("薪水");
 		expect(REPAYMENT_LABEL).toBe("沛還");
 		expect(REMAINDER_LABEL).toBe("剩餘");
@@ -87,6 +98,14 @@ describe("conventions", () => {
 		expect(NTD_WRITEOFF_LABEL).toBe("新臺幣透支沖銷");
 		expect(TOTAL_USD_BALANCE_LABEL).toBe("總美金餘額");
 		expect(TOTAL_NTD_BALANCE_LABEL).toBe("總新臺幣餘額");
+	});
+
+	it("exports the 中餐預算 lunch-section anchors", () => {
+		expect(LUNCH_SECTION_LABEL).toBe("中餐預算");
+		expect(LUNCH_TOTAL_LABEL).toBe("總和");
+		expect(LUNCH_DEFAULT_ITEM).toBe("中餐");
+		expect(LUNCH_ADJUST_LABEL).toBe("午餐超支或回補");
+		expect(LUNCH_COLS).toEqual({ date: 14, item: 15, amount: 16 });
 	});
 
 	it("keeps 沛還 and 薪水 as recurring income, ad-hoc rows are not", () => {
@@ -159,6 +178,8 @@ describe("conventions", () => {
 			"花費總額",
 			"GOOGLEFINANCE",
 			"上月透支",
+			"上月美金透支",
+			"上月新臺幣透支",
 			"insert",
 			"0.22",
 			"分類總花費",
@@ -179,6 +200,10 @@ describe("conventions", () => {
 			"乾坤大挪移",
 			"add_transfer",
 			"當筆總額外花費",
+			"中餐預算",
+			"add_lunch",
+			"午餐超支或回補",
+			"編列預算",
 		]) {
 			expect(CONVENTIONS_TEXT).toContain(needle);
 		}
