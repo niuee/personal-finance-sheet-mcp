@@ -9,6 +9,7 @@ import {
 	getCategories,
 	monthSummary,
 	safeUpdateRange,
+	setIncome,
 	startMonth,
 } from "./finance-ops";
 import type { SheetsClient } from "./sheets-client";
@@ -148,10 +149,34 @@ export function registerTailoredTools(server: McpServer, client: SheetsClient): 
 					"Expense date: M/D, MM/DD, or YYYY-MM-DD (year defaults to the current Taipei year). Omit to leave the 日期 cell blank, like recurring rows.",
 				),
 			month: monthParam.optional().describe("Target month 1-12 (default: current month)"),
+			paid_with: z
+				.enum(["TWD", "USD"])
+				.optional()
+				.describe(
+					"Which real account paid the row — written to the 支付幣別 column (F); defaults to currency. Use currency USD + paid_with TWD for a USD-priced expense paid from the NTD account (the reverse, TWD-priced + USD-paid, is rejected). Takes ledger effect once the tab is migrated to the 支付幣別 layout.",
+				),
+		},
+		async ({ paid_with, ...p }) => {
+			try {
+				return ok(await addExpense(client, { ...p, paidWith: paid_with }));
+			} catch (e) {
+				return toError(e);
+			}
+		},
+	);
+
+	server.tool(
+		"set_income",
+		"Fill in an income row on a monthly tab (defaults to the current month): updates the row if the 項目 already exists (薪水, 沛還, …), otherwise inserts a new ad-hoc income row with its 幣別 — the 美金收入/新臺幣收入 SUMIFs keep covering every row. On an old-layout tab it first migrates the income section (支付幣別 column, 月剩餘 rows, SUMIF rewrites, 總…餘額 renames); the response details every migration change with previous values.",
+		{
+			item: z.string().min(1).describe("Income name, e.g. 薪水, 沛還, 股息"),
+			amount: z.number().describe("The amount, in the given currency"),
+			currency: z.enum(["TWD", "USD"]).describe("The income's 幣別 — routes it into 新臺幣收入 or 美金收入"),
+			month: monthParam.optional().describe("Target month 1-12 (default: current month)"),
 		},
 		async (p) => {
 			try {
-				return ok(await addExpense(client, p));
+				return ok(await setIncome(client, p));
 			} catch (e) {
 				return toError(e);
 			}
@@ -160,7 +185,7 @@ export function registerTailoredTools(server: McpServer, client: SheetsClient): 
 
 	server.tool(
 		"month_summary",
-		"Get a month's numbers as clean JSON (unformatted): 花費總額, 上月透支, per-類別 tag totals, 薪水, 沛還, 剩餘, 美金支付, plus the 銀行餘額 running-balance block (美金收入/美金支出/上月美金餘額/美金餘額 and 新臺幣收入/新臺幣支出/上月新臺幣餘額/新臺幣餘額). Defaults to the current month. Fields the sheet doesn't have yet come back null.",
+		"Get a month's numbers as clean JSON (unformatted): 花費總額, 上月透支, per-類別 tag totals, the income list (item/幣別/amount), 薪水, 沛還, 月美金餘額/月新臺幣餘額/月剩餘, plus the 銀行餘額 running-balance block (美金收入/美金支出/上月美金餘額/總美金餘額 and the NTD counterparts; old unmigrated tabs report 剩餘 and the un-renamed balances too). Defaults to the current month. Fields the sheet doesn't have yet come back null.",
 		{ month: monthParam.optional().describe("Month 1-12 (default: current month)") },
 		async ({ month }) => {
 			try {

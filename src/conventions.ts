@@ -16,6 +16,18 @@ export const SALARY_LABEL = "薪水";
 export const REPAYMENT_LABEL = "沛還";
 export const REMAINDER_LABEL = "剩餘";
 export const USD_PAYMENT_LABEL = "美金支付";
+export const NTD_PAYMENT_LABEL = "新臺幣支付";
+export const BUDGET_HEADER_LABEL = "總預算";
+
+/**
+ * Post-migration budget-block rows (labels in column B, values in column D).
+ * 月美金餘額/月新臺幣餘額 are THIS month's 收入−支出 per currency (no
+ * carry-over); 月剩餘 converts the USD net at GOOGLEFINANCE USDTWD and adds
+ * the NTD net. They replace the old 剩餘 / 美金支付 / 新臺幣支付 rows.
+ */
+export const MONTH_USD_NET_LABEL = "月美金餘額";
+export const MONTH_NTD_NET_LABEL = "月新臺幣餘額";
+export const MONTH_REMAINDER_LABEL = "月剩餘";
 
 /**
  * Labels for the 銀行餘額 (bank-balance reconciliation) block — a per-currency
@@ -35,6 +47,13 @@ export const NTD_INCOME_LABEL = "新臺幣收入";
 export const NTD_SPENDING_LABEL = "新臺幣支出";
 export const PREV_NTD_BALANCE_LABEL = "上月新臺幣餘額";
 export const NTD_BALANCE_LABEL = "新臺幣餘額";
+
+/** Post-migration names of the running bank balances (old tabs keep 美金餘額/新臺幣餘額 — look up with fallback). */
+export const TOTAL_USD_BALANCE_LABEL = "總美金餘額";
+export const TOTAL_NTD_BALANCE_LABEL = "總新臺幣餘額";
+
+/** The 銀行餘額 block's header row label. */
+export const BANK_BLOCK_LABEL = "銀行餘額";
 
 /** Items start_month keeps when opening a new month; everything else is a one-off. */
 export const RECURRING_ITEMS = new Set<string>([
@@ -59,6 +78,9 @@ export const RECURRING_ITEMS = new Set<string>([
 	"基本生活費",
 ]);
 
+/** Income rows start_month keeps; every other income row is ad-hoc and cleared. */
+export const RECURRING_INCOME = new Set<string>([REPAYMENT_LABEL, SALARY_LABEL]);
+
 export function monthTabName(month: number): string {
 	if (!Number.isInteger(month) || month < 1 || month > 12) {
 		throw new Error(`Invalid month: ${month} (expected an integer 1-12)`);
@@ -81,6 +103,8 @@ export const MONTH_COLS = {
 	usd: 3,
 	/** E — 新臺幣 (TWD). */
 	twd: 4,
+	/** F — 支付幣別, which real account paid the row (USD/TWD). */
+	paidWith: 5,
 	/** D — the 花費總額 label. */
 	totalLabel: 3,
 	/** E — the 花費總額 =SUM window. */
@@ -140,14 +164,14 @@ export const TRIP_BLOCK_WIDTH = 8;
 
 export const CONVENTIONS_TEXT = `How this personal-finance spreadsheet is organized:
 
-MONTHLY TABS — named "N 月" (e.g. "9 月", with a space). Layout below applies from 7 月 2026 on; 6 月 and earlier lack the 類別 column.
-- Header row 2: 日期 項目 類別 美金 新臺幣. Expense list in columns A-E from row 3 down: A=日期 (a real date shown mm/dd; blank on recurring rows), B=item, C=類別 (per-row tag: 訂閱, 吃喝, 交通, 生活用品, 娛樂, 購物, 其他, 透支), D=美金 (USD), E=新臺幣 (TWD).
+MONTHLY TABS — named "N 月" (e.g. "9 月", with a space). Layout below applies from 7 月 2026 on; 6 月 and earlier lack the 類別 column. Tabs are migrated to the income layout described here the first time set_income touches them; an unmigrated tab still has the old 剩餘 / 美金支付 / 新臺幣支付 rows and hand-entered 收入 cells.
+- Header row 2: 日期 項目 類別 美金 新臺幣 支付幣別. Expense list in columns A-F from row 3 down: A=日期 (a real date shown mm/dd; blank on recurring rows), B=item, C=類別 (per-row tag: 訂閱, 吃喝, 交通, 生活用品, 娛樂, 購物, 其他, 透支), D=美金 (USD), E=新臺幣 (TWD), F=支付幣別 (USD or TWD — which real account PAID the row; a USD-priced expense paid with a TWD card has D filled but F=TWD).
 - USD rows convert with E = D*GOOGLEFINANCE("CURRENCY:USDTWD").
 - The list ends at the "花費總額" row (label in column D, total in E, formula SUM over the window). New expenses must land INSIDE that window — write into an empty row above 花費總額, or insert a row inside the window so the SUM extends. Never append below 花費總額.
-- Row 3 "上月透支" carries last month's overdraft via a cross-tab formula.
-- Categorization is the per-row 類別 tag in column C (see month_summary's per-類別 totals). Older tabs also carried a summary block in columns G/H (訂閱費 / 基本房租生活費 / 交通中餐等等雜支 / 本月額外雜支) built from hand-picked sums; that block is DEPRECATED and being removed. The tailored tools no longer read or maintain it — ignore any lingering G/H block and never splice into it.
-- Below the list: 總預算 / 沛還 / 薪水 / 剩餘 / 美金支付 / 新臺幣支付 (labels in column B, values in column D). 剩餘 is the old single-currency budget view: income − 花費總額, carrying only overdraft (透支) into next month via row 3.
-- Further down, a 銀行餘額 block reconciles the real USD and NTD bank accounts as two INDEPENDENT running ledgers (labels in column B, values in column D): 美金收入 / 美金支出 / 上月美金餘額 / 美金餘額, then 新臺幣收入 / 新臺幣支出 / 上月新臺幣餘額 / 新臺幣餘額. 美金支出 = SUM of the USD column (D) over the expense window; 新臺幣支出 = SUMIF of the NTD column (E) for native-NTD rows only (D blank), so USD expenses never double-count against NTD. Each 餘額 = 上月餘額 + 收入 − 支出 (surplus AND overdraft both carry). 上月美金餘額 / 上月新臺幣餘額 point at the previous month's matching 餘額 cell (start_month rewires them); in the earliest month they are seeded by hand with the real bank balances. Coexists with 剩餘 — it does not replace it.
+- Row 3 "上月透支" carries last month's overdraft via a cross-tab formula; start_month re-anchors it at the previous month's 月剩餘 (or 剩餘 on old-layout tabs).
+- Categorization is the per-row 類別 tag in column C (see month_summary's per-類別 totals). The old G/H summary block is DEPRECATED — ignore any remnants.
+- Below the list, the income section: a 總預算 header row, then the income list (labels in B, 幣別 USD/TWD in C, amounts in D): 沛還, 薪水, plus ad-hoc income rows (e.g. 多一個月薪水) — manage these with set_income, which upserts by 項目 and keeps the SUMIFs covering every row. The list ends at 月美金餘額 / 月新臺幣餘額 (THIS month's 收入−支出 per currency, from the 銀行餘額 block) and 月剩餘 (= 月美金餘額*GOOGLEFINANCE USDTWD + 月新臺幣餘額 — the month's combined remainder in TWD). The old 剩餘, 美金支付 and 新臺幣支付 rows are DEPRECATED and removed by migration.
+- Further down, a 銀行餘額 block reconciles the real USD and NTD bank accounts as two INDEPENDENT running ledgers (labels in column B, values in column D): 美金收入 / 美金支出 / 上月美金餘額 / 總美金餘額, then 新臺幣收入 / 新臺幣支出 / 上月新臺幣餘額 / 總新臺幣餘額 (renamed by migration from 美金餘額/新臺幣餘額 — unmigrated tabs still use the short names). 收入 cells = SUMIF over the income list's 幣別 column; 美金支出 = SUMIF of the expense 支付幣別 for USD summing column D; 新臺幣支出 = SUMIF for TWD summing column E. Each 總…餘額 = 上月…餘額 + 收入 − 支出 (surplus AND overdraft carry). 上月…餘額 point at the previous month's 總…餘額 cell (start_month rewires them); in the earliest month they are seeded by hand.
 
 TRIP TABS — e.g. "2026/07/25 京都東京".
 - A mosaic of category blocks in four column bands (A-G, I-O, Q-W, Z-AF), stacked vertically within each band.
@@ -159,4 +183,4 @@ TRIP TABS — e.g. "2026/07/25 京都東京".
 
 OTHER — "火車模型" is a hobby purchase planner; monthly tabs may cross-reference its cells.
 
-Prefer the tailored tools (add_expense, month_summary, start_month, add_trip_entry) over raw range edits. Locate rows with find_cells — never by reading a big range and counting rows. For any append-like update_range write, pass expect_empty: true (it refuses if the target is not empty); every update_range response includes previousValues so a mistaken overwrite can be reverted. For math, read with mode "raw" — default reads return locale-formatted strings like "13,603.67".`;
+Prefer the tailored tools (add_expense, set_income, month_summary, start_month, add_trip_entry) over raw range edits. Locate rows with find_cells — never by reading a big range and counting rows. For any append-like update_range write, pass expect_empty: true (it refuses if the target is not empty); every update_range response includes previousValues so a mistaken overwrite can be reverted. For math, read with mode "raw" — default reads return locale-formatted strings like "13,603.67".`;
