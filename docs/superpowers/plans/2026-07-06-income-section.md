@@ -504,7 +504,7 @@ describe("migrateIncomeLayout", () => {
 				rows: [
 					{ values: [{ userEnteredValue: { stringValue: "月美金餘額" } }, {}, { userEnteredValue: { formulaValue: "=D22-D23" } }] },
 					{ values: [{ userEnteredValue: { stringValue: "月新臺幣餘額" } }, {}, { userEnteredValue: { formulaValue: "=D26-D27" } }] },
-					{ values: [{ userEnteredValue: { stringValue: "月剩餘" } }, {}, { userEnteredValue: { formulaValue: '=D17*GOOGLEFINANCE("CURRENCY:USDTWD")+D18' } }] },
+					{ values: [{ userEnteredValue: { stringValue: "月剩餘" } }, {}, { userEnteredValue: { formulaValue: '=D16*GOOGLEFINANCE("CURRENCY:USDTWD")+D17' } }] },
 				],
 				fields: "userEnteredValue",
 			},
