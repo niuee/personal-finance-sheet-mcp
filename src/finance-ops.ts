@@ -8,6 +8,7 @@ import {
 	BANK_BLOCK_LABEL,
 	BUDGET_HEADER_LABEL,
 	currentMonthTab,
+	LUNCH_ADJUST_LABEL,
 	LUNCH_COLS,
 	LUNCH_DEFAULT_ITEM,
 	LUNCH_SECTION_LABEL,
@@ -878,8 +879,8 @@ export async function addLunch(client: SheetsClient, p: AddLunchParams) {
 
 export async function monthSummary(client: SheetsClient, month?: number) {
 	const tab = month !== undefined ? monthTabName(month) : currentMonthTab();
-	const { values, truncated } = await client.readRange(`${quoteTab(tab)}!${GRID_READ}`, "UNFORMATTED_VALUE");
-	assertNotTruncated(truncated, tab, GRID_READ);
+	const { values, truncated } = await client.readRange(`${quoteTab(tab)}!${LUNCH_GRID_READ}`, "UNFORMATTED_VALUE");
+	assertNotTruncated(truncated, tab, LUNCH_GRID_READ);
 
 	const num = (v: unknown): number | null => (typeof v === "number" ? v : null);
 	const cellAt = (row: number | null, col: number): number | null =>
@@ -913,10 +914,23 @@ export async function monthSummary(client: SheetsClient, month?: number) {
 		}
 	}
 
+	// 中餐預算 lunch-budget section (O–Q); null on tabs that predate it.
+	let lunch: { 編列預算: number | null; 總和: number | null; 剩餘: number | null } | null = null;
+	if (findRowByValue(values, LUNCH_COLS.date, LUNCH_SECTION_LABEL) !== null) {
+		const sec = findLunchSection(values, tab);
+		lunch = {
+			編列預算: num(values[sec.budgetRow - 1]?.[LUNCH_COLS.date]),
+			總和: num(values[sec.totalRow - 1]?.[LUNCH_COLS.amount]),
+			剩餘: num(values[sec.budgetRow - 1]?.[LUNCH_COLS.amount]),
+		};
+	}
+
 	return {
 		tab,
 		花費總額: cellAt(totalRow, MONTH_COLS.totalValue),
 		上月透支: cellAt(rowByItem(OVERDRAFT_LABEL), MONTH_COLS.twd),
+		中餐預算: lunch,
+		午餐超支或回補: cellAt(rowByItem(LUNCH_ADJUST_LABEL), MONTH_COLS.budgetValue),
 		tags,
 		incomes,
 		薪水: cellAt(rowByItem(SALARY_LABEL), MONTH_COLS.budgetValue),

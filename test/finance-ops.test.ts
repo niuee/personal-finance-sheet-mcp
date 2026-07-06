@@ -919,11 +919,13 @@ describe("monthSummary", () => {
 		const client = fakeClient(grid);
 		const result = await monthSummary(client, 9);
 
-		expect((client.readRange as any).mock.calls[0]).toEqual(["'9 月'!A1:H60", "UNFORMATTED_VALUE"]);
+		expect((client.readRange as any).mock.calls[0]).toEqual(["'9 月'!A1:Q60", "UNFORMATTED_VALUE"]);
 		expect(result).toEqual({
 			tab: "9 月",
 			花費總額: 72127.21,
 			上月透支: 13603.67,
+			中餐預算: null,
+			午餐超支或回補: null,
 			tags: { 透支: 13603.67, 訂閱: 368.44 + 191.43 + 319.23, 生活用品: 1261, 購物: 5690.37 },
 			incomes: [],
 			薪水: 63913,
@@ -973,6 +975,8 @@ describe("monthSummary", () => {
 			tab: "9 月",
 			花費總額: 15233.11,
 			上月透支: 13603.67,
+			中餐預算: null,
+			午餐超支或回補: null,
 			tags: { 透支: 13603.67, 訂閱: 368.44, 生活用品: 1261 },
 			incomes: [
 				{ item: "沛還", currency: "TWD", amount: 20500 },
@@ -996,6 +1000,24 @@ describe("monthSummary", () => {
 			上月新臺幣餘額: 5000,
 			總新臺幣餘額: 138296.33,
 		});
+	});
+
+	it("reports the 中餐預算 section and 午餐超支或回補", async () => {
+		const grid = lunchGrid();
+		// UNFORMATTED render: formulas come back as computed numbers
+		(grid[34] as unknown[])[14] = 3900; // 編列預算
+		(grid[34] as unknown[])[16] = 3547; // 剩餘
+		(grid[36] ??= [])[14] = 46204;
+		(grid[36] as unknown[])[15] = "中餐";
+		(grid[36] as unknown[])[16] = 353;
+		(grid[37] as unknown[])[16] = 353; // 總和
+		grid[31] = ["", "午餐超支或回補", "", 3547];
+		const client = fakeClient(grid);
+
+		const result = await monthSummary(client, 9);
+
+		expect(result.中餐預算).toEqual({ 編列預算: 3900, 總和: 353, 剩餘: 3547 });
+		expect(result.午餐超支或回補).toBe(3547);
 	});
 });
 

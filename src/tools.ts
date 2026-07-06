@@ -187,7 +187,7 @@ export function registerTailoredTools(server: McpServer, client: SheetsClient): 
 
 	server.tool(
 		"month_summary",
-		"Get a month's numbers as clean JSON (unformatted): 花費總額, 上月透支, per-類別 tag totals, the income list (item/幣別/amount), 薪水, 沛還, 月美金餘額/美金透支沖銷/月新臺幣餘額/新臺幣透支沖銷/月剩餘, plus the 銀行餘額 running-balance block (美金收入/美金支出/上月美金餘額/總美金餘額 and the NTD counterparts; old unmigrated tabs report 剩餘 and the un-renamed balances too). Defaults to the current month. Fields the sheet doesn't have yet come back null.",
+		"Get a month's numbers as clean JSON (unformatted): 花費總額, 上月透支, per-類別 tag totals, the 中餐預算 lunch block (編列預算/總和/剩餘) and 午餐超支或回補, the income list (item/幣別/amount), 薪水, 沛還, 月美金餘額/美金透支沖銷/月新臺幣餘額/新臺幣透支沖銷/月剩餘, plus the 銀行餘額 running-balance block (美金收入/美金支出/上月美金餘額/總美金餘額 and the NTD counterparts; old unmigrated tabs report 剩餘 and the un-renamed balances too). Defaults to the current month. Fields the sheet doesn't have yet come back null.",
 		{ month: monthParam.optional().describe("Month 1-12 (default: current month)") },
 		async ({ month }) => {
 			try {
