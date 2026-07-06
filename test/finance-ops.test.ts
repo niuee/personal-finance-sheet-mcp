@@ -19,6 +19,7 @@ import {
 	migrateIncomeLayout,
 	monthSummary,
 	safeUpdateRange,
+	setIncome,
 	startMonth,
 } from "../src/finance-ops";
 import { currentMonthTab, MONTH_COLS } from "../src/conventions";
@@ -1262,5 +1263,115 @@ describe("getCategories", () => {
 		const result = await getCategories(client);
 
 		expect(result.tab).toBe(currentMonthTab());
+	});
+});
+
+describe("setIncome", () => {
+	it("updates an existing income row's 幣別 and amount in place", async () => {
+		const client = fakeClient(migratedMonthGrid());
+
+		const result = await setIncome(client, { item: "薪水", amount: 68587, currency: "TWD", month: 9 });
+
+		expect((client.readRange as any).mock.calls[0]).toEqual(["'9 月'!A1:H60", "FORMULA"]);
+		const requests = (client.batchUpdate as any).mock.calls[0][0];
+		expect(requests).toEqual([
+			{
+				updateCells: {
+					start: { sheetId: 111, rowIndex: 14, columnIndex: 2 },
+					rows: [{ values: [{ userEnteredValue: { stringValue: "TWD" } }, { userEnteredValue: { numberValue: 68587 } }] }],
+					fields: "userEnteredValue",
+				},
+			},
+		]);
+		expect(result).toEqual({
+			tab: "9 月",
+			row: 15,
+			action: "updated",
+			item: "薪水",
+			amount: 68587,
+			currency: "TWD",
+			previous: { currency: "TWD", amount: "63913" },
+			migration: null,
+		});
+	});
+
+	it("inserts a new ad-hoc income row inside the window so the SUMIFs auto-extend", async () => {
+		const client = fakeClient(migratedMonthGrid());
+
+		const result = await setIncome(client, { item: "股息", amount: 120, currency: "USD", month: 9 });
+
+		const requests = (client.batchUpdate as any).mock.calls[0][0];
+		// window rows 14-16 are all occupied → insert at the window's LAST row
+		// (16), strictly inside C14:C16 / D14:D16, so every SUMIF extends.
+		expect(requests).toEqual([
+			{
+				insertDimension: {
+					range: { sheetId: 111, dimension: "ROWS", startIndex: 15, endIndex: 16 },
+					inheritFromBefore: true,
+				},
+			},
+			{
+				updateCells: {
+					start: { sheetId: 111, rowIndex: 15, columnIndex: 1 },
+					rows: [{ values: [
+						{ userEnteredValue: { stringValue: "股息" } },
+						{ userEnteredValue: { stringValue: "USD" } },
+						{ userEnteredValue: { numberValue: 120 } },
+					] }],
+					fields: "userEnteredValue",
+				},
+			},
+		]);
+		expect(result).toMatchObject({ row: 16, action: "inserted", previous: null, migration: null });
+	});
+
+	it("reuses an empty row inside the income window before inserting", async () => {
+		const g = migratedMonthGrid();
+		g[15] = ["", "", "", ""]; // row 16 empty (多一個月薪水 removed)
+		const client = fakeClient(g);
+
+		const result = await setIncome(client, { item: "獎金", amount: 5000, currency: "TWD", month: 9 });
+
+		const requests = (client.batchUpdate as any).mock.calls[0][0];
+		expect(requests).toHaveLength(1);
+		expect(requests[0].updateCells.start).toEqual({ sheetId: 111, rowIndex: 15, columnIndex: 1 });
+		expect(result).toMatchObject({ row: 16, action: "inserted" });
+	});
+
+	it("migrates an old-layout tab first, then applies the upsert to the re-read grid", async () => {
+		const client = fakeClient(oldLayoutGrid());
+		(client.readRange as any)
+			.mockResolvedValueOnce({ range: "x", values: oldLayoutGrid(), truncated: false })
+			.mockResolvedValueOnce({ range: "x", values: migratedMonthGrid(), truncated: false });
+
+		const result = await setIncome(client, { item: "薪水", amount: 70000, currency: "TWD", month: 9 });
+
+		// batch 1 = migration, batch 2 = the income write
+		expect((client.batchUpdate as any).mock.calls).toHaveLength(2);
+		expect((client.batchUpdate as any).mock.calls[0][0][0]).toHaveProperty("insertDimension");
+		expect((client.batchUpdate as any).mock.calls[1][0][0].updateCells.start).toEqual({ sheetId: 111, rowIndex: 14, columnIndex: 2 });
+		expect(result.action).toBe("updated");
+		expect(result.migration).not.toBeNull();
+		expect(result.migration!.changes.length).toBeGreaterThan(0);
+	});
+
+	it("rejects layout labels as income items before touching the sheet", async () => {
+		const client = fakeClient(migratedMonthGrid());
+		await expect(setIncome(client, { item: "月剩餘", amount: 1, currency: "TWD", month: 9 })).rejects.toThrow("layout label");
+		await expect(setIncome(client, { item: "花費總額", amount: 1, currency: "TWD", month: 9 })).rejects.toThrow("layout label");
+		expect((client.readRange as any).mock.calls).toHaveLength(0);
+	});
+
+	it("fails with a clear message when the tab has no income list anchors", async () => {
+		const client = fakeClient(monthGrid()); // no 總預算 row
+		await expect(setIncome(client, { item: "薪水", amount: 1, currency: "TWD", month: 9 })).rejects.toThrow("income list");
+		expect((client.batchUpdate as any).mock.calls).toHaveLength(0);
+	});
+
+	it("refuses to operate on a truncated read", async () => {
+		const client = fakeClient(migratedMonthGrid());
+		(client.readRange as any).mockResolvedValue({ range: "x", values: migratedMonthGrid(), truncated: true });
+		await expect(setIncome(client, { item: "薪水", amount: 1, currency: "TWD", month: 9 })).rejects.toThrow("truncated");
+		expect((client.batchUpdate as any).mock.calls).toHaveLength(0);
 	});
 });

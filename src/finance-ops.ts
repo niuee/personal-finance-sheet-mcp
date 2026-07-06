@@ -298,6 +298,133 @@ export async function migrateIncomeLayout(
 	return { changes, deletedRows };
 }
 
+export interface SetIncomeParams {
+	item: string;
+	amount: number;
+	currency: "TWD" | "USD";
+	month?: number;
+}
+
+/** Labels that name layout rows, not income items — set_income must never write them into the income list. */
+const NON_INCOME_LABELS = new Set<string>([
+	BUDGET_HEADER_LABEL,
+	REMAINDER_LABEL,
+	MONTH_USD_NET_LABEL,
+	MONTH_NTD_NET_LABEL,
+	MONTH_REMAINDER_LABEL,
+	USD_PAYMENT_LABEL,
+	NTD_PAYMENT_LABEL,
+	TOTAL_ROW_LABEL,
+	OVERDRAFT_LABEL,
+	USD_INCOME_LABEL,
+	USD_SPENDING_LABEL,
+	PREV_USD_BALANCE_LABEL,
+	USD_BALANCE_LABEL,
+	TOTAL_USD_BALANCE_LABEL,
+	NTD_INCOME_LABEL,
+	NTD_SPENDING_LABEL,
+	PREV_NTD_BALANCE_LABEL,
+	NTD_BALANCE_LABEL,
+	TOTAL_NTD_BALANCE_LABEL,
+]);
+
+/**
+ * Upsert an income row on a monthly tab: update the row whose 項目 matches,
+ * or insert a new ad-hoc row inside the income window (so the 美金收入 /
+ * 新臺幣收入 SUMIFs auto-extend). Auto-migrates old-layout tabs first.
+ */
+export async function setIncome(client: SheetsClient, p: SetIncomeParams) {
+	const item = p.item.trim();
+	if (NON_INCOME_LABELS.has(item)) {
+		throw new Error(`"${item}" is a layout label, not an income item — refusing to write it into the income list.`);
+	}
+	const tab = p.month !== undefined ? monthTabName(p.month) : currentMonthTab();
+
+	const first = await client.readRange(`${quoteTab(tab)}!${GRID_READ}`, "FORMULA");
+	assertNotTruncated(first.truncated, tab, GRID_READ);
+	let values = first.values;
+	const sheetId = await client.getSheetId(tab);
+
+	let win = findIncomeWindow(values);
+	if (win === null) {
+		throw new Error(
+			`Could not locate the income list in ${tab} (no "${BUDGET_HEADER_LABEL}" + "${MONTH_USD_NET_LABEL}"/"${REMAINDER_LABEL}" anchors in column ${colLetter(MONTH_COLS.budgetLabel)}) — the tab may predate the budget block.`,
+		);
+	}
+	let migration: MigrationResult | null = null;
+	if (!win.migrated) {
+		migration = await migrateIncomeLayout(client, tab, values, sheetId);
+		const reread = await client.readRange(`${quoteTab(tab)}!${GRID_READ}`, "FORMULA");
+		assertNotTruncated(reread.truncated, tab, GRID_READ);
+		values = reread.values;
+		win = findIncomeWindow(values);
+		if (win === null || !win.migrated) {
+			throw new Error(`Migration of ${tab} did not produce the expected ${MONTH_REMAINDER_LABEL} layout — inspect the tab before retrying.`);
+		}
+	}
+
+	const cellStr = (r: number, c: number) => String(values[r - 1]?.[c] ?? "");
+	let targetRow: number | null = null;
+	for (let r = win.start; r <= win.end; r++) {
+		if (cellStr(r, MONTH_COLS.item).trim() === item) {
+			targetRow = r;
+			break;
+		}
+	}
+
+	const requests: object[] = [];
+	let action: "updated" | "inserted";
+	let previous: { currency: string | null; amount: string } | null = null;
+	if (targetRow !== null) {
+		action = "updated";
+		previous = {
+			currency: cellStr(targetRow, MONTH_COLS.tag).trim() || null,
+			amount: cellStr(targetRow, MONTH_COLS.budgetValue),
+		};
+		requests.push({
+			updateCells: {
+				start: { sheetId, rowIndex: targetRow - 1, columnIndex: MONTH_COLS.tag },
+				rows: [{ values: [cellData(p.currency), cellData(p.amount)] }],
+				fields: "userEnteredValue",
+			},
+		});
+	} else {
+		action = "inserted";
+		// First fully-empty row inside the window; else insert at the window's
+		// LAST row — strictly inside every range spanning the window, so the
+		// income SUMIFs (and the 月-row anchors below) auto-extend.
+		for (let r = win.start; r <= win.end; r++) {
+			const row = values[r - 1] ?? [];
+			if (!row.some((c) => c !== "" && c != null)) {
+				targetRow = r;
+				break;
+			}
+		}
+		if (targetRow === null) {
+			if (win.end <= win.start) {
+				throw new Error(`The income list in ${tab} (rows ${win.start}-${win.end}) is too small to insert into safely.`);
+			}
+			targetRow = win.end;
+			requests.push({
+				insertDimension: {
+					range: { sheetId, dimension: "ROWS", startIndex: targetRow - 1, endIndex: targetRow },
+					inheritFromBefore: true,
+				},
+			});
+		}
+		requests.push({
+			updateCells: {
+				start: { sheetId, rowIndex: targetRow - 1, columnIndex: MONTH_COLS.item },
+				rows: [{ values: [cellData(item), cellData(p.currency), cellData(p.amount)] }],
+				fields: "userEnteredValue",
+			},
+		});
+	}
+
+	await client.batchUpdate(requests);
+	return { tab, row: targetRow, action, item, amount: p.amount, currency: p.currency, previous, migration };
+}
+
 export function quoteTab(tab: string): string {
 	return `'${tab.replace(/'/g, "''")}'`;
 }
