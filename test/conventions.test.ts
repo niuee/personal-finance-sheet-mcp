@@ -152,6 +152,12 @@ describe("conventions", () => {
 			"日期",
 			"類別",
 			"新臺幣支付",
+			"支付幣別",
+			"月剩餘",
+			"月美金餘額",
+			"總美金餘額",
+			"set_income",
+			"幣別",
 		]) {
 			expect(CONVENTIONS_TEXT).toContain(needle);
 		}
