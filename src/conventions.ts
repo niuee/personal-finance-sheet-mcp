@@ -154,6 +154,33 @@ export const TRANSFER_COLS = {
 	extra: 12,
 } as const;
 
+/**
+ * 中餐預算 — the lunch-budget log (columns O–Q), present on monthly tabs from
+ * 7月 2026 (start_month copies it forward and clears its data rows). The
+ * recurring 中餐 row in the expense list IS the month's lunch budget; actual
+ * lunches are logged here, never in the expense list. Title in O; two rows
+ * below it a values row (O=編列預算 pointing at the 中餐 expense cell,
+ * Q=剩餘 = 編列預算 − 總和); then a 日期/項目/金額 header, data rows, and a
+ * 總和 row (label in P, =SUM in Q). The 銀行餘額 block wires to the leftover:
+ * 午餐超支或回補 = the 剩餘 cell, and 總新臺幣餘額 = 預計總新臺幣餘額 +
+ * 午餐超支或回補 — unspent budget flows back to the bank, an overdraft
+ * (negative 剩餘) deducts more.
+ */
+export const LUNCH_SECTION_LABEL = "中餐預算";
+export const LUNCH_TOTAL_LABEL = "總和";
+export const LUNCH_DEFAULT_ITEM = "中餐";
+export const LUNCH_ADJUST_LABEL = "午餐超支或回補";
+
+/** 0-indexed columns of the 中餐預算 section (O–Q). */
+export const LUNCH_COLS = {
+	/** O — 日期; also the column of the section title, the 編列預算 label, and the budget value. */
+	date: 14,
+	/** P — 項目; also the column of the 總和 label. */
+	item: 15,
+	/** Q — 金額; also the 剩餘 value and the 總和 =SUM cell. */
+	amount: 16,
+} as const;
+
 /** Sheets date serial: days since 1899-12-30. */
 export function dateSerial(year: number, month: number, day: number): number {
 	return Math.round((Date.UTC(year, month - 1, day) - Date.UTC(1899, 11, 30)) / 86_400_000);
@@ -225,8 +252,9 @@ MONTHLY TABS — named "N 月" (e.g. "9 月", with a space). Layout below applie
 - Row 3 "上月透支" carries last month's overdraft via a cross-tab formula; start_month re-anchors it at the previous month's 月剩餘 (or 剩餘 on old-layout tabs).
 - Categorization is the per-row 類別 tag in column C (see month_summary's per-類別 totals). The old G/H summary block is DEPRECATED — ignore any remnants.
 - Below the list, the income section: a 總預算 header row, then the income list (labels in B, 幣別 USD/TWD in C, amounts in D): 沛還, 薪水, plus ad-hoc income rows (e.g. 多一個月薪水) — manage these with set_income, which upserts by 項目 and keeps the SUMIFs covering every row. The list ends at 月美金餘額 / 月新臺幣餘額 (THIS month's 收入−支出 per currency, from the 銀行餘額 block), interleaved with per-currency write-offs — 美金透支沖銷 directly under 月美金餘額 and 新臺幣透支沖銷 directly under 月新臺幣餘額, each =IF(AND(月…餘額<0, 總…餘額>=0), -月…餘額, 0): a currency's month-deficit is settled from its OWN bank ledger when that balance stays non-negative — then 月剩餘 (= (月美金餘額+美金透支沖銷)*GOOGLEFINANCE USDTWD + 月新臺幣餘額 + 新臺幣透支沖銷 — the month's combined remainder in TWD; a fully settled month closes at 0, so nothing rolls into next month's 上月透支 unless a bank ledger itself goes negative). The old 剩餘, 美金支付 and 新臺幣支付 rows are DEPRECATED and removed by migration.
-- Further down, a 銀行餘額 block reconciles the real USD and NTD bank accounts as two INDEPENDENT running ledgers (labels in column B, values in column D): 美金收入 / 美金支出 / 上月美金餘額 / 總美金餘額, then 新臺幣收入 / 新臺幣支出 / 上月新臺幣餘額 / 總新臺幣餘額 (renamed by migration from 美金餘額/新臺幣餘額 — unmigrated tabs still use the short names). 收入 cells = SUMIF over the income list's 幣別 column; 美金支出 = SUMIF of the expense 支付幣別 for USD summing column D; 新臺幣支出 = SUMIF for TWD summing column E. Both 支出 SUMIFs span the FULL expense window INCLUDING the 上月透支 row — deliberate: Vincent counts the carried overdraft as an outflow that must be covered out of this month's money. Do not "fix" this as double-counting. Each 總…餘額 = 上月…餘額 + 收入 − 支出 (surplus AND overdraft carry). 上月…餘額 point at the previous month's 總…餘額 cell (start_month rewires them); in the earliest month they are seeded by hand.
+- Further down, a 銀行餘額 block reconciles the real USD and NTD bank accounts as two INDEPENDENT running ledgers (labels in column B, values in column D): 美金收入 / 美金支出 / 上月美金餘額 / 總美金餘額, then 新臺幣收入 / 新臺幣支出 / 上月新臺幣餘額 / 總新臺幣餘額 (renamed by migration from 美金餘額/新臺幣餘額 — unmigrated tabs still use the short names). 收入 cells = SUMIF over the income list's 幣別 column; 美金支出 = SUMIF of the expense 支付幣別 for USD summing column D; 新臺幣支出 = SUMIF for TWD summing column E. Both 支出 SUMIFs span the FULL expense window INCLUDING the 上月透支 row — deliberate: Vincent counts the carried overdraft as an outflow that must be covered out of this month's money. Do not "fix" this as double-counting. Each 總…餘額 = 上月…餘額 + 收入 − 支出 (surplus AND overdraft carry). From 7月 2026 the NTD ledger also carries 午餐超支或回補 (the 中餐預算 block's 剩餘) and a 預計總新臺幣餘額 row, with 總新臺幣餘額 = 預計總新臺幣餘額 + 午餐超支或回補. 上月…餘額 point at the previous month's 總…餘額 cell (start_month rewires them); in the earliest month they are seeded by hand.
 - To the right of the expense list, a 乾坤大挪移 block (the NTD→USD transfer log, from 7月 2026 on) spans columns G-M: the title in G, a header row (日期 新臺幣 當下美金 實際美金 匯差 手續費 當筆總額外花費), data rows, then a 總和 row with per-column SUMs. 當下美金 and 匯差 are pinned to the USDTWD rate at entry time (a literal number, not live GOOGLEFINANCE). The 銀行餘額 block wires to the 總和 row: 總美金餘額 adds +J總和 (USD received), 總新臺幣餘額 subtracts -H總和 (NTD sent), and 新臺幣支出 adds +M總和 so 匯差+手續費 count as the month's NTD spending — the principal itself is a transfer, not income or spending. Log transfers with add_transfer; never hand-extend the 總和 formulas.
+- Also to the right, a 中餐預算 block (columns O-Q, from 7月 2026 on): the recurring 中餐 row in the expense list is the month's lunch BUDGET, and actual lunches are logged in this block instead of the expense list. Title in O; a 編列預算 / 剩餘 (負數會加回去支出) values row two rows below it (編列預算 points at the 中餐 expense cell; 剩餘 = 編列預算 − 總和); then a 日期 項目 金額 header, data rows, and a 總和 row (label in P, =SUM in Q). The leftover feeds the 銀行餘額 block's 午餐超支或回補 row: 總新臺幣餘額 = 預計總新臺幣餘額 + 午餐超支或回補 — unspent budget returns to the bank, an overdraft (negative 剩餘) deducts more. Log lunches with add_lunch; never hand-extend the 總和 formula and never add_expense a lunch.
 
 TRIP TABS — e.g. "2026/07/25 京都東京".
 - A mosaic of category blocks in four column bands (A-G, I-O, Q-W, Z-AF), stacked vertically within each band.
@@ -238,4 +266,4 @@ TRIP TABS — e.g. "2026/07/25 京都東京".
 
 OTHER — "火車模型" is a hobby purchase planner; monthly tabs may cross-reference its cells.
 
-Prefer the tailored tools (add_expense, set_income, add_transfer, month_summary, start_month, add_trip_entry) over raw range edits. Locate rows with find_cells — never by reading a big range and counting rows. For any append-like update_range write, pass expect_empty: true (it refuses if the target is not empty); every update_range response includes previousValues so a mistaken overwrite can be reverted. For math, read with mode "raw" — default reads return locale-formatted strings like "13,603.67".`;
+Prefer the tailored tools (add_expense, set_income, add_transfer, add_lunch, month_summary, start_month, add_trip_entry) over raw range edits. Locate rows with find_cells — never by reading a big range and counting rows. For any append-like update_range write, pass expect_empty: true (it refuses if the target is not empty); every update_range response includes previousValues so a mistaken overwrite can be reverted. For math, read with mode "raw" — default reads return locale-formatted strings like "13,603.67".`;

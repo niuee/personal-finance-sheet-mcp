@@ -5,6 +5,11 @@ import {
 	currentMonthTab,
 	dateSerial,
 	KNOWN_TAGS,
+	LUNCH_SECTION_LABEL,
+	LUNCH_TOTAL_LABEL,
+	LUNCH_DEFAULT_ITEM,
+	LUNCH_ADJUST_LABEL,
+	LUNCH_COLS,
 	MONTH_COLS,
 	MONTH_NTD_NET_LABEL,
 	MONTH_REMAINDER_LABEL,
@@ -87,6 +92,14 @@ describe("conventions", () => {
 		expect(NTD_WRITEOFF_LABEL).toBe("新臺幣透支沖銷");
 		expect(TOTAL_USD_BALANCE_LABEL).toBe("總美金餘額");
 		expect(TOTAL_NTD_BALANCE_LABEL).toBe("總新臺幣餘額");
+	});
+
+	it("exports the 中餐預算 lunch-section anchors", () => {
+		expect(LUNCH_SECTION_LABEL).toBe("中餐預算");
+		expect(LUNCH_TOTAL_LABEL).toBe("總和");
+		expect(LUNCH_DEFAULT_ITEM).toBe("中餐");
+		expect(LUNCH_ADJUST_LABEL).toBe("午餐超支或回補");
+		expect(LUNCH_COLS).toEqual({ date: 14, item: 15, amount: 16 });
 	});
 
 	it("keeps 沛還 and 薪水 as recurring income, ad-hoc rows are not", () => {
@@ -179,6 +192,10 @@ describe("conventions", () => {
 			"乾坤大挪移",
 			"add_transfer",
 			"當筆總額外花費",
+			"中餐預算",
+			"add_lunch",
+			"午餐超支或回補",
+			"編列預算",
 		]) {
 			expect(CONVENTIONS_TEXT).toContain(needle);
 		}
