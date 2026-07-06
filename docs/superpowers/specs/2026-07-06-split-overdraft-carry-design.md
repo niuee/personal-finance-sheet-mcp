@@ -111,6 +111,11 @@ label at execution time (row numbers below are illustrative):
    rows up per F, and the next tab's cross-tab formulas still point at
    the right (shifted) cells. Report every overwritten value.
 
+**Caveat**: complete each tab's insert+rename atomically, and do not run
+start_month until the whole backfill finishes — a half-converted tab
+(USD row inserted, old row not yet renamed) re-anchors its legacy TWD
+carry but silently drops any USD deficit.
+
 ## Out of scope
 
 - 6月 and earlier keep the single TWD row (legacy fallback covers them).

@@ -369,7 +369,7 @@ export async function migrateIncomeLayout(
 	// 剩餘 row + the four inserted rows become the 月 view. Each currency's
 	// write-off settles ITS month-deficit from ITS bank when that 總…餘額 stays
 	// non-negative; a fully settled month's 月剩餘 closes at 0 and nothing
-	// rolls to next month's 上月透支.
+	// rolls to next month's 上月…透支.
 	const usd = colLetter(MONTH_COLS.usd);
 	const twd = colLetter(MONTH_COLS.twd);
 	const usdNet = `=${D}${finalRow(usdIncRow)}-${D}${finalRow(usdSpRow)}`;
@@ -427,6 +427,8 @@ const NON_INCOME_LABELS = new Set<string>([
 	NTD_PAYMENT_LABEL,
 	TOTAL_ROW_LABEL,
 	OVERDRAFT_LABEL,
+	PREV_USD_OVERDRAFT_LABEL,
+	PREV_NTD_OVERDRAFT_LABEL,
 	USD_INCOME_LABEL,
 	USD_SPENDING_LABEL,
 	PREV_USD_BALANCE_LABEL,
@@ -980,7 +982,7 @@ export async function monthSummary(client: SheetsClient, month?: number) {
 	};
 }
 
-/** Probe window for the 類別 dropdown: row 3 is 上月透支, so scan a few rows deep. */
+/** Probe window for the 類別 dropdown: rows 3-4 are the 上月…透支 carries, so scan a few rows deep. */
 const TAG_VALIDATION_ROWS = { start: 3, end: 15 } as const;
 
 /** The live 類別 tag list, read from the dropdown (data validation) on a monthly tab's 類別 column. */
@@ -1096,6 +1098,12 @@ export async function startMonth(client: SheetsClient, month: number) {
 				MONTH_COLS.twd,
 				unsettled(MONTH_NTD_NET_LABEL, NTD_WRITEOFF_LABEL) ?? legacyCarryFormula(ntdCarryRow),
 			);
+		} else {
+			// Mid-backfill tab (USD row inserted, old row not yet renamed): re-anchor the legacy TWD carry to this month rather than leave it pointing two months back.
+			const legacyRow = findRowByValue(values, MONTH_COLS.item, OVERDRAFT_LABEL);
+			if (legacyRow !== null) {
+				carryWrite(legacyRow, MONTH_COLS.twd, legacyCarryFormula(legacyRow));
+			}
 		}
 	} else {
 		const overdraftRow = findRowByValue(values, MONTH_COLS.item, OVERDRAFT_LABEL);

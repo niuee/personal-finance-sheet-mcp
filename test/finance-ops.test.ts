@@ -156,7 +156,12 @@ function migratedMonthGrid(): unknown[][] {
 	return g;
 }
 
-/** migratedMonthGrid with the split carry: 上月美金透支 (row 3) + 上月新臺幣透支 (row 4); everything below shifts one row down. */
+/**
+ * migratedMonthGrid with the split carry: 上月美金透支 (row 3) + 上月新臺幣透支 (row 4);
+ * everything below shifts one row down. The formula strings below the splice keep
+ * their pre-splice row numbers — the fake client never evaluates formulas, and the
+ * code under test matches rows by label, not by the numbers embedded in these strings.
+ */
 function splitCarryGrid(): unknown[][] {
 	const g = migratedMonthGrid();
 	g.splice(
@@ -1303,6 +1308,10 @@ describe("startMonth", () => {
 		// Both carry rows are recurring — kept, never deleted.
 		expect(result.kept).toContain("上月美金透支");
 		expect(result.kept).toContain("上月新臺幣透支");
+		// the USD row's E conversion formula is row-relative — never rewritten
+		expect(
+			requests.find((r: any) => r.updateCells && r.updateCells.start.rowIndex === 2 && r.updateCells.start.columnIndex === 4),
+		).toBeUndefined();
 	});
 
 	it("degenerate split rows over an un-migrated month: USD gets 0, NTD falls back to the 剩餘 anchor", async () => {
@@ -1321,6 +1330,30 @@ describe("startMonth", () => {
 		// 剩餘 sits at row 16 after the two carry rows shifted the old grid down one.
 		expect(ntdWrite.updateCells.rows[0].values).toEqual([
 			{ userEnteredValue: { formulaValue: "=IF(-'9 月'!D16 > 0, -'9 月'!D16, 0)" } },
+		]);
+	});
+
+	it("re-anchors the legacy TWD carry on a half-converted tab (USD row inserted, old row not yet renamed)", async () => {
+		const g = migratedMonthGrid();
+		g.splice(2, 0, ["", "上月美金透支", "透支", 0, '=D3*GOOGLEFINANCE("CURRENCY:USDTWD")', "USD"]);
+		const client = startMonthClient(g, ["9 月", "8 月"]);
+
+		await startMonth(client, 10);
+
+		const requests = (client.batchUpdate as any).mock.calls[1][0];
+		// New USD row (row 3) gets the unsettled formula anchored at the shifted 月美金餘額/美金透支沖銷 (rows 18/19).
+		const usdWrite = requests.find(
+			(r: any) => r.updateCells && r.updateCells.start.rowIndex === 2 && r.updateCells.start.columnIndex === 3,
+		);
+		expect(usdWrite.updateCells.rows[0].values).toEqual([
+			{ userEnteredValue: { formulaValue: "=IF(-('9 月'!D18+'9 月'!D19) > 0, -('9 月'!D18+'9 月'!D19), 0)" } },
+		]);
+		// Legacy 上月透支 row (shifted to row 4) is re-anchored to 月剩餘 (shifted to row 22), not left pointing two months back.
+		const legacyWrite = requests.find(
+			(r: any) => r.updateCells && r.updateCells.start.rowIndex === 3 && r.updateCells.start.columnIndex === 4,
+		);
+		expect(legacyWrite.updateCells.rows[0].values).toEqual([
+			{ userEnteredValue: { formulaValue: "=IF(-'9 月'!D22 > 0, -'9 月'!D22, 0)" } },
 		]);
 	});
 });
@@ -1981,6 +2014,7 @@ describe("setIncome", () => {
 		await expect(setIncome(client, { item: "花費總額", amount: 1, currency: "TWD", month: 9 })).rejects.toThrow("layout label");
 		await expect(setIncome(client, { item: "美金透支沖銷", amount: 1, currency: "TWD", month: 9 })).rejects.toThrow("layout label");
 		await expect(setIncome(client, { item: "新臺幣透支沖銷", amount: 1, currency: "TWD", month: 9 })).rejects.toThrow("layout label");
+		await expect(setIncome(client, { item: "上月美金透支", amount: 1, currency: "USD", month: 9 })).rejects.toThrow("layout label");
 		expect((client.readRange as any).mock.calls).toHaveLength(0);
 	});
 
