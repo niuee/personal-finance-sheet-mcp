@@ -30,9 +30,10 @@ export const MONTH_NTD_NET_LABEL = "月新臺幣餘額";
 export const MONTH_REMAINDER_LABEL = "月剩餘";
 
 /**
- * 透支沖銷 — automatic all-or-nothing write-off of the carried 上月透支
- * against the bank: =IF(總新臺幣餘額 >= 0, 上月透支, 0). Sits between
- * 月新臺幣餘額 and 月剩餘; 月剩餘 adds it back so settled debt does not roll.
+ * 透支沖銷 — automatic all-or-nothing write-off of the MONTH'S OWN deficit
+ * against the bank: =IF(AND(月美×rate+月新 < 0, 總新臺幣餘額 >= 0),
+ * -(月美×rate+月新), 0). Sits between 月新臺幣餘額 and 月剩餘; when it fires,
+ * 月剩餘 closes at 0 and nothing rolls into next month's 上月透支.
  */
 export const WRITEOFF_LABEL = "透支沖銷";
 
@@ -177,7 +178,7 @@ MONTHLY TABS — named "N 月" (e.g. "9 月", with a space). Layout below applie
 - The list ends at the "花費總額" row (label in column D, total in E, formula SUM over the window). New expenses must land INSIDE that window — write into an empty row above 花費總額, or insert a row inside the window so the SUM extends. Never append below 花費總額.
 - Row 3 "上月透支" carries last month's overdraft via a cross-tab formula; start_month re-anchors it at the previous month's 月剩餘 (or 剩餘 on old-layout tabs).
 - Categorization is the per-row 類別 tag in column C (see month_summary's per-類別 totals). The old G/H summary block is DEPRECATED — ignore any remnants.
-- Below the list, the income section: a 總預算 header row, then the income list (labels in B, 幣別 USD/TWD in C, amounts in D): 沛還, 薪水, plus ad-hoc income rows (e.g. 多一個月薪水) — manage these with set_income, which upserts by 項目 and keeps the SUMIFs covering every row. The list ends at 月美金餘額 / 月新臺幣餘額 (THIS month's 收入−支出 per currency, from the 銀行餘額 block), then 透支沖銷 (automatic all-or-nothing write-off: =IF(總新臺幣餘額 >= 0, 上月透支, 0) — when the bank can cover the carried overdraft it is settled from savings), then 月剩餘 (= 月美金餘額*GOOGLEFINANCE USDTWD + 月新臺幣餘額 + 透支沖銷 — the month's combined remainder in TWD; because 透支沖銷 adds a settled carry back, only FRESH overspending rolls to next month). The old 剩餘, 美金支付 and 新臺幣支付 rows are DEPRECATED and removed by migration.
+- Below the list, the income section: a 總預算 header row, then the income list (labels in B, 幣別 USD/TWD in C, amounts in D): 沛還, 薪水, plus ad-hoc income rows (e.g. 多一個月薪水) — manage these with set_income, which upserts by 項目 and keeps the SUMIFs covering every row. The list ends at 月美金餘額 / 月新臺幣餘額 (THIS month's 收入−支出 per currency, from the 銀行餘額 block), then 透支沖銷 (automatic all-or-nothing write-off of the month's own deficit: =IF(AND(月美金餘額*rate+月新臺幣餘額 < 0, 總新臺幣餘額 >= 0), -(月美金餘額*rate+月新臺幣餘額), 0) — when the month ends short and the bank stays non-negative, the whole shortfall is settled from savings), then 月剩餘 (= 月美金餘額*GOOGLEFINANCE USDTWD + 月新臺幣餘額 + 透支沖銷 — the month's combined remainder in TWD; a settled month closes at 0, so nothing rolls into next month's 上月透支 unless the bank itself goes negative). The old 剩餘, 美金支付 and 新臺幣支付 rows are DEPRECATED and removed by migration.
 - Further down, a 銀行餘額 block reconciles the real USD and NTD bank accounts as two INDEPENDENT running ledgers (labels in column B, values in column D): 美金收入 / 美金支出 / 上月美金餘額 / 總美金餘額, then 新臺幣收入 / 新臺幣支出 / 上月新臺幣餘額 / 總新臺幣餘額 (renamed by migration from 美金餘額/新臺幣餘額 — unmigrated tabs still use the short names). 收入 cells = SUMIF over the income list's 幣別 column; 美金支出 = SUMIF of the expense 支付幣別 for USD summing column D; 新臺幣支出 = SUMIF for TWD summing column E. Both 支出 SUMIFs span the FULL expense window INCLUDING the 上月透支 row — deliberate: Vincent counts the carried overdraft as an outflow that must be covered out of this month's money. Do not "fix" this as double-counting. Each 總…餘額 = 上月…餘額 + 收入 − 支出 (surplus AND overdraft carry). 上月…餘額 point at the previous month's 總…餘額 cell (start_month rewires them); in the earliest month they are seeded by hand.
 
 TRIP TABS — e.g. "2026/07/25 京都東京".

@@ -273,15 +273,12 @@ export async function migrateIncomeLayout(
 	const twd = colLetter(MONTH_COLS.twd);
 	const usdNet = `=${D}${finalRow(usdIncRow)}-${D}${finalRow(usdSpRow)}`;
 	const ntdNet = `=${D}${finalRow(ntdIncRow)}-${D}${finalRow(ntdSpRow)}`;
-	// All-or-nothing write-off: settle the carried 上月透支 from the bank when
-	// the post-payment 總新臺幣餘額 stays non-negative (支出 already includes
-	// the carry, so that IS "the bank could cover it") — only fresh
-	// overspending rolls forward.
-	const overdraftRow = findRowByValue(values, MONTH_COLS.item, OVERDRAFT_LABEL);
-	const writeoff =
-		overdraftRow !== null
-			? `=IF(${D}${finalRow(ntdBalRow)}>=0, ${twd}${finalRow(overdraftRow)}, 0)`
-			: 0;
+	// All-or-nothing write-off of the month's own deficit: when the month ends
+	// short (月美×rate + 月新 < 0) and the post-payment 總新臺幣餘額 stays
+	// non-negative, the bank absorbs the whole shortfall — 月剩餘 closes at 0
+	// and nothing rolls to next month's 上月透支.
+	const rawNet = `${D}${remRow}*GOOGLEFINANCE("CURRENCY:USDTWD")+${D}${remRow + 1}`;
+	const writeoff = `=IF(AND(${rawNet}<0,${D}${finalRow(ntdBalRow)}>=0),-(${rawNet}),0)`;
 	const monthRemainder = `=${D}${remRow}*GOOGLEFINANCE("CURRENCY:USDTWD")+${D}${remRow + 1}+${D}${remRow + 2}`;
 	requests.push({
 		updateCells: {
