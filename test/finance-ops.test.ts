@@ -134,18 +134,19 @@ function migratedMonthGrid(): unknown[][] {
 	g[13] = ["", "沛還", "TWD", 20500];
 	g[14] = ["", "薪水", "TWD", 63913];
 	g[15] = ["", "多一個月薪水", "TWD", 63913];
-	g[16] = ["", "月美金餘額", "", "=D22-D23"];
-	g[17] = ["", "月新臺幣餘額", "", "=D26-D27"];
-	g[18] = ["", "月剩餘", "", '=D17*GOOGLEFINANCE("CURRENCY:USDTWD")+D18'];
-	g[20] = ["", "銀行餘額"];
-	g[21] = ["", "美金收入", "", '=SUMIF(C14:C16,"USD",D14:D16)'];
-	g[22] = ["", "美金支出", "", '=SUMIF(F3:F10,"USD",D3:D10)'];
-	g[23] = ["", "上月美金餘額", "", "='8 月'!D25"];
-	g[24] = ["", "總美金餘額", "", "=D24+D22-D23"];
-	g[25] = ["", "新臺幣收入", "", '=SUMIF(C14:C16,"TWD",D14:D16)'];
-	g[26] = ["", "新臺幣支出", "", '=SUMIF(F3:F10,"TWD",E3:E10)'];
-	g[27] = ["", "上月新臺幣餘額", "", "='8 月'!D29"];
-	g[28] = ["", "總新臺幣餘額", "", "=D28+D26-D27"];
+	g[16] = ["", "月美金餘額", "", "=D23-D24"];
+	g[17] = ["", "月新臺幣餘額", "", "=D27-D28"];
+	g[18] = ["", "透支沖銷", "", "=IF(D30>=0, E3, 0)"];
+	g[19] = ["", "月剩餘", "", '=D17*GOOGLEFINANCE("CURRENCY:USDTWD")+D18+D19'];
+	g[21] = ["", "銀行餘額"];
+	g[22] = ["", "美金收入", "", '=SUMIF(C14:C16,"USD",D14:D16)'];
+	g[23] = ["", "美金支出", "", '=SUMIF(F3:F10,"USD",D3:D10)'];
+	g[24] = ["", "上月美金餘額", "", "='8 月'!D26"];
+	g[25] = ["", "總美金餘額", "", "=D25+D23-D24"];
+	g[26] = ["", "新臺幣收入", "", '=SUMIF(C14:C16,"TWD",D14:D16)'];
+	g[27] = ["", "新臺幣支出", "", '=SUMIF(F3:F10,"TWD",E3:E10)'];
+	g[28] = ["", "上月新臺幣餘額", "", "='8 月'!D30"];
+	g[29] = ["", "總新臺幣餘額", "", "=D29+D27-D28"];
 	return g;
 }
 
@@ -191,19 +192,19 @@ describe("migrateIncomeLayout", () => {
 		const result = await migrateIncomeLayout(client, "9 月", oldLayoutGrid(), 111);
 
 		const requests = (client.batchUpdate as any).mock.calls[0][0];
-		// 1) insert two rows after 剩餘 (row 16) for the extra 月 rows
+		// 1) insert three rows after 剩餘 (row 16) for the extra 月 rows
 		expect(requests[0]).toEqual({
 			insertDimension: {
-				range: { sheetId: 111, dimension: "ROWS", startIndex: 16, endIndex: 18 },
+				range: { sheetId: 111, dimension: "ROWS", startIndex: 16, endIndex: 19 },
 				inheritFromBefore: true,
 			},
 		});
-		// 2) delete 新臺幣支付 (19→21) then 美金支付 (18→20), bottom-up at post-insert positions
+		// 2) delete 新臺幣支付 (19→22) then 美金支付 (18→21), bottom-up at post-insert positions
 		expect(requests[1]).toEqual({
-			deleteDimension: { range: { sheetId: 111, dimension: "ROWS", startIndex: 20, endIndex: 21 } },
+			deleteDimension: { range: { sheetId: 111, dimension: "ROWS", startIndex: 21, endIndex: 22 } },
 		});
 		expect(requests[2]).toEqual({
-			deleteDimension: { range: { sheetId: 111, dimension: "ROWS", startIndex: 19, endIndex: 20 } },
+			deleteDimension: { range: { sheetId: 111, dimension: "ROWS", startIndex: 20, endIndex: 21 } },
 		});
 		// 3) F2 支付幣別 header
 		expect(requests[3]).toEqual({
@@ -241,42 +242,43 @@ describe("migrateIncomeLayout", () => {
 				fields: "userEnteredValue",
 			},
 		});
-		// 6) 剩餘 row becomes 月美金餘額 and the two inserted rows get 月新臺幣餘額 / 月剩餘
+		// 6) 剩餘 row becomes 月美金餘額 and the three inserted rows get 月新臺幣餘額 / 透支沖銷 / 月剩餘
 		expect(requests[6]).toEqual({
 			updateCells: {
 				start: { sheetId: 111, rowIndex: 15, columnIndex: 1 },
 				rows: [
-					{ values: [{ userEnteredValue: { stringValue: "月美金餘額" } }, {}, { userEnteredValue: { formulaValue: "=D22-D23" } }] },
-					{ values: [{ userEnteredValue: { stringValue: "月新臺幣餘額" } }, {}, { userEnteredValue: { formulaValue: "=D26-D27" } }] },
-					{ values: [{ userEnteredValue: { stringValue: "月剩餘" } }, {}, { userEnteredValue: { formulaValue: '=D16*GOOGLEFINANCE("CURRENCY:USDTWD")+D17' } }] },
+					{ values: [{ userEnteredValue: { stringValue: "月美金餘額" } }, {}, { userEnteredValue: { formulaValue: "=D23-D24" } }] },
+					{ values: [{ userEnteredValue: { stringValue: "月新臺幣餘額" } }, {}, { userEnteredValue: { formulaValue: "=D27-D28" } }] },
+					{ values: [{ userEnteredValue: { stringValue: "透支沖銷" } }, {}, { userEnteredValue: { formulaValue: "=IF(D30>=0, E3, 0)" } }] },
+					{ values: [{ userEnteredValue: { stringValue: "月剩餘" } }, {}, { userEnteredValue: { formulaValue: '=D16*GOOGLEFINANCE("CURRENCY:USDTWD")+D17+D18' } }] },
 				],
 				fields: "userEnteredValue",
 			},
 		});
 		// 7) 收入 cells become income-window SUMIFs; 支出 cells become 支付幣別 SUMIFs
 		expect(requests[7].updateCells).toMatchObject({
-			start: { sheetId: 111, rowIndex: 21, columnIndex: 3 },
+			start: { sheetId: 111, rowIndex: 22, columnIndex: 3 },
 			rows: [{ values: [{ userEnteredValue: { formulaValue: '=SUMIF(C14:C15,"USD",D14:D15)' } }] }],
 		});
 		expect(requests[8].updateCells).toMatchObject({
-			start: { sheetId: 111, rowIndex: 22, columnIndex: 3 },
+			start: { sheetId: 111, rowIndex: 23, columnIndex: 3 },
 			rows: [{ values: [{ userEnteredValue: { formulaValue: '=SUMIF(F3:F10,"USD",D3:D10)' } }] }],
 		});
 		expect(requests[9].updateCells).toMatchObject({
-			start: { sheetId: 111, rowIndex: 25, columnIndex: 3 },
+			start: { sheetId: 111, rowIndex: 26, columnIndex: 3 },
 			rows: [{ values: [{ userEnteredValue: { formulaValue: '=SUMIF(C14:C15,"TWD",D14:D15)' } }] }],
 		});
 		expect(requests[10].updateCells).toMatchObject({
-			start: { sheetId: 111, rowIndex: 26, columnIndex: 3 },
+			start: { sheetId: 111, rowIndex: 27, columnIndex: 3 },
 			rows: [{ values: [{ userEnteredValue: { formulaValue: '=SUMIF(F3:F10,"TWD",E3:E10)' } }] }],
 		});
 		// 8) running balances renamed
 		expect(requests[11].updateCells).toMatchObject({
-			start: { sheetId: 111, rowIndex: 24, columnIndex: 1 },
+			start: { sheetId: 111, rowIndex: 25, columnIndex: 1 },
 			rows: [{ values: [{ userEnteredValue: { stringValue: "總美金餘額" } }] }],
 		});
 		expect(requests[12].updateCells).toMatchObject({
-			start: { sheetId: 111, rowIndex: 28, columnIndex: 1 },
+			start: { sheetId: 111, rowIndex: 29, columnIndex: 1 },
 			rows: [{ values: [{ userEnteredValue: { stringValue: "總新臺幣餘額" } }] }],
 		});
 		expect(requests).toHaveLength(13);
@@ -287,9 +289,9 @@ describe("migrateIncomeLayout", () => {
 			{ row: 19, item: "新臺幣支付", values: ["", "新臺幣支付", "", "=E5"] },
 			{ row: 18, item: "美金支付", values: ["", "美金支付", "", "=SUM(D4:D6)"] },
 		]);
-		expect(result.changes).toContainEqual({ cell: "D22", before: "0", after: '=SUMIF(C14:C15,"USD",D14:D15)' });
-		expect(result.changes).toContainEqual({ cell: "B25", before: "美金餘額", after: "總美金餘額" });
-		expect(result.changes).toContainEqual({ cell: "D16", before: "=sum(D14:D15)-E11", after: "=D22-D23" });
+		expect(result.changes).toContainEqual({ cell: "D23", before: "0", after: '=SUMIF(C14:C15,"USD",D14:D15)' });
+		expect(result.changes).toContainEqual({ cell: "B26", before: "美金餘額", after: "總美金餘額" });
+		expect(result.changes).toContainEqual({ cell: "D16", before: "=sum(D14:D15)-E11", after: "=D23-D24" });
 	});
 
 	it("preserves an existing 支付幣別 cell instead of re-deriving it", async () => {
@@ -324,12 +326,25 @@ describe("migrateIncomeLayout", () => {
 		const result = await migrateIncomeLayout(client, "9 月", g, 111);
 
 		const requests = (client.batchUpdate as any).mock.calls[0][0];
-		// one delete (美金支付 at 18→20); bank rows land one lower than the 2-pay case
+		// one delete (美金支付 at 18+3=21); bank rows land one lower than the 2-pay case
 		expect(requests[1]).toEqual({
-			deleteDimension: { range: { sheetId: 111, dimension: "ROWS", startIndex: 19, endIndex: 20 } },
+			deleteDimension: { range: { sheetId: 111, dimension: "ROWS", startIndex: 20, endIndex: 21 } },
 		});
-		// 美金收入 was row 22, final = 22 + 2 - 1 = 23
-		expect(result.changes).toContainEqual({ cell: "D23", before: "0", after: '=SUMIF(C14:C15,"USD",D14:D15)' });
+		// 美金收入 was row 22, final = 22 + 3 - 1 = 24
+		expect(result.changes).toContainEqual({ cell: "D24", before: "0", after: '=SUMIF(C14:C15,"USD",D14:D15)' });
+	});
+
+	it("writes a literal 0 write-off when the tab has no 上月透支 row", async () => {
+		const g = oldLayoutGrid();
+		g[2] = ["", "普通支出", "其他", "", 500]; // no carry row
+		const client = fakeClient(g);
+
+		await migrateIncomeLayout(client, "9 月", g, 111);
+
+		const monthRows = (client.batchUpdate as any).mock.calls[0][0][6];
+		expect(monthRows.updateCells.rows[2]).toEqual({
+			values: [{ userEnteredValue: { stringValue: "透支沖銷" } }, {}, { userEnteredValue: { numberValue: 0 } }],
+		});
 	});
 });
 
@@ -592,6 +607,7 @@ describe("monthSummary", () => {
 			剩餘: 12285.79,
 			月美金餘額: null,
 			月新臺幣餘額: null,
+			透支沖銷: null,
 			月剩餘: null,
 			美金收入: 500,
 			美金支出: 640.42,
@@ -613,15 +629,16 @@ describe("monthSummary", () => {
 		grid[10] = ["", "", "", "花費總額", 15233.11];
 		grid[16] = ["", "月美金餘額", "", -11.53];
 		grid[17] = ["", "月新臺幣餘額", "", 133296.33];
-		grid[18] = ["", "月剩餘", "", 132927.44];
-		grid[21] = ["", "美金收入", "", 0];
-		grid[22] = ["", "美金支出", "", 11.53];
-		grid[23] = ["", "上月美金餘額", "", 1000];
-		grid[24] = ["", "總美金餘額", "", 988.47];
-		grid[25] = ["", "新臺幣收入", "", 148326];
-		grid[26] = ["", "新臺幣支出", "", 15029.67];
-		grid[27] = ["", "上月新臺幣餘額", "", 5000];
-		grid[28] = ["", "總新臺幣餘額", "", 138296.33];
+		grid[18] = ["", "透支沖銷", "", 13603.67];
+		grid[19] = ["", "月剩餘", "", 146531.11];
+		grid[22] = ["", "美金收入", "", 0];
+		grid[23] = ["", "美金支出", "", 11.53];
+		grid[24] = ["", "上月美金餘額", "", 1000];
+		grid[25] = ["", "總美金餘額", "", 988.47];
+		grid[26] = ["", "新臺幣收入", "", 148326];
+		grid[27] = ["", "新臺幣支出", "", 15029.67];
+		grid[28] = ["", "上月新臺幣餘額", "", 5000];
+		grid[29] = ["", "總新臺幣餘額", "", 138296.33];
 		const client = fakeClient(grid);
 
 		const result = await monthSummary(client, 9);
@@ -641,7 +658,8 @@ describe("monthSummary", () => {
 			剩餘: null,
 			月美金餘額: -11.53,
 			月新臺幣餘額: 133296.33,
-			月剩餘: 132927.44,
+			透支沖銷: 13603.67,
+			月剩餘: 146531.11,
 			美金收入: 0,
 			美金支出: 11.53,
 			上月美金餘額: 1000,
@@ -779,25 +797,25 @@ describe("startMonth", () => {
 		expect(carryWrites).toEqual([
 			{
 				updateCells: {
-					start: { sheetId: 555, rowIndex: 23, columnIndex: 3 },
-					rows: [{ values: [{ userEnteredValue: { formulaValue: "='9 月'!D25" } }] }],
+					start: { sheetId: 555, rowIndex: 24, columnIndex: 3 },
+					rows: [{ values: [{ userEnteredValue: { formulaValue: "='9 月'!D26" } }] }],
 					fields: "userEnteredValue",
 				},
 			},
 			{
 				updateCells: {
-					start: { sheetId: 555, rowIndex: 27, columnIndex: 3 },
-					rows: [{ values: [{ userEnteredValue: { formulaValue: "='9 月'!D29" } }] }],
+					start: { sheetId: 555, rowIndex: 28, columnIndex: 3 },
+					rows: [{ values: [{ userEnteredValue: { formulaValue: "='9 月'!D30" } }] }],
 					fields: "userEnteredValue",
 				},
 			},
 		]);
-		// overdraft carry rewires against 月剩餘 (row 19) on the migrated layout, not a stale row reference.
+		// overdraft carry rewires against 月剩餘 (row 20) on the migrated layout, not a stale row reference.
 		const overdraftWrite = requests.find(
 			(r: any) => r.updateCells && r.updateCells.start.rowIndex === 2 && r.updateCells.start.columnIndex === 4,
 		);
 		expect(overdraftWrite.updateCells.rows[0].values).toEqual([
-			{ userEnteredValue: { formulaValue: "=IF(-'9 月'!D19 > 0, -'9 月'!D19, 0)" } },
+			{ userEnteredValue: { formulaValue: "=IF(-'9 月'!D20 > 0, -'9 月'!D20, 0)" } },
 		]);
 		// 多一個月薪水 (row 16) is the only ad-hoc income; expense rows are all recurring
 		const deletes = requests.filter((r: any) => r.deleteDimension);
@@ -1463,6 +1481,7 @@ describe("setIncome", () => {
 		const client = fakeClient(migratedMonthGrid());
 		await expect(setIncome(client, { item: "月剩餘", amount: 1, currency: "TWD", month: 9 })).rejects.toThrow("layout label");
 		await expect(setIncome(client, { item: "花費總額", amount: 1, currency: "TWD", month: 9 })).rejects.toThrow("layout label");
+		await expect(setIncome(client, { item: "透支沖銷", amount: 1, currency: "TWD", month: 9 })).rejects.toThrow("layout label");
 		expect((client.readRange as any).mock.calls).toHaveLength(0);
 	});
 
