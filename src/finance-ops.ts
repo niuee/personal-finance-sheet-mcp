@@ -992,8 +992,8 @@ export async function startMonth(client: SheetsClient, month: number) {
 	const sheetId = dup.replies?.[0]?.duplicateSheet?.properties?.sheetId;
 	if (sheetId == null) throw new Error("duplicateSheet did not return the new tab's sheetId.");
 
-	const { values, truncated } = await client.readRange(`${quoteTab(newTab)}!${GRID_READ}`, "FORMULA");
-	assertNotTruncated(truncated, newTab, GRID_READ);
+	const { values, truncated } = await client.readRange(`${quoteTab(newTab)}!${LUNCH_GRID_READ}`, "FORMULA");
+	assertNotTruncated(truncated, newTab, LUNCH_GRID_READ);
 	const totalRow = findRowByValue(values, MONTH_COLS.totalLabel, TOTAL_ROW_LABEL);
 	if (totalRow === null) {
 		throw new Error(`Could not find the "${TOTAL_ROW_LABEL}" row in the duplicated tab ${newTab}.`);
@@ -1072,6 +1072,31 @@ export async function startMonth(client: SheetsClient, month: number) {
 		});
 	}
 
+	// The lunch log restarts each month: clear the 中餐預算 data rows (O–Q).
+	// Cells are cleared, not deleted, so nothing shifts; the 總和 =SUM over the
+	// empty window reads 0 and 剩餘 resets to the full budget. The anchor probe
+	// keeps pre-section tabs silent while a malformed section still fails loudly.
+	let lunchCleared = false;
+	if (findRowByValue(values, LUNCH_COLS.date, LUNCH_SECTION_LABEL) !== null) {
+		const lunch = findLunchSection(values, newTab);
+		if (lunch.totalRow > lunch.headerRow + 1) {
+			requests.push({
+				repeatCell: {
+					range: {
+						sheetId,
+						startRowIndex: lunch.headerRow,
+						endRowIndex: lunch.totalRow - 1,
+						startColumnIndex: LUNCH_COLS.date,
+						endColumnIndex: LUNCH_COLS.amount + 1,
+					},
+					cell: {},
+					fields: "userEnteredValue",
+				},
+			});
+			lunchCleared = true;
+		}
+	}
+
 	const kept: string[] = [];
 	const cleared: string[] = [];
 	const rowsToDelete: number[] = [];
@@ -1098,15 +1123,27 @@ export async function startMonth(client: SheetsClient, month: number) {
 		}
 	}
 
-	// Bottom-up so earlier deletions don't shift later indices.
+	// Bottom-up so earlier deletions don't shift later indices. Scoped to A–F:
+	// a whole-row delete would rip through the 乾坤大挪移 / 中餐預算 sections
+	// (G–Q) that share these sheet rows; references across the column boundary
+	// adjust on their own in both directions.
 	for (const r of [...rowsToDelete].sort((a, b) => b - a)) {
 		requests.push({
-			deleteDimension: { range: { sheetId, dimension: "ROWS", startIndex: r - 1, endIndex: r } },
+			deleteRange: {
+				range: {
+					sheetId,
+					startRowIndex: r - 1,
+					endRowIndex: r,
+					startColumnIndex: 0,
+					endColumnIndex: MONTH_COLS.paidWith + 1,
+				},
+				shiftDimension: "ROWS",
+			},
 		});
 	}
 	await client.batchUpdate(requests);
 
-	return { tab: newTab, duplicatedFrom: prevTab, kept, cleared, clearedIncomes };
+	return { tab: newTab, duplicatedFrom: prevTab, kept, cleared, clearedIncomes, lunchCleared };
 }
 
 export interface TripEntryParams {

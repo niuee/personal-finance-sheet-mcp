@@ -1061,8 +1061,12 @@ describe("startMonth", () => {
 			},
 		});
 		// 近鐵 80000系 (row 8) is the only non-recurring item in the fixture
+		// Scoped to A–F: the 乾坤大挪移 / 中餐預算 sections share these sheet rows.
 		expect(requests[5]).toEqual({
-			deleteDimension: { range: { sheetId: 555, dimension: "ROWS", startIndex: 7, endIndex: 8 } },
+			deleteRange: {
+				range: { sheetId: 555, startRowIndex: 7, endRowIndex: 8, startColumnIndex: 0, endColumnIndex: 6 },
+				shiftDimension: "ROWS",
+			},
 		});
 		expect(result).toEqual({
 			tab: "10 月",
@@ -1070,6 +1074,7 @@ describe("startMonth", () => {
 			kept: ["上月透支", "Google Cloud", "ElevenLabs", "iCloud", "電話費"],
 			cleared: ["近鐵 80000系"],
 			clearedIncomes: [],
+			lunchCleared: false,
 		});
 	});
 
@@ -1091,8 +1096,8 @@ describe("startMonth", () => {
 		const result = await startMonth(client, 10);
 
 		const requests = (client.batchUpdate as any).mock.calls[1][0];
-		const deletes = requests.filter((r: any) => r.deleteDimension);
-		expect(deletes.map((r: any) => r.deleteDimension.range.startIndex)).toEqual([9, 8, 7]);
+		const deletes = requests.filter((r: any) => r.deleteRange);
+		expect(deletes.map((r: any) => r.deleteRange.range.startRowIndex)).toEqual([9, 8, 7]);
 		expect(result.cleared).toEqual(["近鐵 80000系", "一次性A", "一次性B"]);
 	});
 
@@ -1145,12 +1150,36 @@ describe("startMonth", () => {
 			{ userEnteredValue: { formulaValue: "=IF(-'9 月'!D21 > 0, -'9 月'!D21, 0)" } },
 		]);
 		// 多一個月薪水 (row 16) is the only ad-hoc income; expense rows are all recurring
-		const deletes = requests.filter((r: any) => r.deleteDimension);
+		const deletes = requests.filter((r: any) => r.deleteRange);
 		expect(deletes).toEqual([
-			{ deleteDimension: { range: { sheetId: 555, dimension: "ROWS", startIndex: 15, endIndex: 16 } } },
+			{
+				deleteRange: {
+					range: { sheetId: 555, startRowIndex: 15, endRowIndex: 16, startColumnIndex: 0, endColumnIndex: 6 },
+					shiftDimension: "ROWS",
+				},
+			},
 		]);
 		expect(result.cleared).toEqual([]);
 		expect(result.clearedIncomes).toEqual(["多一個月薪水"]);
+	});
+
+	it("clears the 中餐預算 data rows so the new month starts empty", async () => {
+		const client = startMonthClient(lunchGrid(), ["9 月", "8 月"]);
+
+		const result = await startMonth(client, 10);
+
+		expect((client.readRange as any).mock.calls[0]).toEqual(["'10 月'!A1:Q60", "FORMULA"]);
+		const requests = (client.batchUpdate as any).mock.calls[1][0];
+		// data rows 37..37 (0-indexed 36..37), columns O–Q (14..17) — cells cleared, nothing shifts
+		const clear = requests.find((r: any) => r.repeatCell && r.repeatCell.range.startColumnIndex === 14);
+		expect(clear).toEqual({
+			repeatCell: {
+				range: { sheetId: 555, startRowIndex: 36, endRowIndex: 37, startColumnIndex: 14, endColumnIndex: 17 },
+				cell: {},
+				fields: "userEnteredValue",
+			},
+		});
+		expect(result.lunchCleared).toBe(true);
 	});
 });
 
