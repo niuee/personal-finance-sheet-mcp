@@ -10,6 +10,9 @@ import {
 	expandAnchorRange,
 	findCells,
 	FIND_CELLS_CAP,
+	findExpenseWindow,
+	findIncomeWindow,
+	findRowByLabels,
 	findRowByValue,
 	findTripBlocks,
 	getCategories,
@@ -87,6 +90,63 @@ function monthGrid(): unknown[][] {
 	return g;
 }
 
+/** Old-layout grid mirroring real 7 月 2026 before migration: 總預算 header, plain 收入 cells, 剩餘 + 美金支付/新臺幣支付. Row = index+1. */
+function oldLayoutGrid(): unknown[][] {
+	const g: unknown[][] = [];
+	g[0] = ["9 月花費"];
+	g[1] = ["日期", "項目", "類別", "美金", "新臺幣"];
+	g[2] = [46266, "上月透支", "透支", "", "=IF(-'8 月'!D32 > 0, -'8 月'!D32, 0)"];
+	g[3] = ["", "Google Cloud", "訂閱", 11.53, '=D4*GOOGLEFINANCE("CURRENCY:USDTWD")'];
+	g[4] = ["", "電話費", "生活用品", "", 1261];
+	// rows 6-10 empty inside the window
+	g[10] = ["", "", "", "花費總額", "=SUM(E3:E10)"];
+	g[12] = ["", "總預算"];
+	g[13] = ["", "沛還", "", 20500];
+	g[14] = ["", "薪水", "", 63913];
+	g[15] = ["", "剩餘", "", "=sum(D14:D15)-E11"];
+	g[17] = ["", "美金支付", "", "=SUM(D4:D6)"];
+	g[18] = ["", "新臺幣支付", "", "=E5"];
+	g[20] = ["", "銀行餘額"];
+	g[21] = ["", "美金收入", "", 0];
+	g[22] = ["", "美金支出", "", "=SUM(D3:D10)"];
+	g[23] = ["", "上月美金餘額", "", "='8 月'!D25"];
+	g[24] = ["", "美金餘額", "", "=D24+D22-D23"];
+	g[25] = ["", "新臺幣收入", "", 0];
+	g[26] = ["", "新臺幣支出", "", '=SUMIF(D3:D10,"",E3:E10)'];
+	g[27] = ["", "上月新臺幣餘額", "", "='8 月'!D29"];
+	g[28] = ["", "新臺幣餘額", "", "=D28+D26-D27"];
+	return g;
+}
+
+/** Post-migration grid: 支付幣別 in F, income 幣別 in C, 月 rows, SUMIF 收入/支出, 總…餘額 names. Row = index+1. */
+function migratedMonthGrid(): unknown[][] {
+	const g: unknown[][] = [];
+	g[0] = ["9 月花費"];
+	g[1] = ["日期", "項目", "類別", "美金", "新臺幣", "支付幣別"];
+	g[2] = [46266, "上月透支", "透支", "", "=IF(-'8 月'!D32 > 0, -'8 月'!D32, 0)", "TWD"];
+	g[3] = ["", "Google Cloud", "訂閱", 11.53, '=D4*GOOGLEFINANCE("CURRENCY:USDTWD")', "USD"];
+	g[4] = ["", "電話費", "生活用品", "", 1261, "TWD"];
+	// rows 6-10 empty inside the window
+	g[10] = ["", "", "", "花費總額", "=SUM(E3:E10)"];
+	g[12] = ["", "總預算"];
+	g[13] = ["", "沛還", "TWD", 20500];
+	g[14] = ["", "薪水", "TWD", 63913];
+	g[15] = ["", "多一個月薪水", "TWD", 63913];
+	g[16] = ["", "月美金餘額", "", "=D22-D23"];
+	g[17] = ["", "月新臺幣餘額", "", "=D26-D27"];
+	g[18] = ["", "月剩餘", "", '=D17*GOOGLEFINANCE("CURRENCY:USDTWD")+D18'];
+	g[20] = ["", "銀行餘額"];
+	g[21] = ["", "美金收入", "", '=SUMIF(C14:C16,"USD",D14:D16)'];
+	g[22] = ["", "美金支出", "", '=SUMIF(F3:F10,"USD",D3:D10)'];
+	g[23] = ["", "上月美金餘額", "", "='8 月'!D25"];
+	g[24] = ["", "總美金餘額", "", "=D24+D22-D23"];
+	g[25] = ["", "新臺幣收入", "", '=SUMIF(C14:C16,"TWD",D14:D16)'];
+	g[26] = ["", "新臺幣支出", "", '=SUMIF(F3:F10,"TWD",E3:E10)'];
+	g[27] = ["", "上月新臺幣餘額", "", "='8 月'!D29"];
+	g[28] = ["", "總新臺幣餘額", "", "=D28+D26-D27"];
+	return g;
+}
+
 function fakeClient(grid: unknown[][]): SheetsClient {
 	return {
 		readRange: vi.fn(async () => ({ range: "x", values: grid, truncated: false })),
@@ -94,6 +154,33 @@ function fakeClient(grid: unknown[][]): SheetsClient {
 		batchUpdate: vi.fn(async () => ({ replies: [{}] })),
 	} as unknown as SheetsClient;
 }
+
+describe("window helpers", () => {
+	it("findRowByLabels prefers earlier labels and falls back", () => {
+		const values = [["", "新臺幣餘額"], ["", "總美金餘額"]];
+		expect(findRowByLabels(values, 1, ["總美金餘額", "美金餘額"])).toBe(2);
+		expect(findRowByLabels(values, 1, ["總新臺幣餘額", "新臺幣餘額"])).toBe(1);
+		expect(findRowByLabels(values, 1, ["missing", "also missing"])).toBeNull();
+	});
+
+	it("findExpenseWindow reads the window from the 花費總額 SUM formula", () => {
+		expect(findExpenseWindow(monthGrid(), "9 月")).toEqual({ totalRow: 11, start: 3, end: 10 });
+	});
+
+	it("findExpenseWindow fails closed on a missing anchor or a non-SUM total", () => {
+		expect(() => findExpenseWindow([["nothing"]], "9 月")).toThrow("花費總額");
+		const g = monthGrid();
+		g[10] = ["", "", "", "花費總額", "=SUM(E3:E10)+E2"];
+		expect(() => findExpenseWindow(g, "9 月")).toThrow("expense window");
+	});
+
+	it("findIncomeWindow detects migrated and old layouts, null without anchors", () => {
+		expect(findIncomeWindow(migratedMonthGrid())).toEqual({ start: 14, end: 16, migrated: true });
+		expect(findIncomeWindow(oldLayoutGrid())).toEqual({ start: 14, end: 15, migrated: false });
+		expect(findIncomeWindow(monthGrid())).toBeNull(); // no 總預算 header
+		expect(findIncomeWindow([["x"]])).toBeNull();
+	});
+});
 
 describe("addExpense", () => {
 	it("writes a TWD expense into the first empty window row", async () => {

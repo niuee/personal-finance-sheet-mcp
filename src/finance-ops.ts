@@ -5,8 +5,10 @@
  */
 
 import {
+	BUDGET_HEADER_LABEL,
 	currentMonthTab,
 	MONTH_COLS,
+	MONTH_USD_NET_LABEL,
 	monthTabName,
 	NTD_BALANCE_LABEL,
 	NTD_INCOME_LABEL,
@@ -47,6 +49,15 @@ export function findRowByValue(values: unknown[][], colIndex: number, needle: st
 	return null;
 }
 
+/** findRowByValue over several candidate labels, first hit wins — for renamed anchors with legacy fallbacks. */
+export function findRowByLabels(values: unknown[][], colIndex: number, labels: readonly string[]): number | null {
+	for (const label of labels) {
+		const row = findRowByValue(values, colIndex, label);
+		if (row !== null) return row;
+	}
+	return null;
+}
+
 /** Sheets CellData for updateCells requests. */
 export function cellData(v: string | number | null): object {
 	if (v === null) return {};
@@ -72,6 +83,49 @@ export const GRID_READ = "A1:H60";
 const USD_COL = colLetter(MONTH_COLS.usd);
 const TWD_COL = colLetter(MONTH_COLS.twd);
 const EXPENSE_WINDOW_RE = new RegExp(`^=SUM\\(${TWD_COL}(\\d+):${TWD_COL}(\\d+)\\)$`, "i");
+
+export interface ExpenseWindow {
+	totalRow: number;
+	start: number;
+	end: number;
+}
+
+/** Locate the expense window from the 花費總額 =SUM(Estart:Eend) formula (FORMULA-render grid). Throws when it cannot be trusted. */
+export function findExpenseWindow(values: unknown[][], tab: string): ExpenseWindow {
+	const totalRow = findRowByValue(values, MONTH_COLS.totalLabel, TOTAL_ROW_LABEL);
+	if (totalRow === null) {
+		throw new Error(
+			`Could not find the "${TOTAL_ROW_LABEL}" row in ${tab} (searched column ${colLetter(MONTH_COLS.totalLabel)} of ${GRID_READ}).`,
+		);
+	}
+	const totalFormula = String(values[totalRow - 1]?.[MONTH_COLS.totalValue] ?? "");
+	const m = totalFormula.match(EXPENSE_WINDOW_RE);
+	if (!m) {
+		throw new Error(
+			`The "${TOTAL_ROW_LABEL}" cell ${TWD_COL}${totalRow} in ${tab} is not a plain =SUM(${TWD_COL}start:${TWD_COL}end) formula (got "${totalFormula}") — cannot locate the expense window safely.`,
+		);
+	}
+	return { totalRow, start: Number(m[1]), end: Number(m[2]) };
+}
+
+export interface IncomeWindow {
+	/** First/last row (1-indexed, inclusive) of the income list. */
+	start: number;
+	end: number;
+	/** True on the 月剩餘 layout; false when the list still ends at the old 剩餘 row. */
+	migrated: boolean;
+}
+
+/** The income list sits between 總預算 and 月美金餘額 (migrated) or 剩餘 (old layout). Null when the tab has neither boundary. */
+export function findIncomeWindow(values: unknown[][]): IncomeWindow | null {
+	const budgetRow = findRowByValue(values, MONTH_COLS.budgetLabel, BUDGET_HEADER_LABEL);
+	if (budgetRow === null) return null;
+	const monthUsdRow = findRowByValue(values, MONTH_COLS.budgetLabel, MONTH_USD_NET_LABEL);
+	if (monthUsdRow !== null) return { start: budgetRow + 1, end: monthUsdRow - 1, migrated: true };
+	const remainderRow = findRowByValue(values, MONTH_COLS.budgetLabel, REMAINDER_LABEL);
+	if (remainderRow !== null) return { start: budgetRow + 1, end: remainderRow - 1, migrated: false };
+	return null;
+}
 
 export function quoteTab(tab: string): string {
 	return `'${tab.replace(/'/g, "''")}'`;
@@ -104,21 +158,7 @@ export async function addExpense(client: SheetsClient, p: AddExpenseParams) {
 	const { values, truncated } = await client.readRange(`${quoteTab(tab)}!${GRID_READ}`, "FORMULA");
 	assertNotTruncated(truncated, tab, GRID_READ);
 
-	const totalRow = findRowByValue(values, MONTH_COLS.totalLabel, TOTAL_ROW_LABEL);
-	if (totalRow === null) {
-		throw new Error(
-			`Could not find the "${TOTAL_ROW_LABEL}" row in ${tab} (searched column ${colLetter(MONTH_COLS.totalLabel)} of ${GRID_READ}).`,
-		);
-	}
-	const totalFormula = String(values[totalRow - 1]?.[MONTH_COLS.totalValue] ?? "");
-	const windowMatch = totalFormula.match(EXPENSE_WINDOW_RE);
-	if (!windowMatch) {
-		throw new Error(
-			`The "${TOTAL_ROW_LABEL}" cell ${TWD_COL}${totalRow} in ${tab} is not a plain =SUM(${TWD_COL}start:${TWD_COL}end) formula (got "${totalFormula}") — cannot locate the expense window safely.`,
-		);
-	}
-	const windowStart = Number(windowMatch[1]);
-	const windowEnd = Number(windowMatch[2]);
+	const { totalRow, start: windowStart, end: windowEnd } = findExpenseWindow(values, tab);
 
 	// First fully-empty row inside the SUM window (and above the total row).
 	let targetRow: number | null = null;
@@ -135,7 +175,7 @@ export async function addExpense(client: SheetsClient, p: AddExpenseParams) {
 	const inserted = targetRow === null;
 	if (targetRow === null) {
 		if (windowEnd <= windowStart) {
-			throw new Error(`The expense window ${totalFormula} in ${tab} is too small to insert into safely.`);
+			throw new Error(`The expense window =SUM(${TWD_COL}${windowStart}:${TWD_COL}${windowEnd}) in ${tab} is too small to insert into safely.`);
 		}
 		// Insert at the window's last row: strictly inside the SUM range, so it auto-extends.
 		targetRow = windowEnd;
