@@ -153,7 +153,7 @@ export function registerTailoredTools(server: McpServer, client: SheetsClient): 
 				.enum(["TWD", "USD"])
 				.optional()
 				.describe(
-					"Which real account paid the row — written to the 支付幣別 column (F); defaults to currency. Use currency USD + paid_with TWD for a USD-priced expense paid from the NTD account.",
+					"Which real account paid the row — written to the 支付幣別 column (F); defaults to currency. Use currency USD + paid_with TWD for a USD-priced expense paid from the NTD account (the reverse, TWD-priced + USD-paid, is rejected). Takes ledger effect once the tab is migrated to the 支付幣別 layout.",
 				),
 		},
 		async ({ paid_with, ...p }) => {

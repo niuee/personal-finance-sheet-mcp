@@ -5,6 +5,7 @@
  */
 
 import {
+	BANK_BLOCK_LABEL,
 	BUDGET_HEADER_LABEL,
 	currentMonthTab,
 	MONTH_COLS,
@@ -309,6 +310,7 @@ export interface SetIncomeParams {
 /** Labels that name layout rows, not income items — set_income must never write them into the income list. */
 const NON_INCOME_LABELS = new Set<string>([
 	BUDGET_HEADER_LABEL,
+	BANK_BLOCK_LABEL,
 	REMAINDER_LABEL,
 	MONTH_USD_NET_LABEL,
 	MONTH_NTD_NET_LABEL,
@@ -455,6 +457,12 @@ export async function addExpense(client: SheetsClient, p: AddExpenseParams) {
 	const tab = p.month !== undefined ? monthTabName(p.month) : currentMonthTab();
 	// Parse before any read/write so a bad date fails closed.
 	const dateSerialValue = p.date !== undefined ? parseDateInput(p.date) : null;
+	const paidWith = p.paidWith ?? p.currency;
+	if (p.currency === "TWD" && paidWith === "USD") {
+		throw new Error(
+			"A TWD-priced expense paid from the USD account is not representable: 美金支出 sums the USD column (D), which is blank on TWD-priced rows. Log it in USD (currency USD, paid_with USD) instead.",
+		);
+	}
 
 	const { values, truncated } = await client.readRange(`${quoteTab(tab)}!${GRID_READ}`, "FORMULA");
 	assertNotTruncated(truncated, tab, GRID_READ);
@@ -488,7 +496,6 @@ export async function addExpense(client: SheetsClient, p: AddExpenseParams) {
 		});
 	}
 
-	const paidWith = p.paidWith ?? p.currency;
 	const tagCell = cellData(p.tag ?? null);
 	const rowCells =
 		p.currency === "USD"
@@ -669,12 +676,22 @@ export async function startMonth(client: SheetsClient, month: number) {
 
 	const overdraftRow = findRowByValue(values, MONTH_COLS.item, OVERDRAFT_LABEL);
 	if (overdraftRow !== null) {
-		const formula = String(values[overdraftRow - 1]?.[MONTH_COLS.twd] ?? "");
-		const rewired = formula.replace(/'\d+ 月'/g, `'${prevTab}'`);
+		// The duplicated grid mirrors prevTab's layout, so the previous month's
+		// remainder row is findable here: 月剩餘 (migrated) or 剩餘 (old layout).
+		// Rebuild the carry formula against it — a plain tab-name swap would keep
+		// a stale row reference from whichever layout the formula was born in.
+		const remainderRow = findRowByLabels(values, MONTH_COLS.budgetLabel, [MONTH_REMAINDER_LABEL, REMAINDER_LABEL]);
+		let formula: string;
+		if (remainderRow !== null) {
+			const cell = `${quoteTab(prevTab)}!${colLetter(MONTH_COLS.budgetValue)}${remainderRow}`;
+			formula = `=IF(-${cell} > 0, -${cell}, 0)`;
+		} else {
+			formula = String(values[overdraftRow - 1]?.[MONTH_COLS.twd] ?? "").replace(/'\d+ 月'/g, `'${prevTab}'`);
+		}
 		requests.push({
 			updateCells: {
 				start: { sheetId, rowIndex: overdraftRow - 1, columnIndex: MONTH_COLS.twd },
-				rows: [{ values: [cellData(rewired)] }],
+				rows: [{ values: [cellData(formula)] }],
 				fields: "userEnteredValue",
 			},
 		});

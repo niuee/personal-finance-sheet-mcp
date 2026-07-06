@@ -544,6 +544,15 @@ describe("addExpense", () => {
 		expect(requests[1].updateCells.start).toEqual({ sheetId: 111, rowIndex: 7, columnIndex: 1 });
 		expect(result).toMatchObject({ row: 8, inserted: true });
 	});
+
+	it("rejects a TWD-priced expense paid in USD before reading or writing anything", async () => {
+		const client = fakeClient(monthGrid());
+		await expect(
+			addExpense(client, { item: "x", amount: 1, currency: "TWD", month: 9, paidWith: "USD" }),
+		).rejects.toThrow("not representable");
+		expect((client.readRange as any).mock.calls.length).toBe(0);
+		expect((client.batchUpdate as any).mock.calls.length).toBe(0);
+	});
 });
 
 describe("monthSummary", () => {
@@ -679,7 +688,7 @@ describe("startMonth", () => {
 		expect(requests[1]).toEqual({
 			updateCells: {
 				start: { sheetId: 555, rowIndex: 2, columnIndex: 4 },
-				rows: [{ values: [{ userEnteredValue: { formulaValue: "=IF(-'9 月'!D32 > 0, -'9 月'!D32, 0)" } }] }],
+				rows: [{ values: [{ userEnteredValue: { formulaValue: "=IF(-'9 月'!D15 > 0, -'9 月'!D15, 0)" } }] }],
 				fields: "userEnteredValue",
 			},
 		});
@@ -782,6 +791,13 @@ describe("startMonth", () => {
 					fields: "userEnteredValue",
 				},
 			},
+		]);
+		// overdraft carry rewires against 月剩餘 (row 19) on the migrated layout, not a stale row reference.
+		const overdraftWrite = requests.find(
+			(r: any) => r.updateCells && r.updateCells.start.rowIndex === 2 && r.updateCells.start.columnIndex === 4,
+		);
+		expect(overdraftWrite.updateCells.rows[0].values).toEqual([
+			{ userEnteredValue: { formulaValue: "=IF(-'9 月'!D19 > 0, -'9 月'!D19, 0)" } },
 		]);
 		// 多一個月薪水 (row 16) is the only ad-hoc income; expense rows are all recurring
 		const deletes = requests.filter((r: any) => r.deleteDimension);

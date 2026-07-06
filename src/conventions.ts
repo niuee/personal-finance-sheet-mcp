@@ -52,6 +52,9 @@ export const NTD_BALANCE_LABEL = "新臺幣餘額";
 export const TOTAL_USD_BALANCE_LABEL = "總美金餘額";
 export const TOTAL_NTD_BALANCE_LABEL = "總新臺幣餘額";
 
+/** The 銀行餘額 block's header row label. */
+export const BANK_BLOCK_LABEL = "銀行餘額";
+
 /** Items start_month keeps when opening a new month; everything else is a one-off. */
 export const RECURRING_ITEMS = new Set<string>([
 	OVERDRAFT_LABEL,
@@ -165,7 +168,7 @@ MONTHLY TABS — named "N 月" (e.g. "9 月", with a space). Layout below applie
 - Header row 2: 日期 項目 類別 美金 新臺幣 支付幣別. Expense list in columns A-F from row 3 down: A=日期 (a real date shown mm/dd; blank on recurring rows), B=item, C=類別 (per-row tag: 訂閱, 吃喝, 交通, 生活用品, 娛樂, 購物, 其他, 透支), D=美金 (USD), E=新臺幣 (TWD), F=支付幣別 (USD or TWD — which real account PAID the row; a USD-priced expense paid with a TWD card has D filled but F=TWD).
 - USD rows convert with E = D*GOOGLEFINANCE("CURRENCY:USDTWD").
 - The list ends at the "花費總額" row (label in column D, total in E, formula SUM over the window). New expenses must land INSIDE that window — write into an empty row above 花費總額, or insert a row inside the window so the SUM extends. Never append below 花費總額.
-- Row 3 "上月透支" carries last month's overdraft via a cross-tab formula.
+- Row 3 "上月透支" carries last month's overdraft via a cross-tab formula; start_month re-anchors it at the previous month's 月剩餘 (or 剩餘 on old-layout tabs).
 - Categorization is the per-row 類別 tag in column C (see month_summary's per-類別 totals). The old G/H summary block is DEPRECATED — ignore any remnants.
 - Below the list, the income section: a 總預算 header row, then the income list (labels in B, 幣別 USD/TWD in C, amounts in D): 沛還, 薪水, plus ad-hoc income rows (e.g. 多一個月薪水) — manage these with set_income, which upserts by 項目 and keeps the SUMIFs covering every row. The list ends at 月美金餘額 / 月新臺幣餘額 (THIS month's 收入−支出 per currency, from the 銀行餘額 block) and 月剩餘 (= 月美金餘額*GOOGLEFINANCE USDTWD + 月新臺幣餘額 — the month's combined remainder in TWD). The old 剩餘, 美金支付 and 新臺幣支付 rows are DEPRECATED and removed by migration.
 - Further down, a 銀行餘額 block reconciles the real USD and NTD bank accounts as two INDEPENDENT running ledgers (labels in column B, values in column D): 美金收入 / 美金支出 / 上月美金餘額 / 總美金餘額, then 新臺幣收入 / 新臺幣支出 / 上月新臺幣餘額 / 總新臺幣餘額 (renamed by migration from 美金餘額/新臺幣餘額 — unmigrated tabs still use the short names). 收入 cells = SUMIF over the income list's 幣別 column; 美金支出 = SUMIF of the expense 支付幣別 for USD summing column D; 新臺幣支出 = SUMIF for TWD summing column E. Each 總…餘額 = 上月…餘額 + 收入 − 支出 (surplus AND overdraft carry). 上月…餘額 point at the previous month's 總…餘額 cell (start_month rewires them); in the earliest month they are seeded by hand.
