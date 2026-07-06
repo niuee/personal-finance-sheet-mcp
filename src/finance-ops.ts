@@ -557,24 +557,43 @@ export async function monthSummary(client: SheetsClient, month?: number) {
 		}
 	}
 
+	// Income list (post- or pre-migration window); empty when the tab has no 總預算 anchor.
+	const win = findIncomeWindow(values);
+	const incomes: Array<{ item: string; currency: string | null; amount: number | null }> = [];
+	if (win !== null) {
+		for (let r = win.start; r <= win.end; r++) {
+			const incomeItem = String(values[r - 1]?.[MONTH_COLS.item] ?? "").trim();
+			if (incomeItem === "") continue;
+			incomes.push({
+				item: incomeItem,
+				currency: String(values[r - 1]?.[MONTH_COLS.tag] ?? "").trim() || null,
+				amount: num(values[r - 1]?.[MONTH_COLS.budgetValue]),
+			});
+		}
+	}
+
 	return {
 		tab,
 		花費總額: cellAt(totalRow, MONTH_COLS.totalValue),
 		上月透支: cellAt(rowByItem(OVERDRAFT_LABEL), MONTH_COLS.twd),
 		tags,
+		incomes,
 		薪水: cellAt(rowByItem(SALARY_LABEL), MONTH_COLS.budgetValue),
 		沛還: cellAt(rowByItem(REPAYMENT_LABEL), MONTH_COLS.budgetValue),
+		// Old-layout only; null once migration replaces it with the 月 rows.
 		剩餘: cellAt(rowByItem(REMAINDER_LABEL), MONTH_COLS.budgetValue),
-		美金支付: cellAt(rowByItem(USD_PAYMENT_LABEL), MONTH_COLS.budgetValue),
+		月美金餘額: cellAt(rowByItem(MONTH_USD_NET_LABEL), MONTH_COLS.budgetValue),
+		月新臺幣餘額: cellAt(rowByItem(MONTH_NTD_NET_LABEL), MONTH_COLS.budgetValue),
+		月剩餘: cellAt(rowByItem(MONTH_REMAINDER_LABEL), MONTH_COLS.budgetValue),
 		// 銀行餘額 block — per-currency running balance (null on tabs that predate it).
 		美金收入: cellAt(rowByItem(USD_INCOME_LABEL), MONTH_COLS.budgetValue),
 		美金支出: cellAt(rowByItem(USD_SPENDING_LABEL), MONTH_COLS.budgetValue),
 		上月美金餘額: cellAt(rowByItem(PREV_USD_BALANCE_LABEL), MONTH_COLS.budgetValue),
-		美金餘額: cellAt(rowByItem(USD_BALANCE_LABEL), MONTH_COLS.budgetValue),
+		總美金餘額: cellAt(findRowByLabels(values, MONTH_COLS.item, [TOTAL_USD_BALANCE_LABEL, USD_BALANCE_LABEL]), MONTH_COLS.budgetValue),
 		新臺幣收入: cellAt(rowByItem(NTD_INCOME_LABEL), MONTH_COLS.budgetValue),
 		新臺幣支出: cellAt(rowByItem(NTD_SPENDING_LABEL), MONTH_COLS.budgetValue),
 		上月新臺幣餘額: cellAt(rowByItem(PREV_NTD_BALANCE_LABEL), MONTH_COLS.budgetValue),
-		新臺幣餘額: cellAt(rowByItem(NTD_BALANCE_LABEL), MONTH_COLS.budgetValue),
+		總新臺幣餘額: cellAt(findRowByLabels(values, MONTH_COLS.item, [TOTAL_NTD_BALANCE_LABEL, NTD_BALANCE_LABEL]), MONTH_COLS.budgetValue),
 	};
 }
 
