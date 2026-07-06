@@ -12,6 +12,7 @@ import {
 	LUNCH_COLS,
 	LUNCH_DEFAULT_ITEM,
 	LUNCH_SECTION_LABEL,
+	LUNCH_SECTION_LEGACY_LABEL,
 	LUNCH_TOTAL_LABEL,
 	MONTH_COLS,
 	MONTH_NTD_NET_LABEL,
@@ -176,10 +177,13 @@ export interface LunchSection {
 	totalRow: number;
 }
 
-/** Locate the 中餐預算 block (grid of LUNCH_GRID_READ; labels match in any render). Throws when absent or malformed. */
+/** Both titles the lunch section has carried; the anchor scan accepts either. */
+const LUNCH_ANCHOR_LABELS = [LUNCH_SECTION_LABEL, LUNCH_SECTION_LEGACY_LABEL];
+
+/** Locate the 午餐預算 block (grid of LUNCH_GRID_READ; labels match in any render). Throws when absent or malformed. */
 export function findLunchSection(values: unknown[][], tab: string): LunchSection {
 	const dateCol = LUNCH_COLS.date;
-	const anchorRow = findRowByValue(values, dateCol, LUNCH_SECTION_LABEL);
+	const anchorRow = findRowByLabels(values, dateCol, LUNCH_ANCHOR_LABELS);
 	if (anchorRow === null) {
 		throw new Error(
 			`No ${LUNCH_SECTION_LABEL} section in ${tab} (searched column ${colLetter(dateCol)} of ${LUNCH_GRID_READ}) — the lunch-budget log exists from 7月 2026 on.`,
@@ -934,11 +938,11 @@ export async function monthSummary(client: SheetsClient, month?: number) {
 		}
 	}
 
-	// 中餐預算 lunch-budget section (O–Q); null on tabs that predate it, and
+	// 午餐預算 lunch-budget section (O–Q); null on tabs that predate it, and
 	// also null (not thrown) when the section is torn beyond recognition —
 	// this read-only summary must not die over a malformed lunch block.
 	let lunch: { 編列預算: number | null; 總和: number | null; 剩餘: number | null } | null = null;
-	if (findRowByValue(values, LUNCH_COLS.date, LUNCH_SECTION_LABEL) !== null) {
+	if (findRowByLabels(values, LUNCH_COLS.date, LUNCH_ANCHOR_LABELS) !== null) {
 		try {
 			const sec = findLunchSection(values, tab);
 			lunch = {
@@ -957,7 +961,7 @@ export async function monthSummary(client: SheetsClient, month?: number) {
 		上月透支: cellAt(rowByItem(OVERDRAFT_LABEL), MONTH_COLS.twd),
 		上月美金透支: cellAt(rowByItem(PREV_USD_OVERDRAFT_LABEL), MONTH_COLS.usd),
 		上月新臺幣透支: cellAt(rowByItem(PREV_NTD_OVERDRAFT_LABEL), MONTH_COLS.twd),
-		中餐預算: lunch,
+		午餐預算: lunch,
 		午餐超支或回補: cellAt(rowByItem(LUNCH_ADJUST_LABEL), MONTH_COLS.budgetValue),
 		tags,
 		incomes,
@@ -1152,7 +1156,7 @@ export async function startMonth(client: SheetsClient, month: number) {
 		});
 	}
 
-	// The lunch log restarts each month: clear the 中餐預算 data rows (O–Q).
+	// The lunch log restarts each month: clear the 午餐預算 data rows (O–Q).
 	// Cells are cleared, not deleted, so nothing shifts; the 總和 =SUM over the
 	// empty window reads 0 and 剩餘 resets to the full budget. The anchor probe
 	// keeps pre-section tabs silent. A malformed section (e.g. torn by a
@@ -1161,7 +1165,7 @@ export async function startMonth(client: SheetsClient, month: number) {
 	// instead of thrown.
 	let lunchCleared = false;
 	let lunchWarning: string | undefined;
-	if (findRowByValue(values, LUNCH_COLS.date, LUNCH_SECTION_LABEL) !== null) {
+	if (findRowByLabels(values, LUNCH_COLS.date, LUNCH_ANCHOR_LABELS) !== null) {
 		try {
 			const lunch = findLunchSection(values, newTab);
 			if (lunch.totalRow > lunch.headerRow + 1) {
@@ -1212,7 +1216,7 @@ export async function startMonth(client: SheetsClient, month: number) {
 	}
 
 	// Bottom-up so earlier deletions don't shift later indices. Scoped to A–F:
-	// a whole-row delete would rip through the 乾坤大挪移 / 中餐預算 sections
+	// a whole-row delete would rip through the 乾坤大挪移 / 午餐預算 sections
 	// (G–Q) that share these sheet rows; references across the column boundary
 	// adjust on their own in both directions.
 	for (const r of [...rowsToDelete].sort((a, b) => b - a)) {

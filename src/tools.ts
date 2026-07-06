@@ -187,7 +187,7 @@ export function registerTailoredTools(server: McpServer, client: SheetsClient): 
 
 	server.tool(
 		"month_summary",
-		"Get a month's numbers as clean JSON (unformatted): 花費總額, the carried overdrafts (上月美金透支/上月新臺幣透支, or legacy 上月透支), per-類別 tag totals, the 中餐預算 lunch block (編列預算/總和/剩餘) and 午餐超支或回補, the income list (item/幣別/amount), 薪水, 沛還, 月美金餘額/美金透支沖銷/月新臺幣餘額/新臺幣透支沖銷/月剩餘, plus the 銀行餘額 running-balance block (美金收入/美金支出/上月美金餘額/總美金餘額 and the NTD counterparts; old unmigrated tabs report 剩餘 and the un-renamed balances too). Defaults to the current month. Fields the sheet doesn't have yet come back null.",
+		"Get a month's numbers as clean JSON (unformatted): 花費總額, the carried overdrafts (上月美金透支/上月新臺幣透支, or legacy 上月透支), per-類別 tag totals, the 午餐預算 lunch block (編列預算/總和/剩餘) and 午餐超支或回補, the income list (item/幣別/amount), 薪水, 沛還, 月美金餘額/美金透支沖銷/月新臺幣餘額/新臺幣透支沖銷/月剩餘, plus the 銀行餘額 running-balance block (美金收入/美金支出/上月美金餘額/總美金餘額 and the NTD counterparts; old unmigrated tabs report 剩餘 and the un-renamed balances too). Defaults to the current month. Fields the sheet doesn't have yet come back null.",
 		{ month: monthParam.optional().describe("Month 1-12 (default: current month)") },
 		async ({ month }) => {
 			try {
@@ -213,7 +213,7 @@ export function registerTailoredTools(server: McpServer, client: SheetsClient): 
 
 	server.tool(
 		"start_month",
-		"Open a new month: duplicates the previous month's tab (keeping all formulas and recurring items like subscriptions), rewires the 上月…透支 carries to the month just ended (per-currency on the split layout), clears one-off expenses, and empties the 中餐預算 lunch log so the budget's 剩餘 resets. Refuses if the tab already exists.",
+		"Open a new month: duplicates the previous month's tab (keeping all formulas and recurring items like subscriptions), rewires the 上月…透支 carries to the month just ended (per-currency on the split layout), clears one-off expenses, and empties the 午餐預算 lunch log so the budget's 剩餘 resets. Refuses if the tab already exists.",
 		{ month: monthParam.describe("The month to create, 1-12") },
 		async ({ month }) => {
 			try {
@@ -271,7 +271,7 @@ export function registerTailoredTools(server: McpServer, client: SheetsClient): 
 
 	server.tool(
 		"add_lunch",
-		"Log a lunch into the 中餐預算 section of a monthly tab (columns O-Q; defaults to the current month): writes 日期/項目/金額 and keeps the section's 總和 covering every row. The month's lunch BUDGET is the recurring 中餐 row in the expense list — never also add_expense a lunch. The leftover (剩餘 = 編列預算 − 總和) feeds the 銀行餘額 block's 午餐超支或回補 row: unspent budget returns to 總新臺幣餘額, an overdraft deducts more. Returns budget/spent/leftover after the entry.",
+		"Log a lunch into the 午餐預算 section of a monthly tab (titled 中餐預算 on early tabs — both work) (columns O-Q; defaults to the current month): writes 日期/項目/金額 and keeps the section's 總和 covering every row. The month's lunch BUDGET is the recurring 中餐 row in the expense list — never also add_expense a lunch. The leftover (剩餘 = 編列預算 − 總和) feeds the 銀行餘額 block's 午餐超支或回補 row: unspent budget returns to 總新臺幣餘額, an overdraft deducts more. Returns budget/spent/leftover after the entry.",
 		{
 			amount: z.number().positive().describe("金額 in NTD"),
 			item: z.string().min(1).optional().describe("項目 (default: 中餐)"),

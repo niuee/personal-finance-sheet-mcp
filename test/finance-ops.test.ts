@@ -195,13 +195,13 @@ function transferGrid(): unknown[][] {
 	return g;
 }
 
-/** transferGrid + a 中餐預算 lunch block at O33:Q38 (data slot row 37 empty). */
+/** transferGrid + a 午餐預算 lunch block at O33:Q38 (data slot row 37 empty). */
 function lunchGrid(): unknown[][] {
 	const g = transferGrid();
 	const put = (idx: number, col: number, v: unknown) => {
 		(g[idx] ??= [])[col] = v;
 	};
-	put(32, 14, "中餐預算");
+	put(32, 14, "午餐預算");
 	put(33, 14, "編列預算");
 	put(33, 16, "剩餘 (負數會加回去支出）");
 	put(34, 14, "=E5"); // 編列預算 ← the 中餐 expense cell
@@ -444,8 +444,14 @@ describe("findLunchSection", () => {
 		expect(findLunchSection(lunchGrid(), "9 月")).toEqual({ budgetRow: 35, headerRow: 36, totalRow: 38 });
 	});
 
-	it("throws when the tab has no 中餐預算 section", () => {
-		expect(() => findLunchSection(transferGrid(), "6 月")).toThrow("中餐預算");
+	it("accepts the legacy 中餐預算 anchor title", () => {
+		const g = lunchGrid();
+		(g[32] as unknown[])[14] = "中餐預算";
+		expect(findLunchSection(g, "9 月")).toEqual({ budgetRow: 35, headerRow: 36, totalRow: 38 });
+	});
+
+	it("throws when the tab has no 午餐預算 section", () => {
+		expect(() => findLunchSection(transferGrid(), "6 月")).toThrow("午餐預算");
 	});
 
 	it("throws when the header row under the anchor is missing", () => {
@@ -691,7 +697,7 @@ describe("addLunch", () => {
 
 	it("refuses when the tab has no 中餐預算 section", async () => {
 		const client = lunchClient(transferGrid());
-		await expect(addLunch(client, { amount: 100, month: 6 })).rejects.toThrow("中餐預算");
+		await expect(addLunch(client, { amount: 100, month: 6 })).rejects.toThrow("午餐預算");
 		expect((client.batchUpdate as any).mock.calls).toHaveLength(0);
 	});
 
@@ -965,7 +971,7 @@ describe("monthSummary", () => {
 			上月透支: 13603.67,
 			上月美金透支: null,
 			上月新臺幣透支: null,
-			中餐預算: null,
+			午餐預算: null,
 			午餐超支或回補: null,
 			tags: { 透支: 13603.67, 訂閱: 368.44 + 191.43 + 319.23, 生活用品: 1261, 購物: 5690.37 },
 			incomes: [],
@@ -1018,7 +1024,7 @@ describe("monthSummary", () => {
 			上月透支: 13603.67,
 			上月美金透支: null,
 			上月新臺幣透支: null,
-			中餐預算: null,
+			午餐預算: null,
 			午餐超支或回補: null,
 			tags: { 透支: 13603.67, 訂閱: 368.44, 生活用品: 1261 },
 			incomes: [
@@ -1045,7 +1051,7 @@ describe("monthSummary", () => {
 		});
 	});
 
-	it("reports the 中餐預算 section and 午餐超支或回補", async () => {
+	it("reports the 午餐預算 section and 午餐超支或回補", async () => {
 		const grid = lunchGrid();
 		// UNFORMATTED render: formulas come back as computed numbers
 		(grid[34] as unknown[])[14] = 3900; // 編列預算
@@ -1059,18 +1065,18 @@ describe("monthSummary", () => {
 
 		const result = await monthSummary(client, 9);
 
-		expect(result.中餐預算).toEqual({ 編列預算: 3900, 總和: 353, 剩餘: 3547 });
+		expect(result.午餐預算).toEqual({ 編列預算: 3900, 總和: 353, 剩餘: 3547 });
 		expect(result.午餐超支或回補).toBe(3547);
 	});
 
-	it("resolves with 中餐預算 null when the lunch section is torn beyond recognition", async () => {
+	it("resolves with 午餐預算 null when the lunch section is torn beyond recognition", async () => {
 		const g = lunchGrid();
 		(g[35] as unknown[])[14] = ""; // no 日期 header within 8 rows of the anchor
 		const client = fakeClient(g);
 
 		const result = await monthSummary(client, 9);
 
-		expect(result.中餐預算).toBeNull();
+		expect(result.午餐預算).toBeNull();
 	});
 
 	it("reports the split carry rows and nulls the legacy 上月透支", async () => {
@@ -1254,7 +1260,7 @@ describe("startMonth", () => {
 		expect(result.clearedIncomes).toEqual(["多一個月薪水"]);
 	});
 
-	it("clears the 中餐預算 data rows so the new month starts empty", async () => {
+	it("clears the 午餐預算 data rows so the new month starts empty", async () => {
 		const client = startMonthClient(lunchGrid(), ["9 月", "8 月"]);
 
 		const result = await startMonth(client, 10);
@@ -1281,7 +1287,7 @@ describe("startMonth", () => {
 		const result = await startMonth(client, 10);
 
 		expect(result.lunchCleared).toBe(false);
-		expect(result.lunchWarning).toMatch(/日期|中餐預算/);
+		expect(result.lunchWarning).toMatch(/日期|午餐預算/);
 	});
 
 	it("rebuilds both carry rows per currency on the split layout", async () => {
