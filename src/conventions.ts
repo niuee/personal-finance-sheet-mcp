@@ -125,9 +125,53 @@ export const MONTH_COLS = {
 	budgetValue: 3,
 } as const;
 
+/**
+ * 乾坤大挪移 — the NTD→USD transfer log, present on monthly tabs from 7月
+ * 2026 (start_month copies it forward). Title in column G, a header row
+ * below it, data rows, then a 總和 row (label in G, =SUM per column H–M).
+ * The 銀行餘額 block wires to the 總和 row: 總美金餘額 +J (USD received),
+ * 總新臺幣餘額 −H (NTD sent), 新臺幣支出 +M (匯差+手續費 count as the
+ * month's NTD spending). The principal is a transfer, not income/spending.
+ */
+export const TRANSFER_SECTION_LABEL = "乾坤大挪移";
+export const TRANSFER_TOTAL_LABEL = "總和";
+
+/** 0-indexed columns of the 乾坤大挪移 section (G–M). */
+export const TRANSFER_COLS = {
+	/** G — 日期; also the column of the section title and the 總和 label. */
+	date: 6,
+	/** H — 新臺幣 debited from the bank. */
+	ntd: 7,
+	/** I — 當下美金 = 新臺幣 / spot rate, pinned at entry time. */
+	spotUsd: 8,
+	/** J — 實際美金: the USD that actually arrived. */
+	actualUsd: 9,
+	/** K — 匯差 in NTD = (當下美金 − 實際美金) × the pinned rate. */
+	spread: 10,
+	/** L — 手續費 in NTD. */
+	fee: 11,
+	/** M — 當筆總額外花費 = 匯差 + 手續費. */
+	extra: 12,
+} as const;
+
 /** Sheets date serial: days since 1899-12-30. */
 export function dateSerial(year: number, month: number, day: number): number {
 	return Math.round((Date.UTC(year, month - 1, day) - Date.UTC(1899, 11, 30)) / 86_400_000);
+}
+
+/** Inverse of dateSerial: Sheets serial → "YYYY-MM-DD". */
+export function serialToIso(serial: number): string {
+	return new Date(serial * 86_400_000 + Date.UTC(1899, 11, 30)).toISOString().slice(0, 10);
+}
+
+/** Today's calendar date in Taipei as a Sheets serial. */
+export function todaySerial(now: Date = new Date()): number {
+	// en-CA formats as YYYY-MM-DD
+	const [y, m, d] = new Intl.DateTimeFormat("en-CA", { timeZone: SHEET_TIMEZONE })
+		.format(now)
+		.split("-")
+		.map(Number);
+	return dateSerial(y, m, d);
 }
 
 const DATE_INPUT_RE = /^(?:(\d{4})[-/])?(\d{1,2})[-/](\d{1,2})$/;
