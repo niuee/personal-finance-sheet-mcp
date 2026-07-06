@@ -125,9 +125,53 @@ export const MONTH_COLS = {
 	budgetValue: 3,
 } as const;
 
+/**
+ * 乾坤大挪移 — the NTD→USD transfer log, present on monthly tabs from 7月
+ * 2026 (start_month copies it forward). Title in column G, a header row
+ * below it, data rows, then a 總和 row (label in G, =SUM per column H–M).
+ * The 銀行餘額 block wires to the 總和 row: 總美金餘額 +J (USD received),
+ * 總新臺幣餘額 −H (NTD sent), 新臺幣支出 +M (匯差+手續費 count as the
+ * month's NTD spending). The principal is a transfer, not income/spending.
+ */
+export const TRANSFER_SECTION_LABEL = "乾坤大挪移";
+export const TRANSFER_TOTAL_LABEL = "總和";
+
+/** 0-indexed columns of the 乾坤大挪移 section (G–M). */
+export const TRANSFER_COLS = {
+	/** G — 日期; also the column of the section title and the 總和 label. */
+	date: 6,
+	/** H — 新臺幣 debited from the bank. */
+	ntd: 7,
+	/** I — 當下美金 = 新臺幣 / spot rate, pinned at entry time. */
+	spotUsd: 8,
+	/** J — 實際美金: the USD that actually arrived. */
+	actualUsd: 9,
+	/** K — 匯差 in NTD = (當下美金 − 實際美金) × the pinned rate. */
+	spread: 10,
+	/** L — 手續費 in NTD. */
+	fee: 11,
+	/** M — 當筆總額外花費 = 匯差 + 手續費. */
+	extra: 12,
+} as const;
+
 /** Sheets date serial: days since 1899-12-30. */
 export function dateSerial(year: number, month: number, day: number): number {
 	return Math.round((Date.UTC(year, month - 1, day) - Date.UTC(1899, 11, 30)) / 86_400_000);
+}
+
+/** Inverse of dateSerial: Sheets serial → "YYYY-MM-DD". */
+export function serialToIso(serial: number): string {
+	return new Date(serial * 86_400_000 + Date.UTC(1899, 11, 30)).toISOString().slice(0, 10);
+}
+
+/** Today's calendar date in Taipei as a Sheets serial. */
+export function todaySerial(now: Date = new Date()): number {
+	// en-CA formats as YYYY-MM-DD
+	const [y, m, d] = new Intl.DateTimeFormat("en-CA", { timeZone: SHEET_TIMEZONE })
+		.format(now)
+		.split("-")
+		.map(Number);
+	return dateSerial(y, m, d);
 }
 
 const DATE_INPUT_RE = /^(?:(\d{4})[-/])?(\d{1,2})[-/](\d{1,2})$/;
@@ -182,6 +226,7 @@ MONTHLY TABS — named "N 月" (e.g. "9 月", with a space). Layout below applie
 - Categorization is the per-row 類別 tag in column C (see month_summary's per-類別 totals). The old G/H summary block is DEPRECATED — ignore any remnants.
 - Below the list, the income section: a 總預算 header row, then the income list (labels in B, 幣別 USD/TWD in C, amounts in D): 沛還, 薪水, plus ad-hoc income rows (e.g. 多一個月薪水) — manage these with set_income, which upserts by 項目 and keeps the SUMIFs covering every row. The list ends at 月美金餘額 / 月新臺幣餘額 (THIS month's 收入−支出 per currency, from the 銀行餘額 block), interleaved with per-currency write-offs — 美金透支沖銷 directly under 月美金餘額 and 新臺幣透支沖銷 directly under 月新臺幣餘額, each =IF(AND(月…餘額<0, 總…餘額>=0), -月…餘額, 0): a currency's month-deficit is settled from its OWN bank ledger when that balance stays non-negative — then 月剩餘 (= (月美金餘額+美金透支沖銷)*GOOGLEFINANCE USDTWD + 月新臺幣餘額 + 新臺幣透支沖銷 — the month's combined remainder in TWD; a fully settled month closes at 0, so nothing rolls into next month's 上月透支 unless a bank ledger itself goes negative). The old 剩餘, 美金支付 and 新臺幣支付 rows are DEPRECATED and removed by migration.
 - Further down, a 銀行餘額 block reconciles the real USD and NTD bank accounts as two INDEPENDENT running ledgers (labels in column B, values in column D): 美金收入 / 美金支出 / 上月美金餘額 / 總美金餘額, then 新臺幣收入 / 新臺幣支出 / 上月新臺幣餘額 / 總新臺幣餘額 (renamed by migration from 美金餘額/新臺幣餘額 — unmigrated tabs still use the short names). 收入 cells = SUMIF over the income list's 幣別 column; 美金支出 = SUMIF of the expense 支付幣別 for USD summing column D; 新臺幣支出 = SUMIF for TWD summing column E. Both 支出 SUMIFs span the FULL expense window INCLUDING the 上月透支 row — deliberate: Vincent counts the carried overdraft as an outflow that must be covered out of this month's money. Do not "fix" this as double-counting. Each 總…餘額 = 上月…餘額 + 收入 − 支出 (surplus AND overdraft carry). 上月…餘額 point at the previous month's 總…餘額 cell (start_month rewires them); in the earliest month they are seeded by hand.
+- To the right of the expense list, a 乾坤大挪移 block (the NTD→USD transfer log, from 7月 2026 on) spans columns G-M: the title in G, a header row (日期 新臺幣 當下美金 實際美金 匯差 手續費 當筆總額外花費), data rows, then a 總和 row with per-column SUMs. 當下美金 and 匯差 are pinned to the USDTWD rate at entry time (a literal number, not live GOOGLEFINANCE). The 銀行餘額 block wires to the 總和 row: 總美金餘額 adds +J總和 (USD received), 總新臺幣餘額 subtracts -H總和 (NTD sent), and 新臺幣支出 adds +M總和 so 匯差+手續費 count as the month's NTD spending — the principal itself is a transfer, not income or spending. Log transfers with add_transfer; never hand-extend the 總和 formulas.
 
 TRIP TABS — e.g. "2026/07/25 京都東京".
 - A mosaic of category blocks in four column bands (A-G, I-O, Q-W, Z-AF), stacked vertically within each band.
@@ -193,4 +238,4 @@ TRIP TABS — e.g. "2026/07/25 京都東京".
 
 OTHER — "火車模型" is a hobby purchase planner; monthly tabs may cross-reference its cells.
 
-Prefer the tailored tools (add_expense, set_income, month_summary, start_month, add_trip_entry) over raw range edits. Locate rows with find_cells — never by reading a big range and counting rows. For any append-like update_range write, pass expect_empty: true (it refuses if the target is not empty); every update_range response includes previousValues so a mistaken overwrite can be reverted. For math, read with mode "raw" — default reads return locale-formatted strings like "13,603.67".`;
+Prefer the tailored tools (add_expense, set_income, add_transfer, month_summary, start_month, add_trip_entry) over raw range edits. Locate rows with find_cells — never by reading a big range and counting rows. For any append-like update_range write, pass expect_empty: true (it refuses if the target is not empty); every update_range response includes previousValues so a mistaken overwrite can be reverted. For math, read with mode "raw" — default reads return locale-formatted strings like "13,603.67".`;

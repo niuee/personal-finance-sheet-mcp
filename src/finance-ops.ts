@@ -28,9 +28,14 @@ import {
 	REMAINDER_LABEL,
 	REPAYMENT_LABEL,
 	SALARY_LABEL,
+	serialToIso,
+	todaySerial,
 	TOTAL_NTD_BALANCE_LABEL,
 	TOTAL_ROW_LABEL,
 	TOTAL_USD_BALANCE_LABEL,
+	TRANSFER_COLS,
+	TRANSFER_SECTION_LABEL,
+	TRANSFER_TOTAL_LABEL,
 	TRIP_HEADER_DATE,
 	TRIP_HEADER_SHOP,
 	TRIP_BLOCK_WIDTH,
@@ -115,6 +120,39 @@ export function findExpenseWindow(values: unknown[][], tab: string): ExpenseWind
 		);
 	}
 	return { totalRow, start: Number(m[1]), end: Number(m[2]) };
+}
+
+/** The 乾坤大挪移 section spans G–M, wider than GRID_READ — read the full width. */
+export const TRANSFER_GRID_READ = "A1:M60";
+
+export interface TransferSection {
+	/** 1-indexed row of the 日期/新臺幣/… header. */
+	headerRow: number;
+	/** 1-indexed row of the 總和 totals. */
+	totalRow: number;
+}
+
+/** Locate the 乾坤大挪移 block (FORMULA-render grid of TRANSFER_GRID_READ). Throws when absent or malformed. */
+export function findTransferSection(values: unknown[][], tab: string): TransferSection {
+	const dateCol = TRANSFER_COLS.date;
+	const anchorRow = findRowByValue(values, dateCol, TRANSFER_SECTION_LABEL);
+	if (anchorRow === null) {
+		throw new Error(
+			`No ${TRANSFER_SECTION_LABEL} section in ${tab} (searched column ${colLetter(dateCol)} of ${TRANSFER_GRID_READ}) — the transfer log exists from 7月 2026 on.`,
+		);
+	}
+	const headerRow = anchorRow + 1;
+	if (String(values[headerRow - 1]?.[dateCol] ?? "").trim() !== "日期") {
+		throw new Error(
+			`The row under the ${TRANSFER_SECTION_LABEL} anchor in ${tab} is not the 日期/新臺幣/… header row.`,
+		);
+	}
+	for (let r = headerRow + 1; r <= values.length; r++) {
+		if (String(values[r - 1]?.[dateCol] ?? "").trim() === TRANSFER_TOTAL_LABEL) {
+			return { headerRow, totalRow: r };
+		}
+	}
+	throw new Error(`No ${TRANSFER_TOTAL_LABEL} row under the ${TRANSFER_SECTION_LABEL} header in ${tab}.`);
 }
 
 export interface IncomeWindow {
@@ -551,6 +589,148 @@ export async function addExpense(client: SheetsClient, p: AddExpenseParams) {
 		paidWith,
 		date: p.date ?? null,
 		tag: p.tag ?? null,
+	};
+}
+
+export interface AddTransferParams {
+	/** NTD debited from the bank (新臺幣). */
+	ntd: number;
+	/** USD that actually arrived (實際美金). */
+	usd: number;
+	/** 手續費 in NTD. */
+	fee: number;
+	/** M/D, MM/DD, YYYY/M/D, or YYYY-MM-DD; omitted = today in Taipei. */
+	date?: string;
+	month?: number;
+}
+
+function round2(n: number): number {
+	return Math.round(n * 100) / 100;
+}
+
+export async function addTransfer(client: SheetsClient, p: AddTransferParams) {
+	const tab = p.month !== undefined ? monthTabName(p.month) : currentMonthTab();
+	// Parse before any read/write so a bad date fails closed.
+	const dateSerialValue = p.date !== undefined ? parseDateInput(p.date) : todaySerial();
+
+	const { values, truncated } = await client.readRange(`${quoteTab(tab)}!${TRANSFER_GRID_READ}`, "FORMULA");
+	assertNotTruncated(truncated, tab, TRANSFER_GRID_READ);
+	const { headerRow, totalRow } = findTransferSection(values, tab);
+
+	// First row between the header and 總和 that is empty across G–M.
+	let targetRow: number | null = null;
+	for (let r = headerRow + 1; r < totalRow; r++) {
+		const cells = (values[r - 1] ?? []).slice(TRANSFER_COLS.date, TRANSFER_COLS.extra + 1);
+		if (!cells.some((c) => c !== "" && c != null)) {
+			targetRow = r;
+			break;
+		}
+	}
+
+	const sheetId = await client.getSheetId(tab);
+	const inserted = targetRow === null;
+	let finalTotalRow = totalRow;
+	const scratchRequests: object[] = [];
+	if (targetRow === null) {
+		// Insert directly above 總和; the ledger's +J/−H/+M references shift with it.
+		targetRow = totalRow;
+		finalTotalRow = totalRow + 1;
+		scratchRequests.push({
+			insertDimension: {
+				range: { sheetId, dimension: "ROWS", startIndex: targetRow - 1, endIndex: targetRow },
+				inheritFromBefore: true,
+			},
+		});
+	}
+	// The entry's own 當下美金 cell doubles as the rate scratch: live GOOGLEFINANCE,
+	// read once, then overwritten with the pinned formula.
+	const scratchWrite = {
+		updateCells: {
+			start: { sheetId, rowIndex: targetRow - 1, columnIndex: TRANSFER_COLS.spotUsd },
+			rows: [{ values: [cellData('=GOOGLEFINANCE("CURRENCY:USDTWD")')] }],
+			fields: "userEnteredValue",
+		},
+	};
+	scratchRequests.push(scratchWrite);
+	await client.batchUpdate(scratchRequests);
+
+	const scratchCell = `${colLetter(TRANSFER_COLS.spotUsd)}${targetRow}`;
+	const read = await client.readRange(`${quoteTab(tab)}!${scratchCell}`, "UNFORMATTED_VALUE");
+	const rate = read.values[0]?.[0];
+	if (typeof rate !== "number" || !Number.isFinite(rate) || rate <= 0) {
+		await client.batchUpdate([{ updateCells: { ...scratchWrite.updateCells, rows: [{ values: [{}] }] } }]);
+		throw new Error(
+			`GOOGLEFINANCE("CURRENCY:USDTWD") did not return a usable rate (got ${JSON.stringify(rate)}); the scratch cell ${scratchCell} was cleared — try again in a moment.`,
+		);
+	}
+
+	const r = targetRow;
+	const H = colLetter(TRANSFER_COLS.ntd);
+	const I = colLetter(TRANSFER_COLS.spotUsd);
+	const J = colLetter(TRANSFER_COLS.actualUsd);
+	const K = colLetter(TRANSFER_COLS.spread);
+	const L = colLetter(TRANSFER_COLS.fee);
+	const rowCells = [
+		cellData(p.ntd), // H 新臺幣
+		cellData(`=${H}${r}/${rate}`), // I 當下美金, rate pinned at entry
+		cellData(p.usd), // J 實際美金
+		cellData(`=(${I}${r}-${J}${r})*${rate}`), // K 匯差 in NTD
+		cellData(p.fee), // L 手續費
+		cellData(`=${K}${r}+${L}${r}`), // M 當筆總額外花費
+	];
+	// Rewrite 總和 over the whole data window: the sheet's original single-cell
+	// =sum(H35) cannot auto-extend, so the op owns the range from now on.
+	const sumCells = [];
+	for (let c = TRANSFER_COLS.ntd; c <= TRANSFER_COLS.extra; c++) {
+		const col = colLetter(c);
+		sumCells.push(cellData(`=SUM(${col}${headerRow + 1}:${col}${finalTotalRow - 1})`));
+	}
+	await client.batchUpdate([
+		{
+			updateCells: {
+				start: { sheetId, rowIndex: r - 1, columnIndex: TRANSFER_COLS.date },
+				rows: [
+					{
+						values: [
+							{
+								userEnteredValue: { numberValue: dateSerialValue },
+								userEnteredFormat: { numberFormat: { type: "DATE", pattern: "mm/dd" } },
+							},
+						],
+					},
+				],
+				fields: "userEnteredValue,userEnteredFormat.numberFormat",
+			},
+		},
+		{
+			updateCells: {
+				start: { sheetId, rowIndex: r - 1, columnIndex: TRANSFER_COLS.ntd },
+				rows: [{ values: rowCells }],
+				fields: "userEnteredValue",
+			},
+		},
+		{
+			updateCells: {
+				start: { sheetId, rowIndex: finalTotalRow - 1, columnIndex: TRANSFER_COLS.ntd },
+				rows: [{ values: sumCells }],
+				fields: "userEnteredValue",
+			},
+		},
+	]);
+
+	const spread = p.ntd - p.usd * rate; // == (當下美金 − 實際美金) × rate
+	return {
+		tab,
+		row: r,
+		inserted,
+		date: serialToIso(dateSerialValue),
+		ntd: p.ntd,
+		usd: p.usd,
+		rate,
+		spotUsd: round2(p.ntd / rate),
+		spread: round2(spread),
+		fee: p.fee,
+		extraCost: round2(spread + p.fee),
 	};
 }
 

@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
 	adaptRowFormula,
 	addExpense,
+	addTransfer,
 	addTripEntry,
 	annotateRows,
 	cellData,
@@ -14,6 +15,7 @@ import {
 	findIncomeWindow,
 	findRowByLabels,
 	findRowByValue,
+	findTransferSection,
 	findTripBlocks,
 	getCategories,
 	migrateIncomeLayout,
@@ -22,7 +24,7 @@ import {
 	setIncome,
 	startMonth,
 } from "../src/finance-ops";
-import { currentMonthTab, MONTH_COLS } from "../src/conventions";
+import { currentMonthTab, MONTH_COLS, todaySerial } from "../src/conventions";
 import type { SheetsClient } from "../src/sheets-client";
 
 describe("formula surgery", () => {
@@ -148,6 +150,16 @@ function migratedMonthGrid(): unknown[][] {
 	g[28] = ["", "新臺幣支出", "", '=SUMIF(F3:F10,"TWD",E3:E10)'];
 	g[29] = ["", "上月新臺幣餘額", "", "='8 月'!D31"];
 	g[30] = ["", "總新臺幣餘額", "", "=D30+D28-D29"];
+	return g;
+}
+
+/** migratedMonthGrid + a 乾坤大挪移 transfer block at G33:M36 (data slot row 35 empty). */
+function transferGrid(): unknown[][] {
+	const g = migratedMonthGrid();
+	g[32] = ["", "", "", "", "", "", "乾坤大挪移"];
+	g[33] = ["", "", "", "", "", "", "日期", "新臺幣", "當下美金", "實際美金", "匯差", "手續費", "當筆總額外花費"];
+	// row 35 empty — the first data slot
+	g[35] = ["", "", "", "", "", "", "總和", "=sum(H35)", "=sum(I35)", "=sum(J35)", "=sum(K35)", "=sum(L35)", "=sum(M35)"];
 	return g;
 }
 
@@ -350,6 +362,162 @@ describe("migrateIncomeLayout", () => {
 		expect(monthRows.updateCells.rows[3]).toEqual({
 			values: [{ userEnteredValue: { stringValue: "新臺幣透支沖銷" } }, {}, { userEnteredValue: { formulaValue: "=IF(AND(D18<0,D31>=0),-D18,0)" } }],
 		});
+	});
+});
+
+describe("findTransferSection", () => {
+	it("locates the header and 總和 rows from the anchor", () => {
+		expect(findTransferSection(transferGrid(), "9 月")).toEqual({ headerRow: 34, totalRow: 36 });
+	});
+
+	it("throws when the tab has no 乾坤大挪移 section", () => {
+		expect(() => findTransferSection(migratedMonthGrid(), "6 月")).toThrow("乾坤大挪移");
+	});
+
+	it("throws when the header row under the anchor is missing", () => {
+		const g = transferGrid();
+		g[33] = [];
+		expect(() => findTransferSection(g, "9 月")).toThrow("日期");
+	});
+
+	it("throws when there is no 總和 row", () => {
+		const g = transferGrid();
+		g[35] = [];
+		expect(() => findTransferSection(g, "9 月")).toThrow("總和");
+	});
+});
+
+/** Like fakeClient, but the single-cell scratch read returns `rate` instead of the grid. */
+function transferClient(grid: unknown[][], rate: unknown = 29.85): SheetsClient {
+	return {
+		readRange: vi.fn(async (range: string) =>
+			range.includes(":")
+				? { range, values: grid, truncated: false }
+				: { range, values: [[rate]], truncated: false },
+		),
+		getSheetId: vi.fn(async () => 111),
+		batchUpdate: vi.fn(async () => ({ replies: [{}] })),
+	} as unknown as SheetsClient;
+}
+
+describe("addTransfer", () => {
+	it("writes into the first empty row with the rate pinned", async () => {
+		const client = transferClient(transferGrid());
+		const result = await addTransfer(client, { ntd: 30000, usd: 1000, fee: 30, month: 9, date: "9/2" });
+
+		expect((client.readRange as any).mock.calls[0]).toEqual(["'9 月'!A1:M60", "FORMULA"]);
+		// batch 1: scratch GOOGLEFINANCE into I35, no insert needed
+		const batch1 = (client.batchUpdate as any).mock.calls[0][0];
+		expect(batch1).toHaveLength(1);
+		expect(batch1[0].updateCells.start).toEqual({ sheetId: 111, rowIndex: 34, columnIndex: 8 });
+		expect(batch1[0].updateCells.rows[0].values[0].userEnteredValue).toEqual({
+			formulaValue: '=GOOGLEFINANCE("CURRENCY:USDTWD")',
+		});
+		expect((client.readRange as any).mock.calls[1]).toEqual(["'9 月'!I35", "UNFORMATTED_VALUE"]);
+
+		// batch 2: 日期, the entry row, the 總和 rewrite
+		const batch2 = (client.batchUpdate as any).mock.calls[1][0];
+		const dateCell = batch2[0].updateCells;
+		expect(dateCell.start).toEqual({ sheetId: 111, rowIndex: 34, columnIndex: 6 });
+		expect(dateCell.rows[0].values[0].userEnteredFormat).toEqual({
+			numberFormat: { type: "DATE", pattern: "mm/dd" },
+		});
+		const rowCells = batch2[1].updateCells;
+		expect(rowCells.start).toEqual({ sheetId: 111, rowIndex: 34, columnIndex: 7 });
+		expect(rowCells.rows[0].values.map((v: any) => v.userEnteredValue)).toEqual([
+			{ numberValue: 30000 }, // H 新臺幣
+			{ formulaValue: "=H35/29.85" }, // I 當下美金 (pinned)
+			{ numberValue: 1000 }, // J 實際美金
+			{ formulaValue: "=(I35-J35)*29.85" }, // K 匯差 (pinned)
+			{ numberValue: 30 }, // L 手續費
+			{ formulaValue: "=K35+L35" }, // M 當筆總額外花費
+		]);
+		const sums = batch2[2].updateCells;
+		expect(sums.start).toEqual({ sheetId: 111, rowIndex: 35, columnIndex: 7 });
+		expect(sums.rows[0].values.map((v: any) => v.userEnteredValue.formulaValue)).toEqual([
+			"=SUM(H35:H35)",
+			"=SUM(I35:I35)",
+			"=SUM(J35:J35)",
+			"=SUM(K35:K35)",
+			"=SUM(L35:L35)",
+			"=SUM(M35:M35)",
+		]);
+
+		// 30000 − 1000×29.85 = 150 spread; +30 fee = 180
+		expect(result).toMatchObject({
+			tab: "9 月",
+			row: 35,
+			inserted: false,
+			date: "2026-09-02",
+			ntd: 30000,
+			usd: 1000,
+			rate: 29.85,
+			spread: 150,
+			fee: 30,
+			extraCost: 180,
+		});
+		expect(result.spotUsd).toBeCloseTo(1005.03, 2);
+	});
+
+	it("inserts a row above 總和 when the section is full and widens the sums", async () => {
+		const grid = transferGrid();
+		grid[34] = ["", "", "", "", "", "", 46266, 30000, "=H35/29.9", 1000, "=(I35-J35)*29.9", 30, "=K35+L35"];
+		const client = transferClient(grid);
+		const result = await addTransfer(client, { ntd: 15000, usd: 500, fee: 15, month: 9, date: "9/9" });
+
+		const batch1 = (client.batchUpdate as any).mock.calls[0][0];
+		expect(batch1[0].insertDimension.range).toEqual({
+			sheetId: 111,
+			dimension: "ROWS",
+			startIndex: 35,
+			endIndex: 36,
+		});
+		expect(batch1[1].updateCells.start).toEqual({ sheetId: 111, rowIndex: 35, columnIndex: 8 });
+		expect((client.readRange as any).mock.calls[1]).toEqual(["'9 月'!I36", "UNFORMATTED_VALUE"]);
+
+		const batch2 = (client.batchUpdate as any).mock.calls[1][0];
+		expect(batch2[2].updateCells.start).toEqual({ sheetId: 111, rowIndex: 36, columnIndex: 7 });
+		expect(batch2[2].updateCells.rows[0].values[0].userEnteredValue).toEqual({
+			formulaValue: "=SUM(H35:H36)",
+		});
+		expect(result).toMatchObject({ row: 36, inserted: true });
+	});
+
+	it("defaults 日期 to today in Taipei", async () => {
+		const client = transferClient(transferGrid());
+		await addTransfer(client, { ntd: 100, usd: 3, fee: 0, month: 9 });
+		const dateCell = (client.batchUpdate as any).mock.calls[1][0][0].updateCells.rows[0].values[0];
+		expect(dateCell.userEnteredValue.numberValue).toBe(todaySerial());
+	});
+
+	it("fails and clears the scratch cell when GOOGLEFINANCE is not numeric", async () => {
+		const client = transferClient(transferGrid(), "#N/A");
+		await expect(addTransfer(client, { ntd: 100, usd: 3, fee: 0, month: 9 })).rejects.toThrow("GOOGLEFINANCE");
+		const calls = (client.batchUpdate as any).mock.calls;
+		expect(calls).toHaveLength(2); // scratch write, then the clearing write
+		expect(calls[1][0][0].updateCells.start).toEqual({ sheetId: 111, rowIndex: 34, columnIndex: 8 });
+		expect(calls[1][0][0].updateCells.rows[0].values).toEqual([{}]);
+	});
+
+	it("refuses when the tab has no 乾坤大挪移 section", async () => {
+		const client = transferClient(migratedMonthGrid());
+		await expect(addTransfer(client, { ntd: 100, usd: 3, fee: 0, month: 6 })).rejects.toThrow("乾坤大挪移");
+		expect((client.batchUpdate as any).mock.calls).toHaveLength(0);
+	});
+
+	it("rejects a bad date before any read or write", async () => {
+		const client = transferClient(transferGrid());
+		await expect(
+			addTransfer(client, { ntd: 100, usd: 3, fee: 0, month: 9, date: "not-a-date" }),
+		).rejects.toThrow("Unrecognized date");
+		expect((client.readRange as any).mock.calls).toHaveLength(0);
+	});
+
+	it("refuses when the grid read is truncated", async () => {
+		const client = transferClient(transferGrid());
+		(client.readRange as any).mockResolvedValue({ range: "x", values: transferGrid(), truncated: true });
+		await expect(addTransfer(client, { ntd: 100, usd: 3, fee: 0, month: 9 })).rejects.toThrow("truncated");
+		expect((client.batchUpdate as any).mock.calls).toHaveLength(0);
 	});
 });
 

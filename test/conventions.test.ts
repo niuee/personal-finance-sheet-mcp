@@ -19,6 +19,8 @@ import {
 	REMAINDER_LABEL,
 	REPAYMENT_LABEL,
 	SALARY_LABEL,
+	serialToIso,
+	todaySerial,
 	TOTAL_NTD_BALANCE_LABEL,
 	TOTAL_ROW_LABEL,
 	TOTAL_USD_BALANCE_LABEL,
@@ -141,6 +143,17 @@ describe("conventions", () => {
 		expect(() => parseDateInput("2026/02/30")).toThrow("Invalid date");
 	});
 
+	it("todaySerial uses the Taipei calendar date", () => {
+		// 18:00 UTC on 7/6 is already 02:00 on 7/7 in Taipei
+		expect(todaySerial(new Date("2026-07-06T18:00:00Z"))).toBe(dateSerial(2026, 7, 7));
+		expect(todaySerial(new Date("2026-07-06T03:00:00Z"))).toBe(dateSerial(2026, 7, 6));
+	});
+
+	it("serialToIso inverts dateSerial", () => {
+		expect(serialToIso(dateSerial(2026, 7, 6))).toBe("2026-07-06");
+		expect(serialToIso(dateSerial(1999, 12, 31))).toBe("1999-12-31");
+	});
+
 	it("conventions text mentions the anchors Claude needs", () => {
 		for (const needle of [
 			"花費總額",
@@ -163,6 +176,9 @@ describe("conventions", () => {
 			"set_income",
 			"幣別",
 			"透支沖銷",
+			"乾坤大挪移",
+			"add_transfer",
+			"當筆總額外花費",
 		]) {
 			expect(CONVENTIONS_TEXT).toContain(needle);
 		}
