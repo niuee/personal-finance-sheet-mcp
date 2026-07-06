@@ -136,7 +136,7 @@ function migratedMonthGrid(): unknown[][] {
 	g[15] = ["", "多一個月薪水", "TWD", 63913];
 	g[16] = ["", "月美金餘額", "", "=D23-D24"];
 	g[17] = ["", "月新臺幣餘額", "", "=D27-D28"];
-	g[18] = ["", "透支沖銷", "", "=IF(D30>=E3, E3, 0)"];
+	g[18] = ["", "透支沖銷", "", "=IF(D30>=0, E3, 0)"];
 	g[19] = ["", "月剩餘", "", '=D17*GOOGLEFINANCE("CURRENCY:USDTWD")+D18+D19'];
 	g[21] = ["", "銀行餘額"];
 	g[22] = ["", "美金收入", "", '=SUMIF(C14:C16,"USD",D14:D16)'];
@@ -249,7 +249,7 @@ describe("migrateIncomeLayout", () => {
 				rows: [
 					{ values: [{ userEnteredValue: { stringValue: "月美金餘額" } }, {}, { userEnteredValue: { formulaValue: "=D23-D24" } }] },
 					{ values: [{ userEnteredValue: { stringValue: "月新臺幣餘額" } }, {}, { userEnteredValue: { formulaValue: "=D27-D28" } }] },
-					{ values: [{ userEnteredValue: { stringValue: "透支沖銷" } }, {}, { userEnteredValue: { formulaValue: "=IF(D30>=E3, E3, 0)" } }] },
+					{ values: [{ userEnteredValue: { stringValue: "透支沖銷" } }, {}, { userEnteredValue: { formulaValue: "=IF(D30>=0, E3, 0)" } }] },
 					{ values: [{ userEnteredValue: { stringValue: "月剩餘" } }, {}, { userEnteredValue: { formulaValue: '=D16*GOOGLEFINANCE("CURRENCY:USDTWD")+D17+D18' } }] },
 				],
 				fields: "userEnteredValue",
@@ -332,6 +332,19 @@ describe("migrateIncomeLayout", () => {
 		});
 		// 美金收入 was row 22, final = 22 + 3 - 1 = 24
 		expect(result.changes).toContainEqual({ cell: "D24", before: "0", after: '=SUMIF(C14:C15,"USD",D14:D15)' });
+	});
+
+	it("writes a literal 0 write-off when the tab has no 上月透支 row", async () => {
+		const g = oldLayoutGrid();
+		g[2] = ["", "普通支出", "其他", "", 500]; // no carry row
+		const client = fakeClient(g);
+
+		await migrateIncomeLayout(client, "9 月", g, 111);
+
+		const monthRows = (client.batchUpdate as any).mock.calls[0][0][6];
+		expect(monthRows.updateCells.rows[2]).toEqual({
+			values: [{ userEnteredValue: { stringValue: "透支沖銷" } }, {}, { userEnteredValue: { numberValue: 0 } }],
+		});
 	});
 });
 
@@ -1468,6 +1481,7 @@ describe("setIncome", () => {
 		const client = fakeClient(migratedMonthGrid());
 		await expect(setIncome(client, { item: "月剩餘", amount: 1, currency: "TWD", month: 9 })).rejects.toThrow("layout label");
 		await expect(setIncome(client, { item: "花費總額", amount: 1, currency: "TWD", month: 9 })).rejects.toThrow("layout label");
+		await expect(setIncome(client, { item: "透支沖銷", amount: 1, currency: "TWD", month: 9 })).rejects.toThrow("layout label");
 		expect((client.readRange as any).mock.calls).toHaveLength(0);
 	});
 

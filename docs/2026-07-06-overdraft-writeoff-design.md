@@ -23,9 +23,12 @@ unless the month itself overspends.
    the carry row (the bank pays, per the include-上月透支 semantics);
    only 月剩餘 adds the settled amount back.
 2. **Automatic, all-or-nothing**: a formula settles the FULL carry iff
-   總新臺幣餘額 ≥ 上月透支; otherwise 0 and the debt rolls exactly as
+   總新臺幣餘額 ≥ 0; otherwise 0 and the debt rolls exactly as
    today. No monthly action needed. (The check only fires meaningfully
    once 上月…餘額 is seeded with real balances.)
+   Clarified 2026-07-06: because 支出 already includes the carry, "the
+   bank can cover it" means the post-payment 總新臺幣餘額 is ≥ 0 — NOT ≥
+   the debt again (which would demand a 2× buffer).
 3. **Visible row**: the write-off is a labeled row, not an invisible
    term inside 月剩餘's formula — auditable at a glance, reportable by
    month_summary.
@@ -39,7 +42,7 @@ example:
 ```
 37  月美金餘額    =D46-D47
 38  月新臺幣餘額  =D50-D51
-39  透支沖銷      =IF(D53>=E3, E3, 0)        ← new row
+39  透支沖銷      =IF(D53>=0, E3, 0)         ← new row
 40  月剩餘        =D37*GOOGLEFINANCE("CURRENCY:USDTWD")+D38+D39
      …
 53  總新臺幣餘額  (bank block shifted +1 by the insert)

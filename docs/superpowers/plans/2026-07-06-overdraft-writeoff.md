@@ -14,7 +14,7 @@
 - Tab indentation, double quotes.
 - Work on branch `feat/overdraft-writeoff` in /Users/vincent.yy.chang/dev/personal-finance/main.
 - Exact label: `WRITEOFF_LABEL = "透支沖銷"`.
-- Write-off formula shape (all cells located by label, never fixed position): `=IF(D{總新臺幣餘額row}>=E{上月透支row}, E{上月透支row}, 0)`; literal number `0` when the tab has no 上月透支 row.
+- Write-off formula shape (all cells located by label, never fixed position): `=IF(D{總新臺幣餘額row}>=0, E{上月透支row}, 0)`; literal number `0` when the tab has no 上月透支 row.
 - 月 row order: 月美金餘額 / 月新臺幣餘額 / 透支沖銷 / 月剩餘; 月剩餘 = `=D{月美}*GOOGLEFINANCE("CURRENCY:USDTWD")+D{月新}+D{沖銷}`.
 - The 支出 SUMIFs keep spanning the FULL expense window including 上月透支 (Vincent's standing decision — do not change).
 

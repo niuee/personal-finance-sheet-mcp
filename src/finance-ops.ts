@@ -274,11 +274,13 @@ export async function migrateIncomeLayout(
 	const usdNet = `=${D}${finalRow(usdIncRow)}-${D}${finalRow(usdSpRow)}`;
 	const ntdNet = `=${D}${finalRow(ntdIncRow)}-${D}${finalRow(ntdSpRow)}`;
 	// All-or-nothing write-off: settle the carried 上月透支 from the bank when
-	// 總新臺幣餘額 can cover it, so only fresh overspending rolls forward.
+	// the post-payment 總新臺幣餘額 stays non-negative (支出 already includes
+	// the carry, so that IS "the bank could cover it") — only fresh
+	// overspending rolls forward.
 	const overdraftRow = findRowByValue(values, MONTH_COLS.item, OVERDRAFT_LABEL);
 	const writeoff =
 		overdraftRow !== null
-			? `=IF(${D}${finalRow(ntdBalRow)}>=${twd}${overdraftRow}, ${twd}${overdraftRow}, 0)`
+			? `=IF(${D}${finalRow(ntdBalRow)}>=0, ${twd}${finalRow(overdraftRow)}, 0)`
 			: 0;
 	const monthRemainder = `=${D}${remRow}*GOOGLEFINANCE("CURRENCY:USDTWD")+${D}${remRow + 1}+${D}${remRow + 2}`;
 	requests.push({
@@ -324,6 +326,7 @@ const NON_INCOME_LABELS = new Set<string>([
 	MONTH_USD_NET_LABEL,
 	MONTH_NTD_NET_LABEL,
 	MONTH_REMAINDER_LABEL,
+	WRITEOFF_LABEL,
 	USD_PAYMENT_LABEL,
 	NTD_PAYMENT_LABEL,
 	TOTAL_ROW_LABEL,
