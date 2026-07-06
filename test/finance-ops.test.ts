@@ -958,6 +958,8 @@ describe("monthSummary", () => {
 			tab: "9 月",
 			花費總額: 72127.21,
 			上月透支: 13603.67,
+			上月美金透支: null,
+			上月新臺幣透支: null,
 			中餐預算: null,
 			午餐超支或回補: null,
 			tags: { 透支: 13603.67, 訂閱: 368.44 + 191.43 + 319.23, 生活用品: 1261, 購物: 5690.37 },
@@ -1009,6 +1011,8 @@ describe("monthSummary", () => {
 			tab: "9 月",
 			花費總額: 15233.11,
 			上月透支: 13603.67,
+			上月美金透支: null,
+			上月新臺幣透支: null,
 			中餐預算: null,
 			午餐超支或回補: null,
 			tags: { 透支: 13603.67, 訂閱: 368.44, 生活用品: 1261 },
@@ -1062,6 +1066,22 @@ describe("monthSummary", () => {
 		const result = await monthSummary(client, 9);
 
 		expect(result.中餐預算).toBeNull();
+	});
+
+	it("reports the split carry rows and nulls the legacy 上月透支", async () => {
+		const grid = splitCarryGrid();
+		// UNFORMATTED render: formulas come back as computed numbers
+		grid[2] = ["", "上月美金透支", "透支", 20.5, 612.05, "USD"];
+		grid[3] = ["", "上月新臺幣透支", "透支", "", 968.57, "TWD"];
+		const client = fakeClient(grid);
+
+		const result = await monthSummary(client, 9);
+
+		expect(result.上月美金透支).toBe(20.5);
+		expect(result.上月新臺幣透支).toBe(968.57);
+		expect(result.上月透支).toBeNull();
+		// both rows are tagged 透支; the USD row's E holds the converted view
+		expect(result.tags.透支).toBeCloseTo(612.05 + 968.57, 2);
 	});
 });
 

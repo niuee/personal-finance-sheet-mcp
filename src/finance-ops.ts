@@ -953,6 +953,8 @@ export async function monthSummary(client: SheetsClient, month?: number) {
 		tab,
 		花費總額: cellAt(totalRow, MONTH_COLS.totalValue),
 		上月透支: cellAt(rowByItem(OVERDRAFT_LABEL), MONTH_COLS.twd),
+		上月美金透支: cellAt(rowByItem(PREV_USD_OVERDRAFT_LABEL), MONTH_COLS.usd),
+		上月新臺幣透支: cellAt(rowByItem(PREV_NTD_OVERDRAFT_LABEL), MONTH_COLS.twd),
 		中餐預算: lunch,
 		午餐超支或回補: cellAt(rowByItem(LUNCH_ADJUST_LABEL), MONTH_COLS.budgetValue),
 		tags,
