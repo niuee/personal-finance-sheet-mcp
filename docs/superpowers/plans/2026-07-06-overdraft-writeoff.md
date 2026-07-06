@@ -144,7 +144,7 @@ In the `"migrates an old-layout tab in one batch…"` test:
 		});
 ```
 
-4. SUMIF/rename request expectations shift +1: `requests[7]` start `rowIndex: 22`; `requests[8]` `rowIndex: 23`; `requests[9]` `rowIndex: 26`; `requests[10]` `rowIndex: 27`; `requests[11]` `rowIndex: 25`; `requests[12]` `rowIndex: 28`.
+4. SUMIF/rename request expectations shift +1: `requests[7]` start `rowIndex: 22`; `requests[8]` `rowIndex: 23`; `requests[9]` `rowIndex: 26`; `requests[10]` `rowIndex: 27`; `requests[11]` `rowIndex: 25`; `requests[12]` `rowIndex: 29`.
 5. `changes` assertions: `{ cell: "D23", before: "0", after: '=SUMIF(C14:C15,"USD",D14:D15)' }` (was D22); `{ cell: "B26", before: "美金餘額", after: "總美金餘額" }` (was B25); `{ cell: "D16", before: "=sum(D14:D15)-E11", after: "=D23-D24" }`.
 6. The request count stays `expect(requests).toHaveLength(13);`.
 
