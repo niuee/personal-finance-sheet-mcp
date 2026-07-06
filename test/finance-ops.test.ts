@@ -139,11 +139,11 @@ function migratedMonthGrid(): unknown[][] {
 	g[18] = ["", "月剩餘", "", '=D17*GOOGLEFINANCE("CURRENCY:USDTWD")+D18'];
 	g[20] = ["", "銀行餘額"];
 	g[21] = ["", "美金收入", "", '=SUMIF(C14:C16,"USD",D14:D16)'];
-	g[22] = ["", "美金支出", "", '=SUMIF(F4:F10,"USD",D4:D10)'];
+	g[22] = ["", "美金支出", "", '=SUMIF(F3:F10,"USD",D3:D10)'];
 	g[23] = ["", "上月美金餘額", "", "='8 月'!D25"];
 	g[24] = ["", "總美金餘額", "", "=D24+D22-D23"];
 	g[25] = ["", "新臺幣收入", "", '=SUMIF(C14:C16,"TWD",D14:D16)'];
-	g[26] = ["", "新臺幣支出", "", '=SUMIF(F4:F10,"TWD",E4:E10)'];
+	g[26] = ["", "新臺幣支出", "", '=SUMIF(F3:F10,"TWD",E3:E10)'];
 	g[27] = ["", "上月新臺幣餘額", "", "='8 月'!D29"];
 	g[28] = ["", "總新臺幣餘額", "", "=D28+D26-D27"];
 	return g;
@@ -260,7 +260,7 @@ describe("migrateIncomeLayout", () => {
 		});
 		expect(requests[8].updateCells).toMatchObject({
 			start: { sheetId: 111, rowIndex: 22, columnIndex: 3 },
-			rows: [{ values: [{ userEnteredValue: { formulaValue: '=SUMIF(F4:F10,"USD",D4:D10)' } }] }],
+			rows: [{ values: [{ userEnteredValue: { formulaValue: '=SUMIF(F3:F10,"USD",D3:D10)' } }] }],
 		});
 		expect(requests[9].updateCells).toMatchObject({
 			start: { sheetId: 111, rowIndex: 25, columnIndex: 3 },
@@ -268,7 +268,7 @@ describe("migrateIncomeLayout", () => {
 		});
 		expect(requests[10].updateCells).toMatchObject({
 			start: { sheetId: 111, rowIndex: 26, columnIndex: 3 },
-			rows: [{ values: [{ userEnteredValue: { formulaValue: '=SUMIF(F4:F10,"TWD",E4:E10)' } }] }],
+			rows: [{ values: [{ userEnteredValue: { formulaValue: '=SUMIF(F3:F10,"TWD",E3:E10)' } }] }],
 		});
 		// 8) running balances renamed
 		expect(requests[11].updateCells).toMatchObject({
@@ -330,21 +330,6 @@ describe("migrateIncomeLayout", () => {
 		});
 		// 美金收入 was row 22, final = 22 + 2 - 1 = 23
 		expect(result.changes).toContainEqual({ cell: "D23", before: "0", after: '=SUMIF(C14:C15,"USD",D14:D15)' });
-	});
-
-	it("keeps the full spending range when the window does not start with 上月透支", async () => {
-		const g = oldLayoutGrid();
-		g[2] = ["", "普通支出", "其他", "", 500]; // row 3 is an ordinary expense, not the carry row
-		const client = fakeClient(g);
-
-		const result = await migrateIncomeLayout(client, "9 月", g, 111);
-
-		expect(result.changes).toContainEqual(
-			expect.objectContaining({ after: '=SUMIF(F3:F10,"USD",D3:D10)' }),
-		);
-		expect(result.changes).toContainEqual(
-			expect.objectContaining({ after: '=SUMIF(F3:F10,"TWD",E3:E10)' }),
-		);
 	});
 });
 
