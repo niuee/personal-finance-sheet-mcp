@@ -16,6 +16,18 @@ export const SALARY_LABEL = "薪水";
 export const REPAYMENT_LABEL = "沛還";
 export const REMAINDER_LABEL = "剩餘";
 export const USD_PAYMENT_LABEL = "美金支付";
+export const NTD_PAYMENT_LABEL = "新臺幣支付";
+export const BUDGET_HEADER_LABEL = "總預算";
+
+/**
+ * Post-migration budget-block rows (labels in column B, values in column D).
+ * 月美金餘額/月新臺幣餘額 are THIS month's 收入−支出 per currency (no
+ * carry-over); 月剩餘 converts the USD net at GOOGLEFINANCE USDTWD and adds
+ * the NTD net. They replace the old 剩餘 / 美金支付 / 新臺幣支付 rows.
+ */
+export const MONTH_USD_NET_LABEL = "月美金餘額";
+export const MONTH_NTD_NET_LABEL = "月新臺幣餘額";
+export const MONTH_REMAINDER_LABEL = "月剩餘";
 
 /**
  * Labels for the 銀行餘額 (bank-balance reconciliation) block — a per-currency
@@ -35,6 +47,10 @@ export const NTD_INCOME_LABEL = "新臺幣收入";
 export const NTD_SPENDING_LABEL = "新臺幣支出";
 export const PREV_NTD_BALANCE_LABEL = "上月新臺幣餘額";
 export const NTD_BALANCE_LABEL = "新臺幣餘額";
+
+/** Post-migration names of the running bank balances (old tabs keep 美金餘額/新臺幣餘額 — look up with fallback). */
+export const TOTAL_USD_BALANCE_LABEL = "總美金餘額";
+export const TOTAL_NTD_BALANCE_LABEL = "總新臺幣餘額";
 
 /** Items start_month keeps when opening a new month; everything else is a one-off. */
 export const RECURRING_ITEMS = new Set<string>([
@@ -59,6 +75,9 @@ export const RECURRING_ITEMS = new Set<string>([
 	"基本生活費",
 ]);
 
+/** Income rows start_month keeps; every other income row is ad-hoc and cleared. */
+export const RECURRING_INCOME = new Set<string>([REPAYMENT_LABEL, SALARY_LABEL]);
+
 export function monthTabName(month: number): string {
 	if (!Number.isInteger(month) || month < 1 || month > 12) {
 		throw new Error(`Invalid month: ${month} (expected an integer 1-12)`);
@@ -81,6 +100,8 @@ export const MONTH_COLS = {
 	usd: 3,
 	/** E — 新臺幣 (TWD). */
 	twd: 4,
+	/** F — 支付幣別, which real account paid the row (USD/TWD). */
+	paidWith: 5,
 	/** D — the 花費總額 label. */
 	totalLabel: 3,
 	/** E — the 花費總額 =SUM window. */

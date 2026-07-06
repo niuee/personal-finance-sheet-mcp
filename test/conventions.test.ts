@@ -1,19 +1,27 @@
 import { describe, expect, it } from "vitest";
 import {
+	BUDGET_HEADER_LABEL,
 	CONVENTIONS_TEXT,
 	currentMonthTab,
 	dateSerial,
 	KNOWN_TAGS,
 	MONTH_COLS,
+	MONTH_NTD_NET_LABEL,
+	MONTH_REMAINDER_LABEL,
+	MONTH_USD_NET_LABEL,
 	monthTabName,
+	NTD_PAYMENT_LABEL,
 	parseDateInput,
 	OVERDRAFT_LABEL,
 	previousMonth,
+	RECURRING_INCOME,
 	RECURRING_ITEMS,
 	REMAINDER_LABEL,
 	REPAYMENT_LABEL,
 	SALARY_LABEL,
+	TOTAL_NTD_BALANCE_LABEL,
 	TOTAL_ROW_LABEL,
+	TOTAL_USD_BALANCE_LABEL,
 	TRIP_HEADER_DATE,
 	TRIP_HEADER_SHOP,
 	TRIP_MAX_BLOCK_ROWS,
@@ -65,6 +73,22 @@ describe("conventions", () => {
 		expect(USD_PAYMENT_LABEL).toBe("美金支付");
 	});
 
+	it("exports the income-section labels", () => {
+		expect(BUDGET_HEADER_LABEL).toBe("總預算");
+		expect(NTD_PAYMENT_LABEL).toBe("新臺幣支付");
+		expect(MONTH_USD_NET_LABEL).toBe("月美金餘額");
+		expect(MONTH_NTD_NET_LABEL).toBe("月新臺幣餘額");
+		expect(MONTH_REMAINDER_LABEL).toBe("月剩餘");
+		expect(TOTAL_USD_BALANCE_LABEL).toBe("總美金餘額");
+		expect(TOTAL_NTD_BALANCE_LABEL).toBe("總新臺幣餘額");
+	});
+
+	it("keeps 沛還 and 薪水 as recurring income, ad-hoc rows are not", () => {
+		expect(RECURRING_INCOME.has("沛還")).toBe(true);
+		expect(RECURRING_INCOME.has("薪水")).toBe(true);
+		expect(RECURRING_INCOME.has("多一個月薪水")).toBe(false);
+	});
+
 	it("maps the monthly-tab columns (類別-column layout)", () => {
 		expect(MONTH_COLS).toEqual({
 			date: 0,
@@ -72,6 +96,7 @@ describe("conventions", () => {
 			tag: 2,
 			usd: 3,
 			twd: 4,
+			paidWith: 5,
 			totalLabel: 3,
 			totalValue: 4,
 			budgetLabel: 1,
