@@ -26,7 +26,9 @@ import {
 	OVERDRAFT_LABEL,
 	parseDateInput,
 	PREV_NTD_BALANCE_LABEL,
+	PREV_NTD_OVERDRAFT_LABEL,
 	PREV_USD_BALANCE_LABEL,
+	PREV_USD_OVERDRAFT_LABEL,
 	previousMonth,
 	RECURRING_INCOME,
 	RECURRING_ITEMS,
@@ -1045,27 +1047,59 @@ export async function startMonth(client: SheetsClient, month: number) {
 		},
 	];
 
-	const overdraftRow = findRowByValue(values, MONTH_COLS.item, OVERDRAFT_LABEL);
-	if (overdraftRow !== null) {
-		// The duplicated grid mirrors prevTab's layout, so the previous month's
-		// remainder row is findable here: 月剩餘 (migrated) or 剩餘 (old layout).
-		// Rebuild the carry formula against it — a plain tab-name swap would keep
-		// a stale row reference from whichever layout the formula was born in.
-		const remainderRow = findRowByLabels(values, MONTH_COLS.budgetLabel, [MONTH_REMAINDER_LABEL, REMAINDER_LABEL]);
-		let formula: string;
-		if (remainderRow !== null) {
-			const cell = `${quoteTab(prevTab)}!${colLetter(MONTH_COLS.budgetValue)}${remainderRow}`;
-			formula = `=IF(-${cell} > 0, -${cell}, 0)`;
-		} else {
-			formula = String(values[overdraftRow - 1]?.[MONTH_COLS.twd] ?? "").replace(/'\d+ 月'/g, `'${prevTab}'`);
-		}
+	// Carry rebuild. Split layout: each currency rolls its own UNSETTLED
+	// deficit — 月…餘額+…透支沖銷 is negative exactly when the 沖銷 could not
+	// fire — independently of the other currency and of 月剩餘. Legacy tabs
+	// keep the single TWD carry anchored at 月剩餘/剩餘. The duplicated grid
+	// mirrors prevTab's layout, so every anchor row is findable here — a plain
+	// tab-name swap would keep a stale row reference from whichever layout the
+	// formula was born in.
+	const carryWrite = (row: number, col: number, value: string | number) => {
 		requests.push({
 			updateCells: {
-				start: { sheetId, rowIndex: overdraftRow - 1, columnIndex: MONTH_COLS.twd },
-				rows: [{ values: [cellData(formula)] }],
+				start: { sheetId, rowIndex: row - 1, columnIndex: col },
+				rows: [{ values: [cellData(value)] }],
 				fields: "userEnteredValue",
 			},
 		});
+	};
+	const legacyCarryFormula = (fallbackRow: number): string => {
+		const remainderRow = findRowByLabels(values, MONTH_COLS.budgetLabel, [MONTH_REMAINDER_LABEL, REMAINDER_LABEL]);
+		if (remainderRow !== null) {
+			const cell = `${quoteTab(prevTab)}!${colLetter(MONTH_COLS.budgetValue)}${remainderRow}`;
+			return `=IF(-${cell} > 0, -${cell}, 0)`;
+		}
+		return String(values[fallbackRow - 1]?.[MONTH_COLS.twd] ?? "").replace(/'\d+ 月'/g, `'${prevTab}'`);
+	};
+	const usdCarryRow = findRowByValue(values, MONTH_COLS.item, PREV_USD_OVERDRAFT_LABEL);
+	const ntdCarryRow = findRowByValue(values, MONTH_COLS.item, PREV_NTD_OVERDRAFT_LABEL);
+	if (usdCarryRow !== null || ntdCarryRow !== null) {
+		const unsettled = (netLabel: string, writeoffLabel: string): string | null => {
+			const netRow = findRowByValue(values, MONTH_COLS.budgetLabel, netLabel);
+			const writeoffRow = findRowByValue(values, MONTH_COLS.budgetLabel, writeoffLabel);
+			if (netRow === null || writeoffRow === null) return null;
+			const D = colLetter(MONTH_COLS.budgetValue);
+			const sum = `${quoteTab(prevTab)}!${D}${netRow}+${quoteTab(prevTab)}!${D}${writeoffRow}`;
+			return `=IF(-(${sum}) > 0, -(${sum}), 0)`;
+		};
+		if (usdCarryRow !== null) {
+			// Degenerate (previous month predates the 月 view): nothing to anchor
+			// the USD side on — carry 0. The row's E conversion formula is
+			// row-relative and survives duplication; only D is rewritten.
+			carryWrite(usdCarryRow, MONTH_COLS.usd, unsettled(MONTH_USD_NET_LABEL, USD_WRITEOFF_LABEL) ?? 0);
+		}
+		if (ntdCarryRow !== null) {
+			carryWrite(
+				ntdCarryRow,
+				MONTH_COLS.twd,
+				unsettled(MONTH_NTD_NET_LABEL, NTD_WRITEOFF_LABEL) ?? legacyCarryFormula(ntdCarryRow),
+			);
+		}
+	} else {
+		const overdraftRow = findRowByValue(values, MONTH_COLS.item, OVERDRAFT_LABEL);
+		if (overdraftRow !== null) {
+			carryWrite(overdraftRow, MONTH_COLS.twd, legacyCarryFormula(overdraftRow));
+		}
 	}
 
 	// The date column restarts each month — clear it across the expense window.

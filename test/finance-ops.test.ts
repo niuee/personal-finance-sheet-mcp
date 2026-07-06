@@ -156,6 +156,30 @@ function migratedMonthGrid(): unknown[][] {
 	return g;
 }
 
+/** migratedMonthGrid with the split carry: 上月美金透支 (row 3) + 上月新臺幣透支 (row 4); everything below shifts one row down. */
+function splitCarryGrid(): unknown[][] {
+	const g = migratedMonthGrid();
+	g.splice(
+		2,
+		1,
+		["", "上月美金透支", "透支", "=IF(-('8 月'!D17+'8 月'!D18) > 0, -('8 月'!D17+'8 月'!D18), 0)", '=D3*GOOGLEFINANCE("CURRENCY:USDTWD")', "USD"],
+		["", "上月新臺幣透支", "透支", "", "=IF(-('8 月'!D19+'8 月'!D20) > 0, -('8 月'!D19+'8 月'!D20), 0)", "TWD"],
+	);
+	return g;
+}
+
+/** Old-layout monthGrid with the split carry rows but no 月 view — the degenerate rebuild case (剩餘 shifts to row 16). */
+function splitCarryOldLayoutGrid(): unknown[][] {
+	const g = monthGrid();
+	g.splice(
+		2,
+		1,
+		["", "上月美金透支", "透支", 0, '=D3*GOOGLEFINANCE("CURRENCY:USDTWD")', "USD"],
+		["", "上月新臺幣透支", "透支", "", "=IF(-'8 月'!D15 > 0, -'8 月'!D15, 0)", "TWD"],
+	);
+	return g;
+}
+
 /** migratedMonthGrid + a 乾坤大挪移 transfer block at G33:M36 (data slot row 35 empty). */
 function transferGrid(): unknown[][] {
 	const g = migratedMonthGrid();
@@ -1233,6 +1257,51 @@ describe("startMonth", () => {
 
 		expect(result.lunchCleared).toBe(false);
 		expect(result.lunchWarning).toMatch(/日期|中餐預算/);
+	});
+
+	it("rebuilds both carry rows per currency on the split layout", async () => {
+		const client = startMonthClient(splitCarryGrid(), ["9 月", "8 月"]);
+
+		const result = await startMonth(client, 10);
+
+		const requests = (client.batchUpdate as any).mock.calls[1][0];
+		// 上月美金透支 (row 3) D ← the prev month's unsettled USD deficit:
+		// 月美金餘額 (row 18) + 美金透支沖銷 (row 19) in the shifted grid.
+		const usdWrite = requests.find(
+			(r: any) => r.updateCells && r.updateCells.start.rowIndex === 2 && r.updateCells.start.columnIndex === 3,
+		);
+		expect(usdWrite.updateCells.rows[0].values).toEqual([
+			{ userEnteredValue: { formulaValue: "=IF(-('9 月'!D18+'9 月'!D19) > 0, -('9 月'!D18+'9 月'!D19), 0)" } },
+		]);
+		// 上月新臺幣透支 (row 4) E ← 月新臺幣餘額 (20) + 新臺幣透支沖銷 (21).
+		const ntdWrite = requests.find(
+			(r: any) => r.updateCells && r.updateCells.start.rowIndex === 3 && r.updateCells.start.columnIndex === 4,
+		);
+		expect(ntdWrite.updateCells.rows[0].values).toEqual([
+			{ userEnteredValue: { formulaValue: "=IF(-('9 月'!D20+'9 月'!D21) > 0, -('9 月'!D20+'9 月'!D21), 0)" } },
+		]);
+		// Both carry rows are recurring — kept, never deleted.
+		expect(result.kept).toContain("上月美金透支");
+		expect(result.kept).toContain("上月新臺幣透支");
+	});
+
+	it("degenerate split rows over an un-migrated month: USD gets 0, NTD falls back to the 剩餘 anchor", async () => {
+		const client = startMonthClient(splitCarryOldLayoutGrid(), ["9 月", "8 月"]);
+
+		await startMonth(client, 10);
+
+		const requests = (client.batchUpdate as any).mock.calls[1][0];
+		const usdWrite = requests.find(
+			(r: any) => r.updateCells && r.updateCells.start.rowIndex === 2 && r.updateCells.start.columnIndex === 3,
+		);
+		expect(usdWrite.updateCells.rows[0].values).toEqual([{ userEnteredValue: { numberValue: 0 } }]);
+		const ntdWrite = requests.find(
+			(r: any) => r.updateCells && r.updateCells.start.rowIndex === 3 && r.updateCells.start.columnIndex === 4,
+		);
+		// 剩餘 sits at row 16 after the two carry rows shifted the old grid down one.
+		expect(ntdWrite.updateCells.rows[0].values).toEqual([
+			{ userEnteredValue: { formulaValue: "=IF(-'9 月'!D16 > 0, -'9 月'!D16, 0)" } },
+		]);
 	});
 });
 

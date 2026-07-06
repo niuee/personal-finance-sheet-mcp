@@ -213,7 +213,7 @@ export function registerTailoredTools(server: McpServer, client: SheetsClient): 
 
 	server.tool(
 		"start_month",
-		"Open a new month: duplicates the previous month's tab (keeping all formulas and recurring items like subscriptions), rewires 上月透支 to the month just ended, clears one-off expenses, and empties the 中餐預算 lunch log so the budget's 剩餘 resets. Refuses if the tab already exists.",
+		"Open a new month: duplicates the previous month's tab (keeping all formulas and recurring items like subscriptions), rewires the 上月…透支 carries to the month just ended (per-currency on the split layout), clears one-off expenses, and empties the 中餐預算 lunch log so the budget's 剩餘 resets. Refuses if the tab already exists.",
 		{ month: monthParam.describe("The month to create, 1-12") },
 		async ({ month }) => {
 			try {
