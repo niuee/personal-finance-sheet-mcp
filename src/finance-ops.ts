@@ -8,10 +8,13 @@ import {
 	BUDGET_HEADER_LABEL,
 	currentMonthTab,
 	MONTH_COLS,
+	MONTH_NTD_NET_LABEL,
+	MONTH_REMAINDER_LABEL,
 	MONTH_USD_NET_LABEL,
 	monthTabName,
 	NTD_BALANCE_LABEL,
 	NTD_INCOME_LABEL,
+	NTD_PAYMENT_LABEL,
 	NTD_SPENDING_LABEL,
 	OVERDRAFT_LABEL,
 	parseDateInput,
@@ -22,7 +25,9 @@ import {
 	REMAINDER_LABEL,
 	REPAYMENT_LABEL,
 	SALARY_LABEL,
+	TOTAL_NTD_BALANCE_LABEL,
 	TOTAL_ROW_LABEL,
+	TOTAL_USD_BALANCE_LABEL,
 	TRIP_HEADER_DATE,
 	TRIP_HEADER_SHOP,
 	TRIP_BLOCK_WIDTH,
@@ -125,6 +130,166 @@ export function findIncomeWindow(values: unknown[][]): IncomeWindow | null {
 	const remainderRow = findRowByValue(values, MONTH_COLS.budgetLabel, REMAINDER_LABEL);
 	if (remainderRow !== null) return { start: budgetRow + 1, end: remainderRow - 1, migrated: false };
 	return null;
+}
+
+export interface MigrationChange {
+	cell: string;
+	before: string;
+	after: string;
+}
+
+export interface MigrationResult {
+	changes: MigrationChange[];
+	deletedRows: Array<{ row: number; item: string; values: unknown[] }>;
+}
+
+/**
+ * Upgrade an old-layout monthly tab to the 月剩餘 income layout in one batch:
+ * 支付幣別 column F (back-tagged from the USD column), income 幣別 tags,
+ * 剩餘 → 月美金餘額/月新臺幣餘額/月剩餘, 美金支付/新臺幣支付 deleted,
+ * 收入/支出 rewritten as SUMIFs, running balances renamed 總…餘額.
+ * `values` must be a FORMULA render of GRID_READ. Every overwrite/delete is
+ * reported with its previous contents so it can be reverted by hand.
+ */
+export async function migrateIncomeLayout(
+	client: SheetsClient,
+	tab: string,
+	values: unknown[][],
+	sheetId: number,
+): Promise<MigrationResult> {
+	const win = findIncomeWindow(values);
+	if (win === null || win.migrated) {
+		throw new Error(`migrateIncomeLayout called on ${tab} but its layout is not the expected old one.`);
+	}
+	const expense = findExpenseWindow(values, tab);
+	const remRow = win.end + 1; // the old 剩餘 row
+	const cellStr = (r: number, c: number) => String(values[r - 1]?.[c] ?? "");
+	const labelRow = (l: string) => findRowByValue(values, MONTH_COLS.budgetLabel, l);
+
+	const usdIncRow = labelRow(USD_INCOME_LABEL);
+	const usdSpRow = labelRow(USD_SPENDING_LABEL);
+	const usdBalRow = labelRow(USD_BALANCE_LABEL);
+	const ntdIncRow = labelRow(NTD_INCOME_LABEL);
+	const ntdSpRow = labelRow(NTD_SPENDING_LABEL);
+	const ntdBalRow = labelRow(NTD_BALANCE_LABEL);
+	if (!usdIncRow || !usdSpRow || !usdBalRow || !ntdIncRow || !ntdSpRow || !ntdBalRow) {
+		throw new Error(`Cannot migrate ${tab}: its 銀行餘額 block is missing or incomplete — set it up by hand first.`);
+	}
+	const bankTop = Math.min(usdIncRow, usdSpRow, usdBalRow, ntdIncRow, ntdSpRow, ntdBalRow);
+	if (bankTop <= remRow) {
+		throw new Error(`Cannot migrate ${tab}: the 銀行餘額 block sits above the ${REMAINDER_LABEL} row — unexpected layout.`);
+	}
+	const payRows: Array<{ label: string; row: number }> = [];
+	for (const l of [USD_PAYMENT_LABEL, NTD_PAYMENT_LABEL]) {
+		const row = labelRow(l);
+		if (row === null) continue;
+		if (row <= remRow || row >= bankTop) {
+			throw new Error(`Cannot migrate ${tab}: "${l}" is not between ${REMAINDER_LABEL} and the 銀行餘額 block — unexpected layout.`);
+		}
+		payRows.push({ label: l, row });
+	}
+	// Rows ≤ remRow keep their position; below it: +2 for the insert, −1 per deleted pay row above.
+	const finalRow = (r: number) => (r <= remRow ? r : r + 2 - payRows.filter((p) => p.row < r).length);
+
+	const C = colLetter(MONTH_COLS.tag);
+	const D = colLetter(MONTH_COLS.budgetValue);
+	const F = colLetter(MONTH_COLS.paidWith);
+	const changes: MigrationChange[] = [];
+	const deletedRows: MigrationResult["deletedRows"] = [];
+	const requests: object[] = [];
+
+	// Structural ops first, so every write below can use final row positions.
+	requests.push({
+		insertDimension: {
+			range: { sheetId, dimension: "ROWS", startIndex: remRow, endIndex: remRow + 2 },
+			inheritFromBefore: true,
+		},
+	});
+	for (const p of [...payRows].sort((a, b) => b.row - a.row)) {
+		requests.push({
+			deleteDimension: { range: { sheetId, dimension: "ROWS", startIndex: p.row + 2 - 1, endIndex: p.row + 2 } },
+		});
+		deletedRows.push({ row: p.row, item: p.label, values: values[p.row - 1] ?? [] });
+	}
+
+	const write = (row: number, col: number, value: string, before: string) => {
+		requests.push({
+			updateCells: {
+				start: { sheetId, rowIndex: row - 1, columnIndex: col },
+				rows: [{ values: [cellData(value)] }],
+				fields: "userEnteredValue",
+			},
+		});
+		changes.push({ cell: `${colLetter(col)}${row}`, before, after: value });
+	};
+
+	write(2, MONTH_COLS.paidWith, "支付幣別", cellStr(2, MONTH_COLS.paidWith));
+
+	// Back-tag 支付幣別 across the expense window: USD-priced → USD, else TWD;
+	// existing F values (explicit paid_with) and empty rows are left untouched.
+	const expEnd = Math.min(expense.end, expense.totalRow - 1);
+	const backTags: object[] = [];
+	for (let r = expense.start; r <= expEnd; r++) {
+		const hasItem = cellStr(r, MONTH_COLS.item).trim() !== "";
+		const existing = cellStr(r, MONTH_COLS.paidWith).trim();
+		const tag = !hasItem || existing !== "" ? null : cellStr(r, MONTH_COLS.usd).trim() !== "" ? "USD" : "TWD";
+		backTags.push({ values: [cellData(tag)] });
+		if (tag !== null) changes.push({ cell: `${F}${r}`, before: existing, after: tag });
+	}
+	requests.push({
+		updateCells: {
+			start: { sheetId, rowIndex: expense.start - 1, columnIndex: MONTH_COLS.paidWith },
+			rows: backTags,
+			fields: "userEnteredValue",
+		},
+	});
+
+	// Existing income rows are TWD (USD income did not exist before this layout).
+	const incomeTags: object[] = [];
+	for (let r = win.start; r <= win.end; r++) {
+		const hasItem = cellStr(r, MONTH_COLS.item).trim() !== "";
+		incomeTags.push({ values: [cellData(hasItem ? "TWD" : null)] });
+		if (hasItem) changes.push({ cell: `${C}${r}`, before: cellStr(r, MONTH_COLS.tag), after: "TWD" });
+	}
+	requests.push({
+		updateCells: {
+			start: { sheetId, rowIndex: win.start - 1, columnIndex: MONTH_COLS.tag },
+			rows: incomeTags,
+			fields: "userEnteredValue",
+		},
+	});
+
+	// 剩餘 row + the two inserted rows become the 月 view.
+	const usdNet = `=${D}${finalRow(usdIncRow)}-${D}${finalRow(usdSpRow)}`;
+	const ntdNet = `=${D}${finalRow(ntdIncRow)}-${D}${finalRow(ntdSpRow)}`;
+	const monthRemainder = `=${D}${remRow}*GOOGLEFINANCE("CURRENCY:USDTWD")+${D}${remRow + 1}`;
+	requests.push({
+		updateCells: {
+			start: { sheetId, rowIndex: remRow - 1, columnIndex: MONTH_COLS.item },
+			rows: [
+				{ values: [cellData(MONTH_USD_NET_LABEL), cellData(null), cellData(usdNet)] },
+				{ values: [cellData(MONTH_NTD_NET_LABEL), cellData(null), cellData(ntdNet)] },
+				{ values: [cellData(MONTH_REMAINDER_LABEL), cellData(null), cellData(monthRemainder)] },
+			],
+			fields: "userEnteredValue",
+		},
+	});
+	changes.push({ cell: `${colLetter(MONTH_COLS.item)}${remRow}`, before: REMAINDER_LABEL, after: MONTH_USD_NET_LABEL });
+	changes.push({ cell: `${D}${remRow}`, before: cellStr(remRow, MONTH_COLS.budgetValue), after: usdNet });
+
+	const usd = colLetter(MONTH_COLS.usd);
+	const twd = colLetter(MONTH_COLS.twd);
+	const incRange = (col: string) => `${col}${win.start}:${col}${win.end}`;
+	const expRange = (col: string) => `${col}${expense.start}:${col}${expense.end}`;
+	write(finalRow(usdIncRow), MONTH_COLS.budgetValue, `=SUMIF(${incRange(C)},"USD",${incRange(D)})`, cellStr(usdIncRow, MONTH_COLS.budgetValue));
+	write(finalRow(usdSpRow), MONTH_COLS.budgetValue, `=SUMIF(${expRange(F)},"USD",${expRange(usd)})`, cellStr(usdSpRow, MONTH_COLS.budgetValue));
+	write(finalRow(ntdIncRow), MONTH_COLS.budgetValue, `=SUMIF(${incRange(C)},"TWD",${incRange(D)})`, cellStr(ntdIncRow, MONTH_COLS.budgetValue));
+	write(finalRow(ntdSpRow), MONTH_COLS.budgetValue, `=SUMIF(${expRange(F)},"TWD",${expRange(twd)})`, cellStr(ntdSpRow, MONTH_COLS.budgetValue));
+	write(finalRow(usdBalRow), MONTH_COLS.item, TOTAL_USD_BALANCE_LABEL, USD_BALANCE_LABEL);
+	write(finalRow(ntdBalRow), MONTH_COLS.item, TOTAL_NTD_BALANCE_LABEL, NTD_BALANCE_LABEL);
+
+	await client.batchUpdate(requests);
+	return { changes, deletedRows };
 }
 
 export function quoteTab(tab: string): string {
