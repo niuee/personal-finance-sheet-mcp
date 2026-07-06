@@ -9,6 +9,7 @@ import {
 	LUNCH_COLS,
 	LUNCH_DEFAULT_ITEM,
 	LUNCH_SECTION_LABEL,
+	LUNCH_SECTION_LEGACY_LABEL,
 	LUNCH_TOTAL_LABEL,
 	MONTH_COLS,
 	MONTH_NTD_NET_LABEL,
@@ -100,8 +101,9 @@ describe("conventions", () => {
 		expect(TOTAL_NTD_BALANCE_LABEL).toBe("總新臺幣餘額");
 	});
 
-	it("exports the 中餐預算 lunch-section anchors", () => {
-		expect(LUNCH_SECTION_LABEL).toBe("中餐預算");
+	it("exports the 午餐預算 lunch-section anchors", () => {
+		expect(LUNCH_SECTION_LABEL).toBe("午餐預算");
+		expect(LUNCH_SECTION_LEGACY_LABEL).toBe("中餐預算");
 		expect(LUNCH_TOTAL_LABEL).toBe("總和");
 		expect(LUNCH_DEFAULT_ITEM).toBe("中餐");
 		expect(LUNCH_ADJUST_LABEL).toBe("午餐超支或回補");
@@ -201,6 +203,7 @@ describe("conventions", () => {
 			"add_transfer",
 			"當筆總額外花費",
 			"中餐預算",
+			"午餐預算",
 			"add_lunch",
 			"午餐超支或回補",
 			"編列預算",
