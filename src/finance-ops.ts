@@ -17,6 +17,7 @@ import {
 	NTD_INCOME_LABEL,
 	NTD_PAYMENT_LABEL,
 	NTD_SPENDING_LABEL,
+	NTD_WRITEOFF_LABEL,
 	OVERDRAFT_LABEL,
 	parseDateInput,
 	PREV_NTD_BALANCE_LABEL,
@@ -36,10 +37,10 @@ import {
 	TRIP_MAX_BLOCK_ROWS,
 	TRIP_TOTAL_LABEL,
 	USD_BALANCE_LABEL,
+	USD_WRITEOFF_LABEL,
 	USD_INCOME_LABEL,
 	USD_PAYMENT_LABEL,
 	USD_SPENDING_LABEL,
-	WRITEOFF_LABEL,
 } from "./conventions";
 import type { SheetsClient } from "./sheets-client";
 
@@ -149,7 +150,7 @@ export interface MigrationResult {
 /**
  * Upgrade an old-layout monthly tab to the 月剩餘 income layout in one batch:
  * 支付幣別 column F (back-tagged from the USD column), income 幣別 tags,
- * 剩餘 → 月美金餘額/月新臺幣餘額/透支沖銷/月剩餘, 美金支付/新臺幣支付 deleted,
+ * 剩餘 → 月美金餘額/美金透支沖銷/月新臺幣餘額/新臺幣透支沖銷/月剩餘, 美金支付/新臺幣支付 deleted,
  * 收入/支出 rewritten as SUMIFs, running balances renamed 總…餘額.
  * `values` must be a FORMULA render of GRID_READ. Every overwrite/delete is
  * reported with its previous contents so it can be reverted by hand.
@@ -191,8 +192,8 @@ export async function migrateIncomeLayout(
 		}
 		payRows.push({ label: l, row });
 	}
-	// Rows ≤ remRow keep their position; below it: +3 for the insert, −1 per deleted pay row above.
-	const finalRow = (r: number) => (r <= remRow ? r : r + 3 - payRows.filter((p) => p.row < r).length);
+	// Rows ≤ remRow keep their position; below it: +4 for the insert, −1 per deleted pay row above.
+	const finalRow = (r: number) => (r <= remRow ? r : r + 4 - payRows.filter((p) => p.row < r).length);
 
 	const C = colLetter(MONTH_COLS.tag);
 	const D = colLetter(MONTH_COLS.budgetValue);
@@ -204,13 +205,13 @@ export async function migrateIncomeLayout(
 	// Structural ops first, so every write below can use final row positions.
 	requests.push({
 		insertDimension: {
-			range: { sheetId, dimension: "ROWS", startIndex: remRow, endIndex: remRow + 3 },
+			range: { sheetId, dimension: "ROWS", startIndex: remRow, endIndex: remRow + 4 },
 			inheritFromBefore: true,
 		},
 	});
 	for (const p of [...payRows].sort((a, b) => b.row - a.row)) {
 		requests.push({
-			deleteDimension: { range: { sheetId, dimension: "ROWS", startIndex: p.row + 3 - 1, endIndex: p.row + 3 } },
+			deleteDimension: { range: { sheetId, dimension: "ROWS", startIndex: p.row + 4 - 1, endIndex: p.row + 4 } },
 		});
 		deletedRows.push({ row: p.row, item: p.label, values: values[p.row - 1] ?? [] });
 	}
@@ -268,28 +269,25 @@ export async function migrateIncomeLayout(
 		},
 	});
 
-	// 剩餘 row + the three inserted rows become the 月 view.
+	// 剩餘 row + the four inserted rows become the 月 view. Each currency's
+	// write-off settles ITS month-deficit from ITS bank when that 總…餘額 stays
+	// non-negative; a fully settled month's 月剩餘 closes at 0 and nothing
+	// rolls to next month's 上月透支.
 	const usd = colLetter(MONTH_COLS.usd);
 	const twd = colLetter(MONTH_COLS.twd);
 	const usdNet = `=${D}${finalRow(usdIncRow)}-${D}${finalRow(usdSpRow)}`;
 	const ntdNet = `=${D}${finalRow(ntdIncRow)}-${D}${finalRow(ntdSpRow)}`;
-	// All-or-nothing write-off: settle the carried 上月透支 from the bank when
-	// the post-payment 總新臺幣餘額 stays non-negative (支出 already includes
-	// the carry, so that IS "the bank could cover it") — only fresh
-	// overspending rolls forward.
-	const overdraftRow = findRowByValue(values, MONTH_COLS.item, OVERDRAFT_LABEL);
-	const writeoff =
-		overdraftRow !== null
-			? `=IF(${D}${finalRow(ntdBalRow)}>=0, ${twd}${finalRow(overdraftRow)}, 0)`
-			: 0;
-	const monthRemainder = `=${D}${remRow}*GOOGLEFINANCE("CURRENCY:USDTWD")+${D}${remRow + 1}+${D}${remRow + 2}`;
+	const usdWriteoff = `=IF(AND(${D}${remRow}<0,${D}${finalRow(usdBalRow)}>=0),-${D}${remRow},0)`;
+	const ntdWriteoff = `=IF(AND(${D}${remRow + 2}<0,${D}${finalRow(ntdBalRow)}>=0),-${D}${remRow + 2},0)`;
+	const monthRemainder = `=(${D}${remRow}+${D}${remRow + 1})*GOOGLEFINANCE("CURRENCY:USDTWD")+${D}${remRow + 2}+${D}${remRow + 3}`;
 	requests.push({
 		updateCells: {
 			start: { sheetId, rowIndex: remRow - 1, columnIndex: MONTH_COLS.item },
 			rows: [
 				{ values: [cellData(MONTH_USD_NET_LABEL), cellData(null), cellData(usdNet)] },
+				{ values: [cellData(USD_WRITEOFF_LABEL), cellData(null), cellData(usdWriteoff)] },
 				{ values: [cellData(MONTH_NTD_NET_LABEL), cellData(null), cellData(ntdNet)] },
-				{ values: [cellData(WRITEOFF_LABEL), cellData(null), cellData(writeoff)] },
+				{ values: [cellData(NTD_WRITEOFF_LABEL), cellData(null), cellData(ntdWriteoff)] },
 				{ values: [cellData(MONTH_REMAINDER_LABEL), cellData(null), cellData(monthRemainder)] },
 			],
 			fields: "userEnteredValue",
@@ -326,7 +324,8 @@ const NON_INCOME_LABELS = new Set<string>([
 	MONTH_USD_NET_LABEL,
 	MONTH_NTD_NET_LABEL,
 	MONTH_REMAINDER_LABEL,
-	WRITEOFF_LABEL,
+	USD_WRITEOFF_LABEL,
+	NTD_WRITEOFF_LABEL,
 	USD_PAYMENT_LABEL,
 	NTD_PAYMENT_LABEL,
 	TOTAL_ROW_LABEL,
@@ -604,7 +603,8 @@ export async function monthSummary(client: SheetsClient, month?: number) {
 		剩餘: cellAt(rowByItem(REMAINDER_LABEL), MONTH_COLS.budgetValue),
 		月美金餘額: cellAt(rowByItem(MONTH_USD_NET_LABEL), MONTH_COLS.budgetValue),
 		月新臺幣餘額: cellAt(rowByItem(MONTH_NTD_NET_LABEL), MONTH_COLS.budgetValue),
-		透支沖銷: cellAt(rowByItem(WRITEOFF_LABEL), MONTH_COLS.budgetValue),
+		美金透支沖銷: cellAt(rowByItem(USD_WRITEOFF_LABEL), MONTH_COLS.budgetValue),
+		新臺幣透支沖銷: cellAt(rowByItem(NTD_WRITEOFF_LABEL), MONTH_COLS.budgetValue),
 		月剩餘: cellAt(rowByItem(MONTH_REMAINDER_LABEL), MONTH_COLS.budgetValue),
 		// 銀行餘額 block — per-currency running balance (null on tabs that predate it).
 		美金收入: cellAt(rowByItem(USD_INCOME_LABEL), MONTH_COLS.budgetValue),
