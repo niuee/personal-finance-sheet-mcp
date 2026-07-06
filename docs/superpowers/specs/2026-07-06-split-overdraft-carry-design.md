@@ -112,9 +112,13 @@ label at execution time (row numbers below are illustrative):
    the right (shifted) cells. Report every overwritten value.
 
 **Caveat**: complete each tab's insert+rename atomically, and do not run
-start_month until the whole backfill finishes — a half-converted tab
-(USD row inserted, old row not yet renamed) re-anchors its legacy TWD
-carry but silently drops any USD deficit.
+start_month until the whole backfill finishes. Half-converted states are
+degraded, not safe: with the USD row inserted but the old row not yet
+renamed, start_month carries the USD deficit correctly and re-anchors
+the legacy TWD row, but an unsettled USD deficit can transiently
+double-count (it also depresses the 月剩餘 the legacy row reads); in the
+reverse state (renamed, USD row not yet inserted) a USD deficit is
+silently dropped.
 
 ## Out of scope
 
