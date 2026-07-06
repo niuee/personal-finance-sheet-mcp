@@ -21,6 +21,7 @@ import {
 	PREV_NTD_BALANCE_LABEL,
 	PREV_USD_BALANCE_LABEL,
 	previousMonth,
+	RECURRING_INCOME,
 	RECURRING_ITEMS,
 	REMAINDER_LABEL,
 	REPAYMENT_LABEL,
@@ -702,12 +703,12 @@ export async function startMonth(client: SheetsClient, month: number) {
 	// row deletes below; a delete above only shifts the written cell (with its
 	// label) up in lockstep, and the cross-tab reference into prevTab is
 	// unaffected. Skipped on tabs that predate the block (rows not found).
-	for (const [prevLabel, balanceLabel] of [
-		[PREV_USD_BALANCE_LABEL, USD_BALANCE_LABEL],
-		[PREV_NTD_BALANCE_LABEL, NTD_BALANCE_LABEL],
+	for (const [prevLabel, balanceLabels] of [
+		[PREV_USD_BALANCE_LABEL, [TOTAL_USD_BALANCE_LABEL, USD_BALANCE_LABEL]],
+		[PREV_NTD_BALANCE_LABEL, [TOTAL_NTD_BALANCE_LABEL, NTD_BALANCE_LABEL]],
 	] as const) {
 		const prevBalanceRow = findRowByValue(values, MONTH_COLS.budgetLabel, prevLabel);
-		const balanceRow = findRowByValue(values, MONTH_COLS.budgetLabel, balanceLabel);
+		const balanceRow = findRowByLabels(values, MONTH_COLS.budgetLabel, balanceLabels);
 		if (prevBalanceRow === null || balanceRow === null) continue;
 		const ref = `=${quoteTab(prevTab)}!${colLetter(MONTH_COLS.budgetValue)}${balanceRow}`;
 		requests.push({
@@ -731,6 +732,20 @@ export async function startMonth(client: SheetsClient, month: number) {
 			rowsToDelete.push(r);
 		}
 	}
+	// Ad-hoc income rows are one-offs too: keep 沛還/薪水, delete the rest.
+	// Same lockstep argument as the carry-over writes above: these deletes run
+	// after the updateCells requests, so earlier writes shift with their rows.
+	const clearedIncomes: string[] = [];
+	const incomeWin = findIncomeWindow(values);
+	if (incomeWin !== null) {
+		for (let r = incomeWin.start; r <= incomeWin.end; r++) {
+			const incomeItem = String(values[r - 1]?.[MONTH_COLS.item] ?? "").trim();
+			if (incomeItem === "" || RECURRING_INCOME.has(incomeItem)) continue;
+			clearedIncomes.push(incomeItem);
+			rowsToDelete.push(r);
+		}
+	}
+
 	// Bottom-up so earlier deletions don't shift later indices.
 	for (const r of [...rowsToDelete].sort((a, b) => b - a)) {
 		requests.push({
@@ -739,7 +754,7 @@ export async function startMonth(client: SheetsClient, month: number) {
 	}
 	await client.batchUpdate(requests);
 
-	return { tab: newTab, duplicatedFrom: prevTab, kept, cleared };
+	return { tab: newTab, duplicatedFrom: prevTab, kept, cleared, clearedIncomes };
 }
 
 export interface TripEntryParams {

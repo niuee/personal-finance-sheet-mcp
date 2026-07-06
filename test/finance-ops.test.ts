@@ -715,6 +715,7 @@ describe("startMonth", () => {
 			duplicatedFrom: "9 月",
 			kept: ["上月透支", "Google Cloud", "ElevenLabs", "iCloud", "電話費"],
 			cleared: ["近鐵 80000系"],
+			clearedIncomes: [],
 		});
 	});
 
@@ -754,6 +755,41 @@ describe("startMonth", () => {
 			(r: any) => r.updateCells && r.updateCells.start.columnIndex === MONTH_COLS.budgetValue,
 		);
 		expect(carryWrites).toEqual([]);
+	});
+
+	it("clears ad-hoc income rows but keeps 沛還/薪水, rewiring 上月餘額 to the 總…餘額 rows", async () => {
+		const client = startMonthClient(migratedMonthGrid(), ["9 月", "8 月"]);
+
+		const result = await startMonth(client, 10);
+
+		const requests = (client.batchUpdate as any).mock.calls[1][0];
+		// carry-over: 上月美金餘額 (row 24) ← 9 月's 總美金餘額 (row 25); NTD likewise (28 ← 29)
+		const carryWrites = requests.filter(
+			(r: any) => r.updateCells && r.updateCells.start.columnIndex === MONTH_COLS.budgetValue,
+		);
+		expect(carryWrites).toEqual([
+			{
+				updateCells: {
+					start: { sheetId: 555, rowIndex: 23, columnIndex: 3 },
+					rows: [{ values: [{ userEnteredValue: { formulaValue: "='9 月'!D25" } }] }],
+					fields: "userEnteredValue",
+				},
+			},
+			{
+				updateCells: {
+					start: { sheetId: 555, rowIndex: 27, columnIndex: 3 },
+					rows: [{ values: [{ userEnteredValue: { formulaValue: "='9 月'!D29" } }] }],
+					fields: "userEnteredValue",
+				},
+			},
+		]);
+		// 多一個月薪水 (row 16) is the only ad-hoc income; expense rows are all recurring
+		const deletes = requests.filter((r: any) => r.deleteDimension);
+		expect(deletes).toEqual([
+			{ deleteDimension: { range: { sheetId: 555, dimension: "ROWS", startIndex: 15, endIndex: 16 } } },
+		]);
+		expect(result.cleared).toEqual([]);
+		expect(result.clearedIncomes).toEqual(["多一個月薪水"]);
 	});
 });
 
