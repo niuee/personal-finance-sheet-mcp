@@ -296,11 +296,14 @@ describe("migrateIncomeLayout", () => {
 		g[3] = ["", "Google Cloud", "訂閱", 11.53, '=D4*GOOGLEFINANCE("CURRENCY:USDTWD")', "TWD"];
 		const client = fakeClient(g);
 
-		await migrateIncomeLayout(client, "9 月", g, 111);
+		const result = await migrateIncomeLayout(client, "9 月", g, 111);
 
 		const backTag = (client.batchUpdate as any).mock.calls[0][0][4];
-		// row 4 already says TWD (explicit paid_with) — left untouched, not overwritten with USD
-		expect(backTag.updateCells.rows[1]).toEqual({ values: [{}] });
+		// row 4 already says TWD (explicit paid_with) — written back verbatim, not overwritten
+		// with USD (updateCells would clear an omitted masked field, so it cannot be skipped)
+		expect(backTag.updateCells.rows[1]).toEqual({ values: [{ userEnteredValue: { stringValue: "TWD" } }] });
+		// and the write-back is not reported as a change — nothing changed
+		expect(result.changes.filter((c) => c.cell === "F4")).toEqual([]);
 	});
 
 	it("refuses when the 銀行餘額 block is missing", async () => {

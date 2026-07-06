@@ -226,15 +226,21 @@ export async function migrateIncomeLayout(
 	write(2, MONTH_COLS.paidWith, "支付幣別", cellStr(2, MONTH_COLS.paidWith));
 
 	// Back-tag 支付幣別 across the expense window: USD-priced → USD, else TWD;
-	// existing F values (explicit paid_with) and empty rows are left untouched.
+	// existing F values (explicit paid_with) are preserved and empty rows stay empty.
 	const expEnd = Math.min(expense.end, expense.totalRow - 1);
 	const backTags: object[] = [];
 	for (let r = expense.start; r <= expEnd; r++) {
 		const hasItem = cellStr(r, MONTH_COLS.item).trim() !== "";
 		const existing = cellStr(r, MONTH_COLS.paidWith).trim();
-		const tag = !hasItem || existing !== "" ? null : cellStr(r, MONTH_COLS.usd).trim() !== "" ? "USD" : "TWD";
+		if (existing !== "") {
+			// updateCells clears mask fields omitted from the cell data, so an
+			// explicit pre-migration 支付幣別 must be written back, not skipped.
+			backTags.push({ values: [cellData(existing)] });
+			continue;
+		}
+		const tag = hasItem ? (cellStr(r, MONTH_COLS.usd).trim() !== "" ? "USD" : "TWD") : null;
 		backTags.push({ values: [cellData(tag)] });
-		if (tag !== null) changes.push({ cell: `${F}${r}`, before: existing, after: tag });
+		if (tag !== null) changes.push({ cell: `${F}${r}`, before: "", after: tag });
 	}
 	requests.push({
 		updateCells: {
