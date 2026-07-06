@@ -199,12 +199,13 @@ describe("addExpense", () => {
 						{},
 						{},
 						{ userEnteredValue: { numberValue: 250 } },
+						{ userEnteredValue: { stringValue: "TWD" } },
 					] }],
 					fields: "userEnteredValue",
 				},
 			},
 		]);
-		expect(result).toMatchObject({ tab: "9 月", row: 9, inserted: false, tag: null });
+		expect(result).toMatchObject({ tab: "9 月", row: 9, inserted: false, tag: null, paidWith: "TWD" });
 	});
 
 	it("writes the 類別 tag into the row when given", async () => {
@@ -218,6 +219,7 @@ describe("addExpense", () => {
 			{ userEnteredValue: { stringValue: "吃喝" } },
 			{},
 			{ userEnteredValue: { numberValue: 250 } },
+			{ userEnteredValue: { stringValue: "TWD" } },
 		]);
 		expect(result).toMatchObject({ row: 9, tag: "吃喝" });
 	});
@@ -239,6 +241,7 @@ describe("addExpense", () => {
 								{},
 								{ userEnteredValue: { numberValue: 30 } },
 								{ userEnteredValue: { formulaValue: '=D9*GOOGLEFINANCE("CURRENCY:USDTWD")' } },
+								{ userEnteredValue: { stringValue: "USD" } },
 							],
 						},
 					],
@@ -275,6 +278,7 @@ describe("addExpense", () => {
 								{},
 								{},
 								{ userEnteredValue: { numberValue: 100 } },
+								{ userEnteredValue: { stringValue: "TWD" } },
 							],
 						},
 					],
@@ -283,6 +287,22 @@ describe("addExpense", () => {
 			},
 		]);
 		expect(result).toMatchObject({ row: 10, inserted: true });
+	});
+
+	it("writes an explicit paid_with that differs from the pricing currency", async () => {
+		const client = fakeClient(monthGrid());
+
+		const result = await addExpense(client, { item: "AWS", amount: 20, currency: "USD", month: 9, paidWith: "TWD" });
+
+		const requests = (client.batchUpdate as any).mock.calls[0][0];
+		expect(requests[0].updateCells.rows[0].values).toEqual([
+			{ userEnteredValue: { stringValue: "AWS" } },
+			{},
+			{ userEnteredValue: { numberValue: 20 } },
+			{ userEnteredValue: { formulaValue: '=D9*GOOGLEFINANCE("CURRENCY:USDTWD")' } },
+			{ userEnteredValue: { stringValue: "TWD" } },
+		]);
+		expect(result).toMatchObject({ paidWith: "TWD", currency: "USD" });
 	});
 
 	it("writes the date as a real date serial with mm/dd format when given", async () => {

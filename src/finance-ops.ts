@@ -148,6 +148,8 @@ export interface AddExpenseParams {
 	date?: string;
 	/** Per-row 類別 tag written into column C; omitted = leave the cell blank. */
 	tag?: string;
+	/** Which real account paid the row (支付幣別, column F); defaults to `currency`. */
+	paidWith?: "TWD" | "USD";
 }
 
 export async function addExpense(client: SheetsClient, p: AddExpenseParams) {
@@ -187,11 +189,12 @@ export async function addExpense(client: SheetsClient, p: AddExpenseParams) {
 		});
 	}
 
+	const paidWith = p.paidWith ?? p.currency;
 	const tagCell = cellData(p.tag ?? null);
 	const rowCells =
 		p.currency === "USD"
-			? [cellData(p.item), tagCell, cellData(p.amount), cellData(`=${USD_COL}${targetRow}*GOOGLEFINANCE("CURRENCY:USDTWD")`)]
-			: [cellData(p.item), tagCell, cellData(null), cellData(p.amount)];
+			? [cellData(p.item), tagCell, cellData(p.amount), cellData(`=${USD_COL}${targetRow}*GOOGLEFINANCE("CURRENCY:USDTWD")`), cellData(paidWith)]
+			: [cellData(p.item), tagCell, cellData(null), cellData(p.amount), cellData(paidWith)];
 	requests.push({
 		updateCells: {
 			start: { sheetId, rowIndex: targetRow - 1, columnIndex: MONTH_COLS.item },
@@ -228,6 +231,7 @@ export async function addExpense(client: SheetsClient, p: AddExpenseParams) {
 		item: p.item,
 		amount: p.amount,
 		currency: p.currency,
+		paidWith,
 		date: p.date ?? null,
 		tag: p.tag ?? null,
 	};
