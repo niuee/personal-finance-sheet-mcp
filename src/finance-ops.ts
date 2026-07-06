@@ -8,6 +8,9 @@ import {
 	BANK_BLOCK_LABEL,
 	BUDGET_HEADER_LABEL,
 	currentMonthTab,
+	LUNCH_COLS,
+	LUNCH_SECTION_LABEL,
+	LUNCH_TOTAL_LABEL,
 	MONTH_COLS,
 	MONTH_NTD_NET_LABEL,
 	MONTH_REMAINDER_LABEL,
@@ -153,6 +156,42 @@ export function findTransferSection(values: unknown[][], tab: string): TransferS
 		}
 	}
 	throw new Error(`No ${TRANSFER_TOTAL_LABEL} row under the ${TRANSFER_SECTION_LABEL} header in ${tab}.`);
+}
+
+/** The 中餐預算 section spans O–Q — read past the transfer block's M. */
+export const LUNCH_GRID_READ = "A1:Q60";
+
+export interface LunchSection {
+	/** 1-indexed row holding the 編列預算 / 剩餘 values. */
+	budgetRow: number;
+	/** 1-indexed row of the 日期/項目/金額 header. */
+	headerRow: number;
+	/** 1-indexed row of the 總和 total. */
+	totalRow: number;
+}
+
+/** Locate the 中餐預算 block (grid of LUNCH_GRID_READ; labels match in any render). Throws when absent or malformed. */
+export function findLunchSection(values: unknown[][], tab: string): LunchSection {
+	const dateCol = LUNCH_COLS.date;
+	const anchorRow = findRowByValue(values, dateCol, LUNCH_SECTION_LABEL);
+	if (anchorRow === null) {
+		throw new Error(
+			`No ${LUNCH_SECTION_LABEL} section in ${tab} (searched column ${colLetter(dateCol)} of ${LUNCH_GRID_READ}) — the lunch-budget log exists from 7月 2026 on.`,
+		);
+	}
+	const budgetRow = anchorRow + 2;
+	const headerRow = anchorRow + 3;
+	if (String(values[headerRow - 1]?.[dateCol] ?? "").trim() !== "日期") {
+		throw new Error(
+			`Row ${headerRow} under the ${LUNCH_SECTION_LABEL} anchor in ${tab} is not the 日期/項目/金額 header row.`,
+		);
+	}
+	for (let r = headerRow + 1; r <= values.length; r++) {
+		if (String(values[r - 1]?.[LUNCH_COLS.item] ?? "").trim() === LUNCH_TOTAL_LABEL) {
+			return { budgetRow, headerRow, totalRow: r };
+		}
+	}
+	throw new Error(`No ${LUNCH_TOTAL_LABEL} row under the ${LUNCH_SECTION_LABEL} header in ${tab}.`);
 }
 
 export interface IncomeWindow {

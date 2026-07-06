@@ -13,11 +13,13 @@ import {
 	FIND_CELLS_CAP,
 	findExpenseWindow,
 	findIncomeWindow,
+	findLunchSection,
 	findRowByLabels,
 	findRowByValue,
 	findTransferSection,
 	findTripBlocks,
 	getCategories,
+	LUNCH_GRID_READ,
 	migrateIncomeLayout,
 	monthSummary,
 	safeUpdateRange,
@@ -160,6 +162,26 @@ function transferGrid(): unknown[][] {
 	g[33] = ["", "", "", "", "", "", "日期", "新臺幣", "當下美金", "實際美金", "匯差", "手續費", "當筆總額外花費"];
 	// row 35 empty — the first data slot
 	g[35] = ["", "", "", "", "", "", "總和", "=sum(H35)", "=sum(I35)", "=sum(J35)", "=sum(K35)", "=sum(L35)", "=sum(M35)"];
+	return g;
+}
+
+/** transferGrid + a 中餐預算 lunch block at O33:Q38 (data slot row 37 empty). */
+function lunchGrid(): unknown[][] {
+	const g = transferGrid();
+	const put = (idx: number, col: number, v: unknown) => {
+		(g[idx] ??= [])[col] = v;
+	};
+	put(32, 14, "中餐預算");
+	put(33, 14, "編列預算");
+	put(33, 16, "剩餘 (負數會加回去支出）");
+	put(34, 14, "=E5"); // 編列預算 ← the 中餐 expense cell
+	put(34, 16, "=O35-Q38"); // 剩餘 = 編列預算 − 總和
+	put(35, 14, "日期");
+	put(35, 15, "項目");
+	put(35, 16, "金額");
+	// row 37 (index 36) empty — the first data slot
+	put(37, 15, "總和");
+	put(37, 16, "=sum(Q37)");
 	return g;
 }
 
@@ -384,6 +406,28 @@ describe("findTransferSection", () => {
 		const g = transferGrid();
 		g[35] = [];
 		expect(() => findTransferSection(g, "9 月")).toThrow("總和");
+	});
+});
+
+describe("findLunchSection", () => {
+	it("locates the budget, header and 總和 rows from the anchor", () => {
+		expect(findLunchSection(lunchGrid(), "9 月")).toEqual({ budgetRow: 35, headerRow: 36, totalRow: 38 });
+	});
+
+	it("throws when the tab has no 中餐預算 section", () => {
+		expect(() => findLunchSection(transferGrid(), "6 月")).toThrow("中餐預算");
+	});
+
+	it("throws when the header row under the anchor is missing", () => {
+		const g = lunchGrid();
+		(g[35] as unknown[])[14] = "";
+		expect(() => findLunchSection(g, "9 月")).toThrow("日期");
+	});
+
+	it("throws when there is no 總和 row", () => {
+		const g = lunchGrid();
+		(g[37] as unknown[])[15] = "";
+		expect(() => findLunchSection(g, "9 月")).toThrow("總和");
 	});
 });
 
