@@ -12,11 +12,14 @@ import {
 	LUNCH_SECTION_LEGACY_LABEL,
 	LUNCH_TOTAL_LABEL,
 	MONTH_COLS,
-	MONTH_NTD_NET_LABEL,
-	MONTH_REMAINDER_LABEL,
+	MONTH_NTD_NET_LABELS,
 	MONTH_USD_NET_LABEL,
+	MONTH_USD_NET_LABELS,
 	monthTabName,
+	NTD_CONSERVATIVE_END_LABEL,
+	NTD_END_BALANCE_LABEL,
 	NTD_PAYMENT_LABEL,
+	NTD_START_BALANCE_LABEL,
 	parseDateInput,
 	OVERDRAFT_LABEL,
 	PREV_NTD_OVERDRAFT_LABEL,
@@ -29,16 +32,14 @@ import {
 	SALARY_LABEL,
 	serialToIso,
 	todaySerial,
-	TOTAL_NTD_BALANCE_LABEL,
 	TOTAL_ROW_LABEL,
-	TOTAL_USD_BALANCE_LABEL,
 	TRIP_HEADER_DATE,
 	TRIP_HEADER_SHOP,
 	TRIP_MAX_BLOCK_ROWS,
 	TRIP_TOTAL_LABEL,
+	USD_END_BALANCE_LABEL,
 	USD_PAYMENT_LABEL,
-	USD_WRITEOFF_LABEL,
-	NTD_WRITEOFF_LABEL,
+	USD_START_BALANCE_LABEL,
 } from "../src/conventions";
 
 describe("conventions", () => {
@@ -89,16 +90,18 @@ describe("conventions", () => {
 		expect(USD_PAYMENT_LABEL).toBe("美金支付");
 	});
 
-	it("exports the income-section labels", () => {
+	it("exports the income-section and 銀行餘額 labels", () => {
 		expect(BUDGET_HEADER_LABEL).toBe("總預算");
 		expect(NTD_PAYMENT_LABEL).toBe("新臺幣支付");
-		expect(MONTH_USD_NET_LABEL).toBe("月美金餘額");
-		expect(MONTH_NTD_NET_LABEL).toBe("月新臺幣餘額");
-		expect(MONTH_REMAINDER_LABEL).toBe("月剩餘");
-		expect(USD_WRITEOFF_LABEL).toBe("美金透支沖銷");
-		expect(NTD_WRITEOFF_LABEL).toBe("新臺幣透支沖銷");
-		expect(TOTAL_USD_BALANCE_LABEL).toBe("總美金餘額");
-		expect(TOTAL_NTD_BALANCE_LABEL).toBe("總新臺幣餘額");
+		expect(MONTH_USD_NET_LABEL).toBe("本月美金收支狀況");
+		// 7月 2026 titles the rows 本月…餘額 — both anchors must be accepted.
+		expect(MONTH_USD_NET_LABELS).toEqual(["本月美金收支狀況", "本月美金餘額"]);
+		expect(MONTH_NTD_NET_LABELS).toEqual(["本月新臺幣收支狀況", "本月新臺幣餘額"]);
+		expect(USD_START_BALANCE_LABEL).toBe("本月初美金餘額");
+		expect(USD_END_BALANCE_LABEL).toBe("本月底美金餘額");
+		expect(NTD_START_BALANCE_LABEL).toBe("本月初新臺幣餘額");
+		expect(NTD_CONSERVATIVE_END_LABEL).toBe("保守預計本月底新臺幣餘額");
+		expect(NTD_END_BALANCE_LABEL).toBe("本月底新臺幣餘額");
 	});
 
 	it("exports the 午餐預算 lunch-section anchors", () => {
@@ -132,7 +135,7 @@ describe("conventions", () => {
 	});
 
 	it("documents the 類別 tags seen in the sheet", () => {
-		for (const tag of ["訂閱", "吃喝", "交通", "生活用品", "娛樂", "購物", "其他", "透支"]) {
+		for (const tag of ["訂閱", "吃喝", "交通", "生活用品", "娛樂", "購物", "其他", "透支", "學貸"]) {
 			expect(KNOWN_TAGS).toContain(tag);
 		}
 	});
@@ -193,12 +196,14 @@ describe("conventions", () => {
 			"類別",
 			"新臺幣支付",
 			"支付幣別",
-			"月剩餘",
-			"月美金餘額",
-			"總美金餘額",
+			"本月美金收支狀況",
+			"本月新臺幣收支狀況",
+			"本月底美金餘額",
+			"本月底新臺幣餘額",
+			"保守預計本月底新臺幣餘額",
+			"學貸",
 			"set_income",
 			"幣別",
-			"透支沖銷",
 			"乾坤大挪移",
 			"add_transfer",
 			"當筆總額外花費",
