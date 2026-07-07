@@ -157,6 +157,13 @@ export function registerTailoredTools(server: McpServer, client: SheetsClient): 
 				.describe(
 					"Which real account paid the row — written to the 支付幣別 column (F); defaults to currency. Use currency USD + paid_with TWD for a USD-priced expense paid from the NTD account (the reverse, TWD-priced + USD-paid, is rejected).",
 				),
+			card: z
+				.string()
+				.min(1)
+				.optional()
+				.describe(
+					"Credit card that charged the row — written to the 支付方式 column (G); the 信用卡帳單對帳區 FILTERs mirror the row into the card's statement bucket (dated rows only). One of: 國泰 CUBE, CHASE Amazon, CHASE Freedom Unlimited, Apple Card. Omit for cash/bank-transfer rows. Sets 支付幣別 to the card's billing currency unless paid_with is given.",
+				),
 		},
 		async ({ paid_with, ...p }) => {
 			try {

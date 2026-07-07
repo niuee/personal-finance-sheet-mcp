@@ -554,6 +554,7 @@ describe("addExpense", () => {
 						{},
 						{ userEnteredValue: { numberValue: 250 } },
 						{ userEnteredValue: { stringValue: "TWD" } },
+						{},
 					] }],
 					fields: "userEnteredValue",
 				},
@@ -574,6 +575,7 @@ describe("addExpense", () => {
 			{},
 			{ userEnteredValue: { numberValue: 250 } },
 			{ userEnteredValue: { stringValue: "TWD" } },
+			{},
 		]);
 		expect(result).toMatchObject({ row: 9, tag: "吃喝" });
 	});
@@ -596,6 +598,7 @@ describe("addExpense", () => {
 								{ userEnteredValue: { numberValue: 30 } },
 								{ userEnteredValue: { formulaValue: '=D9*GOOGLEFINANCE("CURRENCY:USDTWD")' } },
 								{ userEnteredValue: { stringValue: "USD" } },
+								{},
 							],
 						},
 					],
@@ -633,6 +636,7 @@ describe("addExpense", () => {
 								{},
 								{ userEnteredValue: { numberValue: 100 } },
 								{ userEnteredValue: { stringValue: "TWD" } },
+								{},
 							],
 						},
 					],
@@ -655,6 +659,7 @@ describe("addExpense", () => {
 			{ userEnteredValue: { numberValue: 20 } },
 			{ userEnteredValue: { formulaValue: '=D9*GOOGLEFINANCE("CURRENCY:USDTWD")' } },
 			{ userEnteredValue: { stringValue: "TWD" } },
+			{},
 		]);
 		expect(result).toMatchObject({ paidWith: "TWD", currency: "USD" });
 	});
@@ -755,6 +760,48 @@ describe("addExpense", () => {
 		).rejects.toThrow("not representable");
 		expect((client.readRange as any).mock.calls.length).toBe(0);
 		expect((client.batchUpdate as any).mock.calls.length).toBe(0);
+	});
+
+	it("writes the card into 支付方式 (G) and defaults 支付幣別 to the card's billing currency", async () => {
+		const client = fakeClient(monthGrid());
+		await addExpense(client, { item: "Kindle 書", amount: 12.99, currency: "USD", month: 9, card: "CHASE Amazon" });
+		const write = ((client.batchUpdate as any).mock.calls[0][0]).find((r: any) => r.updateCells);
+		// B..G = item, 類別, 美金, 新臺幣, 支付幣別, 支付方式
+		expect(write.updateCells.rows[0].values).toHaveLength(6);
+		expect(write.updateCells.rows[0].values[4]).toEqual({ userEnteredValue: { stringValue: "USD" } });
+		expect(write.updateCells.rows[0].values[5]).toEqual({ userEnteredValue: { stringValue: "CHASE Amazon" } });
+	});
+
+	it("a USD-priced expense on the TWD-billed 國泰 CUBE pays from the TWD account by default", async () => {
+		const client = fakeClient(monthGrid());
+		const result = await addExpense(client, { item: "Steam 遊戲", amount: 20, currency: "USD", month: 9, card: "國泰 CUBE" });
+		expect(result.paidWith).toBe("TWD");
+		const write = ((client.batchUpdate as any).mock.calls[0][0]).find((r: any) => r.updateCells);
+		expect(write.updateCells.rows[0].values[4]).toEqual({ userEnteredValue: { stringValue: "TWD" } });
+		expect(write.updateCells.rows[0].values[5]).toEqual({ userEnteredValue: { stringValue: "國泰 CUBE" } });
+	});
+
+	it("rejects an unknown card before any read or write", async () => {
+		const client = fakeClient(monthGrid());
+		await expect(
+			addExpense(client, { item: "x", amount: 1, currency: "TWD", month: 9, card: "玉山 Ubear" }),
+		).rejects.toThrow("國泰 CUBE"); // the error lists the valid names
+		expect((client.readRange as any).mock.calls.length).toBe(0);
+	});
+
+	it("rejects a TWD-priced row on a USD-billed card (its 對帳區 pulls column D, blank on TWD rows)", async () => {
+		const client = fakeClient(monthGrid());
+		await expect(
+			addExpense(client, { item: "x", amount: 100, currency: "TWD", month: 9, card: "Apple Card" }),
+		).rejects.toThrow("USD");
+		expect((client.readRange as any).mock.calls.length).toBe(0);
+	});
+
+	it("leaves 支付方式 untouched when card is omitted", async () => {
+		const client = fakeClient(monthGrid());
+		await addExpense(client, { item: "咖啡", amount: 55, currency: "TWD", month: 9 });
+		const write = ((client.batchUpdate as any).mock.calls[0][0]).find((r: any) => r.updateCells);
+		expect(write.updateCells.rows[0].values[5]).toEqual({}); // cellData(null)
 	});
 });
 

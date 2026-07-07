@@ -7,6 +7,7 @@
 import {
 	BANK_BLOCK_LABEL,
 	BUDGET_HEADER_LABEL,
+	CREDIT_CARDS,
 	currentMonthTab,
 	INCOME_HEADER_LABEL,
 	LUNCH_ADJUST_LABEL,
@@ -415,15 +416,28 @@ export interface AddExpenseParams {
 	date?: string;
 	/** Per-row 類別 tag written into column C; omitted = leave the cell blank. */
 	tag?: string;
-	/** Which real account paid the row (支付幣別, column F); defaults to `currency`. */
+	/** Which real account paid the row (支付幣別, column F); defaults to the card's billing currency when `card` is set, else to `currency`. */
 	paidWith?: "TWD" | "USD";
+	/** Credit card that charged the row (支付方式, column G) — must be a CREDIT_CARDS name; omitted = cash/transfer, cell untouched. */
+	card?: string;
 }
 
 export async function addExpense(client: SheetsClient, p: AddExpenseParams) {
 	const tab = p.month !== undefined ? monthTabName(p.month) : currentMonthTab();
 	// Parse before any read/write so a bad date fails closed.
 	const dateSerialValue = p.date !== undefined ? parseDateInput(p.date) : null;
-	const paidWith = p.paidWith ?? p.currency;
+	const card = p.card !== undefined ? CREDIT_CARDS.find((c) => c.name === p.card) : undefined;
+	if (p.card !== undefined && card === undefined) {
+		throw new Error(
+			`Unknown card "${p.card}" — the 支付方式 column recognizes: ${CREDIT_CARDS.map((c) => c.name).join(", ")}.`,
+		);
+	}
+	if (card !== undefined && card.billingCurrency === "USD" && p.currency !== "USD") {
+		throw new Error(
+			`${card.name} bills in USD and its 對帳區 buckets pull the 美金 column (D), which is blank on TWD-priced rows — log the expense in USD.`,
+		);
+	}
+	const paidWith = p.paidWith ?? card?.billingCurrency ?? p.currency;
 	if (p.currency === "TWD" && paidWith === "USD") {
 		throw new Error(
 			"A TWD-priced expense paid from the USD account is not representable: 本月美金支出 sums the USD column (D), which is blank on TWD-priced rows. Log it in USD (currency USD, paid_with USD) instead.",
@@ -463,10 +477,11 @@ export async function addExpense(client: SheetsClient, p: AddExpenseParams) {
 	}
 
 	const tagCell = cellData(p.tag ?? null);
+	const cardCell = cellData(p.card ?? null);
 	const rowCells =
 		p.currency === "USD"
-			? [cellData(p.item), tagCell, cellData(p.amount), cellData(`=${USD_COL}${targetRow}*GOOGLEFINANCE("CURRENCY:USDTWD")`), cellData(paidWith)]
-			: [cellData(p.item), tagCell, cellData(null), cellData(p.amount), cellData(paidWith)];
+			? [cellData(p.item), tagCell, cellData(p.amount), cellData(`=${USD_COL}${targetRow}*GOOGLEFINANCE("CURRENCY:USDTWD")`), cellData(paidWith), cardCell]
+			: [cellData(p.item), tagCell, cellData(null), cellData(p.amount), cellData(paidWith), cardCell];
 	requests.push({
 		updateCells: {
 			start: { sheetId, rowIndex: targetRow - 1, columnIndex: MONTH_COLS.item },
@@ -506,6 +521,7 @@ export async function addExpense(client: SheetsClient, p: AddExpenseParams) {
 		paidWith,
 		date: p.date ?? null,
 		tag: p.tag ?? null,
+		card: p.card ?? null,
 	};
 }
 
