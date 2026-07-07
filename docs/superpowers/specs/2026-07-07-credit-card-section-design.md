@@ -192,33 +192,32 @@ gains column G and a 對帳區 block pair.
 
 ## Addendum (2026-07-07, same day): lunch-log card integration + 收支狀況 rename
 
-Approved by Vincent after the initial build:
+Approved by Vincent after the initial build. He then **reorganized the
+對帳區 himself** — his sheet layout is the source of truth from here on:
 
-1. **午餐預算 gains a 支付方式 column S** (P=日期, Q=項目, R=金額,
-   S=支付方式; header row extended). S holds a card name or 現金/blank
-   for cash. Card lunches must ALSO appear in that card's 對帳區
-   buckets and count into 本期帳單總額.
-   - Lunches are NTD, so only **TWD-billed** cards are valid in S
-     (currently 國泰 CUBE). A USD-billed card in S would mix TWD lunch
-     amounts into a USD statement.
-   - Sheet formulas: the TWD-billed card's bucket 小計s add
-     `+SUMIFS(R3:R, S3:S, card, P3:P, <date cond>)`; the bucket row
-     mirror becomes a QUERY-merged stack of the expense FILTER and the
-     lunch FILTER (`{"","",""}` fillers, `where Col1 is not null order
-     by Col1`), sorted by date. US-card blocks keep expense-only
-     formulas.
-   - `LUNCH_COLS` gains `paidMethod: 18` (S). `add_lunch` gains an
-     optional `card` param: must be a registry name AND TWD-billed;
-     written to S; omitted = blank (cash). start_month's lunch clear
-     and add_lunch's row-empty scan widen from P–R to P–S.
-   - The 中餐 budget row in the expense list must NOT carry a G card —
-     it is a budget, not a charge; the individual lunches are the card
-     charges.
-2. **收支狀況 rename**: 7月's 本月美金餘額/本月新臺幣餘額 rows are now
-   titled 本月美金收支狀況/本月新臺幣收支狀況 — the labels the code
-   already prefers (`MONTH_*_NET_LABELS` keep the 餘額 titles as legacy
-   fallback). CONVENTIONS_TEXT drops the "7月 titles them 餘額" caveat.
-3. **8月/9月**: still old geometry and hold one planning row each;
-   after the PR deploys they are deleted and recreated via
-   start_month(8)/start_month(9) (inheriting everything from 7月), then
-   the planning one-offs are re-logged.
+1. **Block layout (per card):** card name, 本月結帳日, 本月繳款日,
+   **本月需繳款** (renamed from 本月需繳), then 結帳日前 / 結帳日後
+   buckets (label row carries the 小計 in the block's 3rd column, then a
+   日期/項目/金額 header and ~12 spill rows). **The 本期帳單總額 row is
+   gone**; 本月需繳款 is computed across two months instead:
+   lag 0 (CHASE Amazon) = this tab's 結帳日前小計 + prev tab's
+   結帳日後小計; lag 1 (the rest) = prev tab's 結帳日前小計 + prev-prev
+   tab's 結帳日後小計 (term omitted when the prev-prev tab doesn't
+   exist). July's lag-1 values and Amazon's June tail are hand-entered.
+   **CHASE Freedom Unlimited is renamed CHASE Freedom** everywhere.
+2. **午餐預算 gains a 支付方式 column S** (P=日期, Q=項目, R=金額,
+   S=支付方式; 現金/blank = cash). Lunches are NTD, so only TWD-billed
+   cards are valid in S (currently 國泰 CUBE); that card's bucket 小計s
+   add a lunch SUMIFS and its bucket mirrors become QUERY-merged stacks
+   of the expense FILTER and the lunch FILTER, date-sorted.
+   `LUNCH_COLS.paidMethod = 18`; `add_lunch` gains a TWD-billed-only
+   `card` param; the start_month lunch clear and add_lunch empty-scan
+   widen to P–S; `FULL_GRID_READ` widens to A1:S160. The 中餐 budget row
+   in the expense list must never carry a G card — the individual
+   lunches are the card charges.
+3. **收支狀況 rename**: the 本月美金餘額/本月新臺幣餘額 rows are now
+   titled 本月美金收支狀況/本月新臺幣收支狀況 (the labels the code
+   already prefers; the 餘額 titles remain as legacy fallback).
+4. **8月/9月**: still old geometry with one planning row each; after
+   the PR deploys they are deleted and recreated via
+   start_month(8)/start_month(9), then the planning one-offs re-logged.
