@@ -5,10 +5,12 @@
  */
 
 import {
+	addMonthsClamped,
 	BANK_BLOCK_LABEL,
 	BUDGET_HEADER_LABEL,
 	CREDIT_BILL_TOTAL_LABEL,
 	CREDIT_BLOCK_COLS,
+	CREDIT_BLOCK_WIDTH,
 	CREDIT_CARDS,
 	CREDIT_CLOSE_LABEL,
 	CREDIT_DUE_LABEL,
@@ -1124,6 +1126,47 @@ export async function startMonth(client: SheetsClient, month: number) {
 		}
 	}
 
+	// The 信用卡帳單對帳區 rolls forward: bump each card's 結帳日/繳款日 one
+	// month and rebuild 本期帳單總額 / 本月需繳 against the month just ended.
+	// The buckets' FILTER/小計 formulas are same-tab references and survive
+	// duplication untouched. The new tab is a duplicate, so prev-tab row
+	// numbers equal this grid's. Same fail-soft contract as the lunch clear —
+	// duplicateSheet has already committed, so a torn section surfaces a
+	// warning instead of throwing; pre-section tabs skip silently.
+	const creditRebuilt: string[] = [];
+	let creditWarning: string | undefined;
+	if (findRowByValue(values, CREDIT_BLOCK_COLS[0], CREDIT_SECTION_LABEL) !== null) {
+		try {
+			for (const block of findCreditSection(values, newTab)) {
+				const valueCol = block.startCol + CREDIT_BLOCK_WIDTH - 1;
+				const col = colLetter(valueCol);
+				const write = (row: number, value: string | number) => {
+					requests.push({
+						updateCells: {
+							start: { sheetId, rowIndex: row - 1, columnIndex: valueCol },
+							rows: [{ values: [cellData(value)] }],
+							fields: "userEnteredValue",
+						},
+					});
+				};
+				for (const row of [block.closeDateRow, block.payDateRow]) {
+					const serial = values[row - 1]?.[valueCol];
+					if (typeof serial === "number") write(row, addMonthsClamped(serial, 1));
+				}
+				write(block.billTotalRow, `=${quoteTab(prevTab)}!${col}${block.postSubtotalRow}+${col}${block.preSubtotalRow}`);
+				write(
+					block.dueRow,
+					block.card.statementLag === 0
+						? `=${col}${block.billTotalRow}`
+						: `=${quoteTab(prevTab)}!${col}${block.billTotalRow}`,
+				);
+				creditRebuilt.push(block.card.name);
+			}
+		} catch (err) {
+			creditWarning = err instanceof Error ? err.message : String(err);
+		}
+	}
+
 	const kept: string[] = [];
 	const cleared: string[] = [];
 	const rowsToDelete: number[] = [];
@@ -1171,7 +1214,7 @@ export async function startMonth(client: SheetsClient, month: number) {
 	}
 	await client.batchUpdate(requests);
 
-	return { tab: newTab, duplicatedFrom: prevTab, kept, cleared, clearedIncomes, lunchCleared, lunchWarning };
+	return { tab: newTab, duplicatedFrom: prevTab, kept, cleared, clearedIncomes, lunchCleared, lunchWarning, creditRebuilt, creditWarning };
 }
 
 export interface TripEntryParams {

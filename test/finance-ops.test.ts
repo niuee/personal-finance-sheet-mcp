@@ -1090,6 +1090,7 @@ describe("startMonth", () => {
 			cleared: ["近鐵 80000系"],
 			clearedIncomes: [],
 			lunchCleared: false,
+			creditRebuilt: [],
 		});
 	});
 
@@ -1201,6 +1202,46 @@ describe("startMonth", () => {
 
 		expect(result.lunchCleared).toBe(false);
 		expect(result.lunchWarning).toMatch(/日期|午餐預算/);
+	});
+
+	it("bumps each card's 結帳日/繳款日 one month and rebuilds 本期帳單總額/本月需繳 per statementLag", async () => {
+		const client = startMonthClient(creditGrid(), ["9 月", "8 月"]);
+
+		const result = await startMonth(client, 10);
+
+		const requests = (client.batchUpdate as any).mock.calls[1][0];
+		const at = (rowIndex: number, columnIndex: number) =>
+			requests.find(
+				(r: any) => r.updateCells && r.updateCells.start.rowIndex === rowIndex && r.updateCells.start.columnIndex === columnIndex,
+			);
+		// 國泰 CUBE (values in J = column 9): dates bumped 7/19→8/19, 7/6→8/6.
+		expect(at(41, 9).updateCells.rows[0].values).toEqual([{ userEnteredValue: { numberValue: dateSerial(2026, 8, 19) } }]);
+		expect(at(42, 9).updateCells.rows[0].values).toEqual([{ userEnteredValue: { numberValue: dateSerial(2026, 8, 6) } }]);
+		// 本期帳單總額 = prev tab's 結帳日後小計 (J50) + this tab's 結帳日前小計 (J46).
+		expect(at(43, 9).updateCells.rows[0].values).toEqual([{ userEnteredValue: { formulaValue: "='9 月'!J50+J46" } }]);
+		// lag 1: 本月需繳 = the PREVIOUS tab's 本期帳單總額.
+		expect(at(44, 9).updateCells.rows[0].values).toEqual([{ userEnteredValue: { formulaValue: "='9 月'!J44" } }]);
+		// CHASE Amazon (values in N = column 13), lag 0: 本月需繳 = this tab's 本期帳單總額.
+		expect(at(43, 13).updateCells.rows[0].values).toEqual([{ userEnteredValue: { formulaValue: "='9 月'!N50+N46" } }]);
+		expect(at(44, 13).updateCells.rows[0].values).toEqual([{ userEnteredValue: { formulaValue: "=N44" } }]);
+		expect(result.creditRebuilt).toEqual(["國泰 CUBE", "CHASE Amazon"]);
+		expect(result.creditWarning).toBeUndefined();
+	});
+
+	it("skips the credit rebuild silently on tabs without the section", async () => {
+		const client = startMonthClient(lunchGrid(), ["9 月", "8 月"]);
+		const result = await startMonth(client, 10);
+		expect(result.creditRebuilt).toEqual([]);
+		expect(result.creditWarning).toBeUndefined();
+	});
+
+	it("surfaces a torn credit block as a warning instead of failing the month-open", async () => {
+		const g = creditGrid();
+		(g[44] as unknown[])[7] = ""; // CUBE loses 本月需繳
+		const client = startMonthClient(g, ["9 月", "8 月"]);
+		const result = await startMonth(client, 10);
+		expect(result.creditRebuilt).toEqual([]);
+		expect(result.creditWarning).toMatch(/國泰 CUBE.*本月需繳/);
 	});
 
 	it("rebuilds both carry rows against the previous month's 收支狀況 cells", async () => {
