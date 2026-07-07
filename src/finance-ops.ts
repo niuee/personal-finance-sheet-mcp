@@ -32,6 +32,7 @@ import {
 	MONTH_USD_NET_LABEL,
 	MONTH_USD_NET_LABELS,
 	monthTabName,
+	NON_CARD_PAYMENT_METHODS,
 	NTD_CONSERVATIVE_END_LABEL,
 	NTD_END_BALANCE_LABEL,
 	NTD_INCOME_LABEL,
@@ -43,6 +44,15 @@ import {
 	PREV_NTD_OVERDRAFT_LABEL,
 	PREV_USD_OVERDRAFT_LABEL,
 	previousMonth,
+	REAL_NTD_CARD_PAYMENT_LABEL,
+	REAL_NTD_CASH_SPENDING_LABEL,
+	REAL_NTD_END_BALANCE_LABEL,
+	REAL_NTD_START_BALANCE_LABEL,
+	REAL_SECTION_LABEL,
+	REAL_USD_CARD_PAYMENT_LABEL,
+	REAL_USD_CASH_SPENDING_LABEL,
+	REAL_USD_END_BALANCE_LABEL,
+	REAL_USD_START_BALANCE_LABEL,
 	RECURRING_INCOME,
 	RECURRING_ITEMS,
 	REMAINDER_LABEL,
@@ -517,6 +527,15 @@ const NON_INCOME_LABELS = new Set<string>([
 	NTD_CONSERVATIVE_END_LABEL,
 	NTD_END_BALANCE_LABEL,
 	LUNCH_ADJUST_LABEL,
+	REAL_SECTION_LABEL,
+	REAL_NTD_START_BALANCE_LABEL,
+	REAL_NTD_CASH_SPENDING_LABEL,
+	REAL_NTD_CARD_PAYMENT_LABEL,
+	REAL_NTD_END_BALANCE_LABEL,
+	REAL_USD_START_BALANCE_LABEL,
+	REAL_USD_CASH_SPENDING_LABEL,
+	REAL_USD_CARD_PAYMENT_LABEL,
+	REAL_USD_END_BALANCE_LABEL,
 ]);
 
 /**
@@ -637,7 +656,7 @@ export interface AddExpenseParams {
 	tag?: string;
 	/** Which real account paid the row (支付幣別, column F); defaults to the card's billing currency when `card` is set, else to `currency`. */
 	paidWith?: "TWD" | "USD";
-	/** Credit card that charged the row (支付方式, column G) — must be a CREDIT_CARDS name; omitted = cash/transfer, cell left blank. */
+	/** 支付方式 (column G) — a CREDIT_CARDS name or a NON_CARD_PAYMENT_METHODS option (現金/沛); omitted = cell left blank. */
 	card?: string;
 }
 
@@ -645,10 +664,13 @@ export async function addExpense(client: SheetsClient, p: AddExpenseParams) {
 	const tab = p.month !== undefined ? monthTabName(p.month) : currentMonthTab();
 	// Parse before any read/write so a bad date fails closed.
 	const dateSerialValue = p.date !== undefined ? parseDateInput(p.date) : null;
+	// `card` stays undefined for the non-card options (現金/沛): they carry no
+	// billing currency and no 對帳區 bucket, so every card-only branch below
+	// (billing checks, paidWith default, bucket guard) skips on it.
 	const card = p.card !== undefined ? CREDIT_CARDS.find((c) => c.name === p.card) : undefined;
-	if (p.card !== undefined && card === undefined) {
+	if (p.card !== undefined && card === undefined && !NON_CARD_PAYMENT_METHODS.includes(p.card)) {
 		throw new Error(
-			`Unknown card "${p.card}" — the 支付方式 column recognizes: ${CREDIT_CARDS.map((c) => c.name).join(", ")}.`,
+			`Unknown 支付方式 "${p.card}" — the column's dropdown holds: ${[...CREDIT_CARDS.map((c) => c.name), ...NON_CARD_PAYMENT_METHODS].join(", ")}.`,
 		);
 	}
 	if (card !== undefined && card.billingCurrency === "USD" && p.currency !== "USD") {
@@ -728,10 +750,11 @@ export async function addExpense(client: SheetsClient, p: AddExpenseParams) {
 	}
 
 	// A dateless card row is not mirrored into a bucket, so the guard only
-	// runs once both a card and a date are on the row.
+	// runs once both a REAL card and a date are on the row (現金/沛 rows have
+	// no bucket at all).
 	let guard: BucketGuardResult | undefined;
-	if (p.card !== undefined && dateSerialValue !== null) {
-		guard = creditBucketGuard(values, tab, sheetId, p.card, dateSerialValue, inserted ? 1 : 0);
+	if (card !== undefined && dateSerialValue !== null) {
+		guard = creditBucketGuard(values, tab, sheetId, card.name, dateSerialValue, inserted ? 1 : 0);
 		requests.push(...guard.requests);
 	}
 
@@ -914,10 +937,12 @@ export async function addLunch(client: SheetsClient, p: AddLunchParams) {
 	// Parse before any read/write so a bad date fails closed.
 	const dateSerialValue = p.date !== undefined ? parseDateInput(p.date) : todaySerial();
 	const item = (p.item ?? LUNCH_DEFAULT_ITEM).trim() || LUNCH_DEFAULT_ITEM;
+	// As in addExpense: `card` stays undefined for 現金/沛, skipping the
+	// billing check and the bucket guard.
 	const card = p.card !== undefined ? CREDIT_CARDS.find((c) => c.name === p.card) : undefined;
-	if (p.card !== undefined && card === undefined) {
+	if (p.card !== undefined && card === undefined && !NON_CARD_PAYMENT_METHODS.includes(p.card)) {
 		throw new Error(
-			`Unknown card "${p.card}" — the 支付方式 column recognizes: ${CREDIT_CARDS.map((c) => c.name).join(", ")}.`,
+			`Unknown 支付方式 "${p.card}" — the column's dropdown holds: ${[...CREDIT_CARDS.map((c) => c.name), ...NON_CARD_PAYMENT_METHODS].join(", ")}.`,
 		);
 	}
 	if (card !== undefined && card.billingCurrency !== "TWD") {
@@ -992,13 +1017,13 @@ export async function addLunch(client: SheetsClient, p: AddLunchParams) {
 		},
 	);
 
-	// Lunches always carry a date, so the guard runs whenever a card is given;
-	// its insert (below the lunch section) is appended last, after the writes
-	// above — the lunch insert (if any) shifts the credit section down, hence
-	// the offset.
+	// Lunches always carry a date, so the guard runs whenever a REAL card is
+	// given (現金 lunches have no bucket); its insert (below the lunch section)
+	// is appended last, after the writes above — the lunch insert (if any)
+	// shifts the credit section down, hence the offset.
 	let guard: BucketGuardResult | undefined;
-	if (p.card !== undefined) {
-		guard = creditBucketGuard(values, tab, sheetId, p.card, dateSerialValue, inserted ? 1 : 0);
+	if (card !== undefined) {
+		guard = creditBucketGuard(values, tab, sheetId, card.name, dateSerialValue, inserted ? 1 : 0);
 		requests.push(...guard.requests);
 	}
 
@@ -1110,7 +1135,8 @@ export async function setExpenseDate(client: SheetsClient, p: SetExpenseDatePara
 	let bucket: BucketGuardResult["bucket"] = null;
 	let bucketRowsAdded = 0;
 	let bucketWarning: string | undefined;
-	if (g !== "") {
+	// 現金/沛 rows have no 對帳區 bucket — dating one is a plain date write.
+	if (g !== "" && !NON_CARD_PAYMENT_METHODS.includes(g)) {
 		const registryCard = CREDIT_CARDS.find((c) => norm(c.name) === norm(g));
 		if (registryCard === undefined) {
 			bucketWarning = `The row's 支付方式 "${g}" is not a known card — bucket room not checked.`;
@@ -1399,6 +1425,29 @@ export async function startMonth(client: SheetsClient, month: number) {
 				fields: "userEnteredValue",
 			},
 		});
+	}
+
+	// The 帳戶實際數字對應 block chains BOTH currencies forward the same way:
+	// each 本月初…真實餘額 points at the month-just-ended's 本月底…真實餘額.
+	// Unlike the 銀行餘額 ledger above, the USD side has no carry expense row
+	// to absorb a shortfall — the real-account view only ever chains. Same
+	// duplicate-grid row math and write-before-delete lockstep as the NTD
+	// chain; tabs predating the section (6月 and earlier) skip silently.
+	for (const [startLabel, endLabel] of [
+		[REAL_NTD_START_BALANCE_LABEL, REAL_NTD_END_BALANCE_LABEL],
+		[REAL_USD_START_BALANCE_LABEL, REAL_USD_END_BALANCE_LABEL],
+	] as const) {
+		const startRow = findRowByValue(values, MONTH_COLS.budgetLabel, startLabel);
+		const endRow = findRowByValue(values, MONTH_COLS.budgetLabel, endLabel);
+		if (startRow !== null && endRow !== null) {
+			requests.push({
+				updateCells: {
+					start: { sheetId, rowIndex: startRow - 1, columnIndex: MONTH_COLS.budgetValue },
+					rows: [{ values: [cellData(`=${quoteTab(prevTab)}!${colLetter(MONTH_COLS.budgetValue)}${endRow}`)] }],
+					fields: "userEnteredValue",
+				},
+			});
+		}
 	}
 
 	// The lunch log restarts each month: clear the 午餐預算 data rows (P–S).

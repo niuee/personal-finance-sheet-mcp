@@ -163,7 +163,7 @@ export function registerTailoredTools(server: McpServer, client: SheetsClient): 
 				.min(1)
 				.optional()
 				.describe(
-					"Credit card that charged the row — written to the 支付方式 column (G); the 信用卡帳單對帳區 FILTERs mirror the row into the card's statement bucket (dated rows only). One of: 國泰 CUBE, CHASE Amazon, CHASE Freedom, Apple Card. Omit for cash/bank-transfer rows. Sets 支付幣別 to the card's billing currency unless paid_with is given. When the row also has a date, the target 對帳區 bucket is grown automatically if its spill area is full.",
+					"支付方式 (column G) — one of the column's dropdown options: a credit card (國泰 CUBE, CHASE Amazon, CHASE Freedom, Apple Card — the 信用卡帳單對帳區 FILTERs mirror dated card rows into that card's statement bucket, growing it automatically when its spill area is full, and 支付幣別 defaults to the card's billing currency unless paid_with is given), 現金 (money left a bank account directly — cash/debit/auto-pay; the 帳戶實際數字對應 block's 現金支出 counts these), or 沛 (沛 paid — hits no tracked account). Omit to leave the cell blank (row not wired to any account).",
 				),
 		},
 		async ({ paid_with, ...p }) => {
@@ -311,7 +311,7 @@ export function registerTailoredTools(server: McpServer, client: SheetsClient): 
 				.min(1)
 				.optional()
 				.describe(
-					"TWD-billed credit card that paid the lunch (currently 國泰 CUBE) — written to the 支付方式 column (S); the 對帳區's TWD-card buckets mirror it into the statement. Omit for cash. When the row also has a date, the target 對帳區 bucket is grown automatically if its spill area is full.",
+					"支付方式 (column S) — a TWD-billed credit card (currently 國泰 CUBE; the 對帳區's TWD-card buckets mirror the lunch into the statement, growing the bucket automatically if its spill area is full) or 現金 for a cash lunch. Omit to leave the cell blank (also treated as cash).",
 				),
 			month: monthParam.optional().describe("Target month 1-12 (default: current month)"),
 		},

@@ -356,6 +356,33 @@ function creditGrid(): unknown[][] {
 	return g;
 }
 
+/** creditGrid + the 帳戶實際數字對應 block in B/D rows 34-43, below the 銀行餘額 block. */
+function realBalanceGrid(): unknown[][] {
+	const g = creditGrid();
+	const put = (idx: number, col: number, v: unknown) => {
+		(g[idx] ??= [])[col] = v;
+	};
+	put(33, 1, "帳戶實際數字對應");
+	put(34, 1, "本月初新臺幣真實餘額");
+	put(34, 3, "='8 月'!D38");
+	put(35, 1, "本月新臺幣現金支出");
+	put(35, 3, '=SUMIFS(E3:E10, F3:F10, "TWD", G3:G10, "現金") + M36');
+	put(36, 1, "本月新臺幣信用卡繳費");
+	put(36, 3, "=J44");
+	put(37, 1, "本月底新臺幣真實餘額");
+	put(37, 3, '=D35+SUMIF(C14:C17, "TWD", D14:D17) - D36 - D37 - I36');
+	// row 39 blank — the gap between the two currency blocks
+	put(39, 1, "本月初美金真實餘額");
+	put(39, 3, "='8 月'!D43");
+	put(40, 1, "本月美金現金支出");
+	put(40, 3, '=SUMIFS(D3:D10, F3:F10, "USD", G3:G10, "現金")');
+	put(41, 1, "本月美金信用卡繳費");
+	put(41, 3, "=N44");
+	put(42, 1, "本月底美金真實餘額");
+	put(42, 3, '=D40+SUMIF(C14:C17, "USD", D14:D17) - D41 - D42 + K36');
+	return g;
+}
+
 describe("findCreditSection", () => {
 	it("locates every card block present, skipping registry cards missing from the sheet", () => {
 		const blocks = findCreditSection(creditGrid(), "9 月");
@@ -669,6 +696,16 @@ describe("addLunch", () => {
 		const client = fakeClient(lunchGrid());
 		await expect(addLunch(client, { amount: 100, month: 9, card: "Apple Card" })).rejects.toThrow("TWD");
 		expect((client.readRange as any).mock.calls.length).toBe(0);
+	});
+
+	it("accepts 現金 as the lunch 支付方式 — no TWD-billing check, no bucket guard", async () => {
+		const client = fakeClient(lunchGrid());
+		const result = await addLunch(client, { amount: 90, month: 9, date: "9/2", card: "現金" });
+		const requests = (client.batchUpdate as any).mock.calls[0][0];
+		const write = requests.find((r: any) => r.updateCells && r.updateCells.start.columnIndex === 16);
+		expect(write.updateCells.rows[0].values[2]).toEqual({ userEnteredValue: { stringValue: "現金" } });
+		expect(result.card).toBe("現金");
+		expect(result.bucketWarning).toBeUndefined();
 	});
 
 	it("writes a blank 支付方式 when card is omitted", async () => {
@@ -999,6 +1036,28 @@ describe("addExpense", () => {
 		await addExpense(client, { item: "咖啡", amount: 55, currency: "TWD", month: 9 });
 		const write = ((client.batchUpdate as any).mock.calls[0][0]).find((r: any) => r.updateCells);
 		expect(write.updateCells.rows[0].values[5]).toEqual({}); // cellData(null)
+	});
+
+	it("accepts 現金: writes it to 支付方式, keeps 支付幣別 = currency, and never runs the bucket guard", async () => {
+		const client = fakeClient(creditGrid());
+		const result = await addExpense(client, { item: "剪頭髮", amount: 810, currency: "TWD", month: 9, date: "7/5", card: "現金" });
+		const requests = (client.batchUpdate as any).mock.calls[0][0];
+		const write = requests.find((r: any) => r.updateCells && r.updateCells.start.columnIndex === 1);
+		expect(write.updateCells.rows[0].values[4]).toEqual({ userEnteredValue: { stringValue: "TWD" } });
+		expect(write.updateCells.rows[0].values[5]).toEqual({ userEnteredValue: { stringValue: "現金" } });
+		// dated 現金 rows have no 對帳區 bucket — no guard, no warning
+		expect(requests.some((r: any) => r.insertDimension)).toBe(false);
+		expect(result.bucket).toBeNull();
+		expect(result.bucketWarning).toBeUndefined();
+	});
+
+	it("accepts 沛, and a USD-priced 現金 row skips the USD-billing restriction", async () => {
+		const client = fakeClient(monthGrid());
+		await addExpense(client, { item: "生魚片丼飯", amount: 235, currency: "TWD", month: 9, card: "沛" });
+		await addExpense(client, { item: "ECSI Loan", amount: 148.5, currency: "USD", month: 9, card: "現金" });
+		const writes = (client.batchUpdate as any).mock.calls.map((c: any) => c[0].find((r: any) => r.updateCells));
+		expect(writes[0].updateCells.rows[0].values[5]).toEqual({ userEnteredValue: { stringValue: "沛" } });
+		expect(writes[1].updateCells.rows[0].values[5]).toEqual({ userEnteredValue: { stringValue: "現金" } });
 	});
 
 	describe("bucket room guard", () => {
@@ -1332,6 +1391,18 @@ describe("setExpenseDate", () => {
 		expect(result.bucketWarning).toBeUndefined();
 	});
 
+	it("dates a 現金 row without warning — a non-card 支付方式 has no bucket to guard", async () => {
+		const g = dateGrid();
+		(g[6] as unknown[])[6] = "現金";
+		const client = fakeClient(g);
+
+		const result = await setExpenseDate(client, { item: "Netflix", date: "7/10", month: 9 });
+
+		expect(result.card).toBe("現金");
+		expect(result.bucket).toBeNull();
+		expect(result.bucketWarning).toBeUndefined();
+	});
+
 	it("rejects a bad date before any read or write", async () => {
 		const client = fakeClient(dateGrid());
 		await expect(setExpenseDate(client, { item: "Netflix", date: "not-a-date", month: 9 })).rejects.toThrow(
@@ -1657,6 +1728,41 @@ describe("startMonth", () => {
 
 		expect(result.lunchCleared).toBe(false);
 		expect(result.lunchWarning).toMatch(/日期|午餐預算/);
+	});
+
+	it("chains both 帳戶實際數字對應 seeds to the previous month's 真實餘額 cells", async () => {
+		const client = startMonthClient(realBalanceGrid(), ["9 月", "8 月"]);
+
+		await startMonth(client, 10);
+
+		const requests = (client.batchUpdate as any).mock.calls[1][0];
+		const seedAt = (rowIndex: number) =>
+			requests.find(
+				(r: any) =>
+					r.updateCells && r.updateCells.start.rowIndex === rowIndex && r.updateCells.start.columnIndex === MONTH_COLS.budgetValue,
+			);
+		// 本月初新臺幣真實餘額 (row 35) ← 9 月's 本月底新臺幣真實餘額 (row 38).
+		expect(seedAt(34).updateCells.rows[0].values).toEqual([{ userEnteredValue: { formulaValue: "='9 月'!D38" } }]);
+		// 本月初美金真實餘額 (row 40) ← 9 月's 本月底美金真實餘額 (row 43) —
+		// unlike the 銀行餘額 ledger, the USD side chains here too.
+		expect(seedAt(39).updateCells.rows[0].values).toEqual([{ userEnteredValue: { formulaValue: "='9 月'!D43" } }]);
+	});
+
+	it("skips a 真實餘額 chain whose 本月底 anchor is missing, keeping the other currency's", async () => {
+		const g = realBalanceGrid();
+		(g[42] as unknown[])[1] = ""; // tear off the USD 本月底美金真實餘額 anchor
+		const client = startMonthClient(g, ["9 月", "8 月"]);
+
+		await startMonth(client, 10);
+
+		const requests = (client.batchUpdate as any).mock.calls[1][0];
+		const seedAt = (rowIndex: number) =>
+			requests.find(
+				(r: any) =>
+					r.updateCells && r.updateCells.start.rowIndex === rowIndex && r.updateCells.start.columnIndex === MONTH_COLS.budgetValue,
+			);
+		expect(seedAt(34)).toBeDefined();
+		expect(seedAt(39)).toBeUndefined();
 	});
 
 	it("bumps each card's 結帳日/繳款日 one month and rewires 本月需繳款 across two months per statementLag", async () => {
@@ -2436,6 +2542,9 @@ describe("setIncome", () => {
 		await expect(setIncome(client, { item: "本月底新臺幣餘額", amount: 1, currency: "TWD", month: 9 })).rejects.toThrow("layout label");
 		await expect(setIncome(client, { item: "午餐超支或回補", amount: 1, currency: "TWD", month: 9 })).rejects.toThrow("layout label");
 		await expect(setIncome(client, { item: "上月美金透支", amount: 1, currency: "USD", month: 9 })).rejects.toThrow("layout label");
+		await expect(setIncome(client, { item: "帳戶實際數字對應", amount: 1, currency: "TWD", month: 9 })).rejects.toThrow("layout label");
+		await expect(setIncome(client, { item: "本月底新臺幣真實餘額", amount: 1, currency: "TWD", month: 9 })).rejects.toThrow("layout label");
+		await expect(setIncome(client, { item: "本月初美金真實餘額", amount: 1, currency: "USD", month: 9 })).rejects.toThrow("layout label");
 		expect((client.readRange as any).mock.calls).toHaveLength(0);
 	});
 
