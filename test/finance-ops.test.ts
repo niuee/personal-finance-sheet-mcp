@@ -698,6 +698,16 @@ describe("addLunch", () => {
 		expect((client.readRange as any).mock.calls.length).toBe(0);
 	});
 
+	it("accepts 現金 as the lunch 支付方式 — no TWD-billing check, no bucket guard", async () => {
+		const client = fakeClient(lunchGrid());
+		const result = await addLunch(client, { amount: 90, month: 9, date: "9/2", card: "現金" });
+		const requests = (client.batchUpdate as any).mock.calls[0][0];
+		const write = requests.find((r: any) => r.updateCells && r.updateCells.start.columnIndex === 16);
+		expect(write.updateCells.rows[0].values[2]).toEqual({ userEnteredValue: { stringValue: "現金" } });
+		expect(result.card).toBe("現金");
+		expect(result.bucketWarning).toBeUndefined();
+	});
+
 	it("writes a blank 支付方式 when card is omitted", async () => {
 		const client = fakeClient(lunchGrid());
 		await addLunch(client, { amount: 55, month: 9, date: "9/2" });
@@ -1028,6 +1038,28 @@ describe("addExpense", () => {
 		expect(write.updateCells.rows[0].values[5]).toEqual({}); // cellData(null)
 	});
 
+	it("accepts 現金: writes it to 支付方式, keeps 支付幣別 = currency, and never runs the bucket guard", async () => {
+		const client = fakeClient(creditGrid());
+		const result = await addExpense(client, { item: "剪頭髮", amount: 810, currency: "TWD", month: 9, date: "7/5", card: "現金" });
+		const requests = (client.batchUpdate as any).mock.calls[0][0];
+		const write = requests.find((r: any) => r.updateCells && r.updateCells.start.columnIndex === 1);
+		expect(write.updateCells.rows[0].values[4]).toEqual({ userEnteredValue: { stringValue: "TWD" } });
+		expect(write.updateCells.rows[0].values[5]).toEqual({ userEnteredValue: { stringValue: "現金" } });
+		// dated 現金 rows have no 對帳區 bucket — no guard, no warning
+		expect(requests.some((r: any) => r.insertDimension)).toBe(false);
+		expect(result.bucket).toBeNull();
+		expect(result.bucketWarning).toBeUndefined();
+	});
+
+	it("accepts 沛, and a USD-priced 現金 row skips the USD-billing restriction", async () => {
+		const client = fakeClient(monthGrid());
+		await addExpense(client, { item: "生魚片丼飯", amount: 235, currency: "TWD", month: 9, card: "沛" });
+		await addExpense(client, { item: "ECSI Loan", amount: 148.5, currency: "USD", month: 9, card: "現金" });
+		const writes = (client.batchUpdate as any).mock.calls.map((c: any) => c[0].find((r: any) => r.updateCells));
+		expect(writes[0].updateCells.rows[0].values[5]).toEqual({ userEnteredValue: { stringValue: "沛" } });
+		expect(writes[1].updateCells.rows[0].values[5]).toEqual({ userEnteredValue: { stringValue: "現金" } });
+	});
+
 	describe("bucket room guard", () => {
 		it("reports the bucket with no growth needed when the mirror has room", async () => {
 			const client = fakeClient(creditGrid());
@@ -1355,6 +1387,18 @@ describe("setExpenseDate", () => {
 		const client = fakeClient(dateGrid());
 		const result = await setExpenseDate(client, { item: "Netflix", date: "7/10", month: 9 });
 		expect(result.card).toBeNull();
+		expect(result.bucket).toBeNull();
+		expect(result.bucketWarning).toBeUndefined();
+	});
+
+	it("dates a 現金 row without warning — a non-card 支付方式 has no bucket to guard", async () => {
+		const g = dateGrid();
+		(g[6] as unknown[])[6] = "現金";
+		const client = fakeClient(g);
+
+		const result = await setExpenseDate(client, { item: "Netflix", date: "7/10", month: 9 });
+
+		expect(result.card).toBe("現金");
 		expect(result.bucket).toBeNull();
 		expect(result.bucketWarning).toBeUndefined();
 	});

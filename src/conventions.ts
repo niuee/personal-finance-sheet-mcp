@@ -251,6 +251,18 @@ export const CREDIT_CARDS: readonly CreditCard[] = [
 	{ name: "Apple Card", billingCurrency: "USD", statementLag: 1 },
 ];
 
+/**
+ * The 支付方式 dropdown (expense column G, lunch column S) holds the four
+ * CREDIT_CARDS names plus these non-card options. 現金 = the money left a
+ * real bank account directly (cash, debit, auto-pay) — the 帳戶實際數字對應
+ * block's 現金支出 SUMIFS key on it. 沛 = 沛 paid, no tracked account was
+ * hit. Non-card rows have no 對帳區 bucket, so the bucket room guard never
+ * runs for them.
+ */
+export const CASH_METHOD_LABEL = "現金";
+export const PEI_METHOD_LABEL = "沛";
+export const NON_CARD_PAYMENT_METHODS: readonly string[] = [CASH_METHOD_LABEL, PEI_METHOD_LABEL];
+
 export const CREDIT_SECTION_LABEL = "信用卡帳單對帳區";
 export const CREDIT_CLOSE_LABEL = "本月結帳日";
 export const CREDIT_PAY_LABEL = "本月繳款日";
@@ -336,7 +348,7 @@ export const TRIP_BLOCK_WIDTH = 8;
 export const CONVENTIONS_TEXT = `How this personal-finance spreadsheet is organized:
 
 MONTHLY TABS — named "N 月" (e.g. "9 月", with a space). Layout below applies from 7 月 2026 on; 6 月 and earlier are frozen history on the old layout (no 類別/支付幣別 columns, a hand-entered income list ending at a single 剩餘 row) — read them, but don't write into them.
-- Header row 2: 日期 項目 類別 美金 新臺幣 支付幣別 支付方式. Expense list in columns A-G from row 3 down: A=日期 (a real date shown mm/dd; blank on recurring rows), B=item, C=類別 (per-row tag: 訂閱, 吃喝, 交通, 生活用品, 娛樂, 購物, 其他, 透支, 學貸), D=美金 (USD), E=新臺幣 (TWD), F=支付幣別 (USD or TWD — which real account PAID the row; a USD-priced expense paid with a TWD card has D filled but F=TWD), G=支付方式, how the row was actually charged: a credit-card name (exactly 國泰 CUBE, CHASE Amazon, CHASE Freedom, or Apple Card — feeds that card's 信用卡帳單對帳區 buckets), 現金 for money that left a bank account directly (cash/debit/auto-pay — feeds the 帳戶實際數字對應 block's 現金支出), or blank/another marker (e.g. 沛 = a friend paid) when neither applies.
+- Header row 2: 日期 項目 類別 美金 新臺幣 支付幣別 支付方式. Expense list in columns A-G from row 3 down: A=日期 (a real date shown mm/dd; blank on recurring rows), B=item, C=類別 (per-row tag: 訂閱, 吃喝, 交通, 生活用品, 娛樂, 購物, 其他, 透支, 學貸), D=美金 (USD), E=新臺幣 (TWD), F=支付幣別 (USD or TWD — which real account PAID the row; a USD-priced expense paid with a TWD card has D filled but F=TWD), G=支付方式, how the row was actually charged — a dropdown holding exactly: 國泰 CUBE, CHASE Amazon, CHASE Freedom, Apple Card (feeds that card's 信用卡帳單對帳區 buckets), 現金 (money left a bank account directly — cash/debit/auto-pay; feeds the 帳戶實際數字對應 block's 現金支出), and 沛 (沛 paid — hits no tracked account); blank = the row isn't wired to any account. add_expense's card param accepts every dropdown option, not just cards.
 - USD rows convert with E = D*GOOGLEFINANCE("CURRENCY:USDTWD").
 - The list ends at the "花費總額" row (label in column D, total in E, formula SUM over the window). New expenses must land INSIDE that window — write into an empty row above 花費總額, or insert a row inside the window so the SUM extends. Never append below 花費總額.
 - Rows 3-4 carry last month's per-currency shortfalls via cross-tab formulas: 上月美金透支 (USD in D, F=USD, E converts at live GOOGLEFINANCE like any USD row) and 上月新臺幣透支 (TWD in E, F=TWD), each =IF(-('prev'!D<row>) > 0, -(…), 0) against the previous month's 本月…收支狀況 cell — a currency's negative month closes by becoming this month's expense; a positive month carries 0. start_month rebuilds both anchors. Tabs predating the split (6月 and earlier) have a single TWD 上月透支 row anchored at the previous month's 剩餘.
