@@ -346,6 +346,12 @@ export interface BucketGuardResult {
  * result with `warning`, and the caller's write proceeds regardless. Whole-row
  * inserts also widen the horizontally adjacent card's same bucket — harmless;
  * references adjust.
+ *
+ * `excludeRow` (1-indexed) skips a row in the expense-row counting loop —
+ * pass the row being re-dated so its stale (pre-update) date isn't counted
+ * on top of the unconditional "pending row" +1 below, which already accounts
+ * for where it's landing. Lunch rows are never re-dated, so the lunch loop
+ * ignores it.
  */
 export function creditBucketGuard(
 	values: unknown[][],
@@ -354,6 +360,7 @@ export function creditBucketGuard(
 	cardName: string,
 	dateSerialValue: number,
 	rowOffset: number,
+	excludeRow?: number,
 ): BucketGuardResult {
 	// Pre-section tabs (before 7月 2026) are normal — skip silently, no warning.
 	if (findRowByValue(values, CREDIT_BLOCK_COLS[0], CREDIT_SECTION_LABEL) === null) {
@@ -395,6 +402,7 @@ export function creditBucketGuard(
 
 	let matches = 1; // the pending row: not in the grid yet, or its date isn't
 	for (let r = 3; r <= values.length; r++) {
+		if (r === excludeRow) continue;
 		const row = values[r - 1] ?? [];
 		if (norm(row[MONTH_COLS.paidMethod]) === wantName && inBucket(row[MONTH_COLS.date])) matches++;
 	}
@@ -1107,7 +1115,7 @@ export async function setExpenseDate(client: SheetsClient, p: SetExpenseDatePara
 		if (registryCard === undefined) {
 			bucketWarning = `The row's 支付方式 "${g}" is not a known card — bucket room not checked.`;
 		} else {
-			const guard = creditBucketGuard(values, tab, sheetId, registryCard.name, serial, 0);
+			const guard = creditBucketGuard(values, tab, sheetId, registryCard.name, serial, 0, row);
 			requests.push(...guard.requests);
 			bucket = guard.bucket;
 			bucketRowsAdded = guard.rowsAdded;

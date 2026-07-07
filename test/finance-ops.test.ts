@@ -1298,6 +1298,19 @@ describe("setExpenseDate", () => {
 		expect(result).toMatchObject({ card: "國泰 CUBE", bucket: "結帳日前", bucketRowsAdded: 1 });
 	});
 
+	it("excludes the row being re-dated from its own bucket scan (no double count)", async () => {
+		const g = dateGrid();
+		g[6] = [dateSerial(2026, 7, 1), "Netflix", "訂閱", "", 390, "TWD", "國泰 CUBE"]; // row 7, already dated pre-bucket
+		g[4] = [dateSerial(2026, 7, 12), "既有1", "訂閱", "", 100, "TWD", "國泰 Cube"]; // row 5, the only other dated CUBE row
+		const client = fakeClient(g);
+
+		const result = await setExpenseDate(client, { item: "Netflix", date: "7/15", month: 9 });
+
+		const requests = (client.batchUpdate as any).mock.calls[0][0];
+		expect(requests.some((r: any) => r.insertDimension)).toBe(false);
+		expect(result).toMatchObject({ bucket: "結帳日前", bucketRowsAdded: 0 });
+	});
+
 	it("warns and skips the guard when 支付方式 holds an unknown value", async () => {
 		const g = dateGrid();
 		(g[6] as unknown[])[6] = "玉山 Ubear";
