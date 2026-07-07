@@ -403,12 +403,15 @@ export function creditBucketGuard(
 		};
 	}
 
-	const isPre = dateSerialValue <= closeSerial;
+	// A row dated exactly ON the 結帳日 belongs to the NEXT statement — the
+	// 結帳日前 bucket is strictly < 結帳日, mirroring the sheet's FILTER/SUMIFS
+	// conditions (< / >=).
+	const isPre = dateSerialValue < closeSerial;
 	const bucket: "結帳日前" | "結帳日後" = isPre ? "結帳日前" : "結帳日後";
 	const labelRow = isPre ? block.preLabelRow : block.postLabelRow;
 	const subtotalRow = isPre ? block.preSubtotalRow : block.postSubtotalRow;
 	const inBucket = (serial: unknown): boolean =>
-		typeof serial === "number" && (isPre ? serial <= closeSerial : serial > closeSerial);
+		typeof serial === "number" && (isPre ? serial < closeSerial : serial >= closeSerial);
 
 	let matches = 1; // the pending row: not in the grid yet, or its date isn't
 	for (let r = 3; r <= values.length; r++) {

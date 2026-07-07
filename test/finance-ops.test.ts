@@ -1169,6 +1169,19 @@ describe("addExpense", () => {
 			expect(result).toMatchObject({ bucket: "結帳日後", bucketRowsAdded: 1 });
 		});
 
+		it("places an entry dated exactly ON the 結帳日 into 結帳日後 — it belongs to the next statement", async () => {
+			const client = fakeClient(creditGrid());
+			const result = await addExpense(client, {
+				item: "Netflix",
+				amount: 390,
+				currency: "TWD",
+				month: 9,
+				date: "7/19", // the fixture's 國泰 CUBE 結帳日
+				card: "國泰 CUBE",
+			});
+			expect(result).toMatchObject({ bucket: "結帳日後" });
+		});
+
 		it("never counts 午餐預算 rows for a USD-billed card", async () => {
 			const g = creditGrid();
 			g[4] = [dateSerial(2026, 7, 1), "既有", "訂閱", 5, "", "USD", "CHASE Amazon"];
