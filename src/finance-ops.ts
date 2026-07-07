@@ -6,6 +6,10 @@
 
 import {
 	addMonthsClamped,
+	ADJUSTED_NTD_END_BALANCE_LABEL,
+	ADJUSTED_REAL_NTD_END_LABEL,
+	ADJUSTED_REAL_USD_END_LABEL,
+	ADJUSTED_USD_END_BALANCE_LABELS,
 	BANK_BLOCK_LABEL,
 	BUDGET_HEADER_LABEL,
 	CREDIT_BLOCK_COLS,
@@ -33,6 +37,7 @@ import {
 	MONTH_USD_NET_LABELS,
 	monthTabName,
 	NON_CARD_PAYMENT_METHODS,
+	NTD_ADJUSTMENT_LABEL,
 	NTD_CONSERVATIVE_END_LABEL,
 	NTD_END_BALANCE_LABEL,
 	NTD_INCOME_LABEL,
@@ -69,6 +74,7 @@ import {
 	TRIP_BLOCK_WIDTH,
 	TRIP_MAX_BLOCK_ROWS,
 	TRIP_TOTAL_LABEL,
+	USD_ADJUSTMENT_LABEL,
 	USD_END_BALANCE_LABEL,
 	USD_INCOME_LABEL,
 	USD_PAYMENT_LABEL,
@@ -539,6 +545,12 @@ const NON_INCOME_LABELS = new Set<string>([
 	REAL_USD_CASH_SPENDING_LABEL,
 	REAL_USD_CARD_PAYMENT_LABEL,
 	REAL_USD_END_BALANCE_LABEL,
+	NTD_ADJUSTMENT_LABEL,
+	USD_ADJUSTMENT_LABEL,
+	ADJUSTED_NTD_END_BALANCE_LABEL,
+	...ADJUSTED_USD_END_BALANCE_LABELS,
+	ADJUSTED_REAL_NTD_END_LABEL,
+	ADJUSTED_REAL_USD_END_LABEL,
 ]);
 
 /**
@@ -646,6 +658,62 @@ function assertNotTruncated(truncated: boolean, tab: string, range: string): voi
 			`Refusing to operate on ${tab}: reading ${range} was truncated at the size cap, so row positions cannot be trusted.`,
 		);
 	}
+}
+
+export interface AdjustBalanceParams {
+	currency: "TWD" | "USD";
+	/** The balance the real bank account actually shows. */
+	actual: number;
+	month?: number;
+}
+
+/**
+ * Reconcile a month-end balance against the real bank account: write
+ * actual − 本月底…真實餘額 into the currency's …餘額調整 cell. The 調整後
+ * rows of BOTH the 帳戶實際數字對應 and 銀行餘額 views read that one cell,
+ * so a single write realigns both, and next month's 本月初 cells chain from
+ * the 調整後 rows (start_month wires this). The write OVERWRITES any
+ * previous adjustment — the delta is always against the raw computed 本月底,
+ * so re-running with a fresh actual never accumulates.
+ */
+export async function adjustBalance(client: SheetsClient, p: AdjustBalanceParams) {
+	const tab = p.month !== undefined ? monthTabName(p.month) : currentMonthTab();
+	const labels =
+		p.currency === "TWD"
+			? { end: REAL_NTD_END_BALANCE_LABEL, adjust: NTD_ADJUSTMENT_LABEL }
+			: { end: REAL_USD_END_BALANCE_LABEL, adjust: USD_ADJUSTMENT_LABEL };
+
+	const { values, truncated } = await client.readRange(`${quoteTab(tab)}!${FULL_GRID_READ}`, "UNFORMATTED_VALUE");
+	assertNotTruncated(truncated, tab, FULL_GRID_READ);
+
+	const endRow = findRowByValue(values, MONTH_COLS.budgetLabel, labels.end);
+	const adjustRow = findRowByValue(values, MONTH_COLS.budgetLabel, labels.adjust);
+	if (endRow === null || adjustRow === null) {
+		throw new Error(
+			`${tab} has no "${endRow === null ? labels.end : labels.adjust}" row — the 調整 layout exists from 6月 2026 on.`,
+		);
+	}
+	const calculated = values[endRow - 1]?.[MONTH_COLS.budgetValue];
+	if (typeof calculated !== "number") {
+		throw new Error(
+			`The "${labels.end}" cell in ${tab} did not evaluate to a number (got "${String(calculated ?? "")}") — fix that formula before reconciling against it.`,
+		);
+	}
+	const prev = values[adjustRow - 1]?.[MONTH_COLS.budgetValue];
+	const previousAdjustment = typeof prev === "number" ? prev : 0;
+	const adjustment = round2(p.actual - calculated);
+
+	const sheetId = await client.getSheetId(tab);
+	await client.batchUpdate([
+		{
+			updateCells: {
+				start: { sheetId, rowIndex: adjustRow - 1, columnIndex: MONTH_COLS.budgetValue },
+				rows: [{ values: [cellData(adjustment)] }],
+				fields: "userEnteredValue",
+			},
+		},
+	]);
+	return { tab, currency: p.currency, calculated, actual: p.actual, adjustment, previousAdjustment };
 }
 
 export interface AddExpenseParams {
@@ -1408,45 +1476,46 @@ export async function startMonth(client: SheetsClient, month: number) {
 		});
 	}
 
-	// Chain the NTD ledger forward: 本月初新臺幣餘額 points at the
-	// month-just-ended's 本月底新臺幣餘額. Only the NTD side chains —
-	// 本月初美金餘額 stays whatever it was (0 on the sheet); a USD shortfall
-	// carries through the 上月美金透支 expense row instead. The new tab is a
-	// duplicate, so the 本月底 row sits at the same position as in prevTab.
-	// This write precedes the row deletes below; a delete above only shifts
-	// the written cell (with its label) up in lockstep, and the cross-tab
-	// reference into prevTab is unaffected. Skipped on tabs that predate the
-	// block (rows not found).
-	const ntdStartRow = findRowByValue(values, MONTH_COLS.budgetLabel, NTD_START_BALANCE_LABEL);
-	const ntdEndRow = findRowByValue(values, MONTH_COLS.budgetLabel, NTD_END_BALANCE_LABEL);
-	if (ntdStartRow !== null && ntdEndRow !== null) {
-		const ref = `=${quoteTab(prevTab)}!${colLetter(MONTH_COLS.budgetValue)}${ntdEndRow}`;
-		requests.push({
-			updateCells: {
-				start: { sheetId, rowIndex: ntdStartRow - 1, columnIndex: MONTH_COLS.budgetValue },
-				rows: [{ values: [cellData(ref)] }],
-				fields: "userEnteredValue",
-			},
-		});
-	}
-
-	// The 帳戶實際數字對應 block chains BOTH currencies forward the same way:
-	// each 本月初…真實餘額 points at the month-just-ended's 本月底…真實餘額.
-	// Unlike the 銀行餘額 ledger above, the USD side has no carry expense row
-	// to absorb a shortfall — the real-account view only ever chains. Same
-	// duplicate-grid row math and write-before-delete lockstep as the NTD
-	// chain; tabs predating the section (6月 and earlier) skip silently.
-	for (const [startLabel, endLabel] of [
-		[REAL_NTD_START_BALANCE_LABEL, REAL_NTD_END_BALANCE_LABEL],
-		[REAL_USD_START_BALANCE_LABEL, REAL_USD_END_BALANCE_LABEL],
-	] as const) {
-		const startRow = findRowByValue(values, MONTH_COLS.budgetLabel, startLabel);
-		const endRow = findRowByValue(values, MONTH_COLS.budgetLabel, endLabel);
+	// Chain the ledgers forward: each 本月初… cell points at the month-just-
+	// ended's 調整後 month-end row (the reconciled number) when the 調整
+	// layout is present, else the raw 本月底 row. On the 銀行餘額 side both
+	// currencies chain since the 調整 layout — the USD chain is gated on the
+	// 調整後 row so that pre-調整 tabs keep the legacy design (本月初美金餘額
+	// untouched; the shortfall carries via 上月美金透支). The new tab is a
+	// duplicate, so prevTab's rows sit at the same positions as this grid's;
+	// these writes precede the row deletes below, and a delete above only
+	// shifts the written cell (with its label) up in lockstep, leaving the
+	// cross-tab reference into prevTab unaffected. Missing anchors skip
+	// silently (tabs predating a block).
+	const budgetCol = MONTH_COLS.budgetLabel;
+	const chains: ReadonlyArray<readonly [string, number | null]> = [
+		[NTD_START_BALANCE_LABEL, findRowByLabels(values, budgetCol, [ADJUSTED_NTD_END_BALANCE_LABEL, NTD_END_BALANCE_LABEL])],
+		[USD_START_BALANCE_LABEL, findRowByLabels(values, budgetCol, ADJUSTED_USD_END_BALANCE_LABELS)],
+		[REAL_NTD_START_BALANCE_LABEL, findRowByLabels(values, budgetCol, [ADJUSTED_REAL_NTD_END_LABEL, REAL_NTD_END_BALANCE_LABEL])],
+		[REAL_USD_START_BALANCE_LABEL, findRowByLabels(values, budgetCol, [ADJUSTED_REAL_USD_END_LABEL, REAL_USD_END_BALANCE_LABEL])],
+	];
+	for (const [startLabel, endRow] of chains) {
+		const startRow = findRowByValue(values, budgetCol, startLabel);
 		if (startRow !== null && endRow !== null) {
 			requests.push({
 				updateCells: {
 					start: { sheetId, rowIndex: startRow - 1, columnIndex: MONTH_COLS.budgetValue },
 					rows: [{ values: [cellData(`=${quoteTab(prevTab)}!${colLetter(MONTH_COLS.budgetValue)}${endRow}`)] }],
+					fields: "userEnteredValue",
+				},
+			});
+		}
+	}
+
+	// The duplicated 調整 cells still hold last month's reconciliation delta —
+	// a new month starts unadjusted.
+	for (const adjustLabel of [NTD_ADJUSTMENT_LABEL, USD_ADJUSTMENT_LABEL]) {
+		const adjustRow = findRowByValue(values, budgetCol, adjustLabel);
+		if (adjustRow !== null) {
+			requests.push({
+				updateCells: {
+					start: { sheetId, rowIndex: adjustRow - 1, columnIndex: MONTH_COLS.budgetValue },
+					rows: [{ values: [cellData(0)] }],
 					fields: "userEnteredValue",
 				},
 			});
