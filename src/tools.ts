@@ -277,7 +277,11 @@ export function registerTailoredTools(server: McpServer, client: SheetsClient): 
 			date: z.string().min(1).describe("Date/time as you write it, e.g. 10/08 16:03"),
 			shop: z.string().describe("Store name (may be empty)"),
 			item: z.string().min(1).describe("What was bought"),
-			payment_method: z.string().describe("e.g. Suica, 現金, 信用卡, 已算在預算"),
+			payment_method: z
+				.string()
+				.describe(
+					"支付方式 — use one of the block's existing dropdown options (e.g. Suica, 現金, 信用卡, 已算在預算) so it renders as a chip; the tool copies that column's dropdown onto the new cell.",
+				),
 			jpy: z.number().optional().describe("Price in Japanese yen — exactly one of jpy/twd"),
 			twd: z.number().optional().describe("Price in NTD for TWD-direct rows — exactly one of jpy/twd"),
 		},
