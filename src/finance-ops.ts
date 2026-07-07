@@ -7,7 +7,16 @@
 import {
 	BANK_BLOCK_LABEL,
 	BUDGET_HEADER_LABEL,
+	CREDIT_BILL_TOTAL_LABEL,
+	CREDIT_BLOCK_COLS,
 	CREDIT_CARDS,
+	CREDIT_CLOSE_LABEL,
+	CREDIT_DUE_LABEL,
+	CREDIT_PAY_LABEL,
+	CREDIT_POST_LABEL,
+	CREDIT_PRE_LABEL,
+	CREDIT_SECTION_LABEL,
+	type CreditCard,
 	currentMonthTab,
 	INCOME_HEADER_LABEL,
 	LUNCH_ADJUST_LABEL,
@@ -215,6 +224,72 @@ export function findLunchSection(values: unknown[][], tab: string): LunchSection
 		}
 	}
 	throw new Error(`No ${LUNCH_TOTAL_LABEL} row under the ${LUNCH_SECTION_LABEL} header in ${tab}.`);
+}
+
+export interface CreditCardBlock {
+	card: CreditCard;
+	/** 1-indexed row of the card-name title cell. */
+	titleRow: number;
+	/** 0-indexed column of the title — the block's first column (H or L). */
+	startCol: number;
+	closeDateRow: number;
+	payDateRow: number;
+	billTotalRow: number;
+	dueRow: number;
+	/** Rows of the 結帳日前 / 結帳日後 labels — each holds its bucket's 小計 in the block's value column. */
+	preSubtotalRow: number;
+	postSubtotalRow: number;
+}
+
+/**
+ * Locate the 信用卡帳單對帳區 card blocks (grid of FULL_GRID_READ). Returns
+ * a block per CREDIT_CARDS entry present on the sheet, in registry order;
+ * registry cards absent from the sheet are skipped (the section is
+ * hand-maintained). Throws when the section anchor is missing, or when a
+ * found card's block lacks one of its label rows — a label scan never runs
+ * past the next card title stacked below in the same column.
+ */
+export function findCreditSection(values: unknown[][], tab: string): CreditCardBlock[] {
+	const anchorRow = findRowByValue(values, CREDIT_BLOCK_COLS[0], CREDIT_SECTION_LABEL);
+	if (anchorRow === null) {
+		throw new Error(
+			`No ${CREDIT_SECTION_LABEL} section in ${tab} (searched column ${colLetter(CREDIT_BLOCK_COLS[0])} of ${FULL_GRID_READ}) — the card blocks exist from 7月 2026 on.`,
+		);
+	}
+	const cellStr = (r: number, c: number) => String(values[r - 1]?.[c] ?? "").trim();
+	const cardNames = new Set(CREDIT_CARDS.map((c) => c.name));
+	const blocks: CreditCardBlock[] = [];
+	for (const card of CREDIT_CARDS) {
+		let titleRow: number | null = null;
+		let startCol = CREDIT_BLOCK_COLS[0] as number;
+		for (const col of CREDIT_BLOCK_COLS) {
+			for (let r = anchorRow + 1; r <= values.length; r++) {
+				if (cellStr(r, col) === card.name) {
+					titleRow = r;
+					startCol = col;
+					break;
+				}
+			}
+			if (titleRow !== null) break;
+		}
+		if (titleRow === null) continue;
+		const labelRow = (label: string, after: number): number => {
+			for (let r = after + 1; r <= values.length; r++) {
+				const v = cellStr(r, startCol);
+				if (v === label) return r;
+				if (cardNames.has(v)) break; // ran into the next card block stacked below
+			}
+			throw new Error(`The "${card.name}" block in ${tab} is missing its ${label} row.`);
+		};
+		const closeDateRow = labelRow(CREDIT_CLOSE_LABEL, titleRow);
+		const payDateRow = labelRow(CREDIT_PAY_LABEL, closeDateRow);
+		const billTotalRow = labelRow(CREDIT_BILL_TOTAL_LABEL, payDateRow);
+		const dueRow = labelRow(CREDIT_DUE_LABEL, billTotalRow);
+		const preSubtotalRow = labelRow(CREDIT_PRE_LABEL, dueRow);
+		const postSubtotalRow = labelRow(CREDIT_POST_LABEL, preSubtotalRow);
+		blocks.push({ card, titleRow, startCol, closeDateRow, payDateRow, billTotalRow, dueRow, preSubtotalRow, postSubtotalRow });
+	}
+	return blocks;
 }
 
 export interface IncomeWindow {
