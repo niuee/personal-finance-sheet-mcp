@@ -549,7 +549,7 @@ export async function addTransfer(client: SheetsClient, p: AddTransferParams) {
 	let finalTotalRow = totalRow;
 	const scratchRequests: object[] = [];
 	if (targetRow === null) {
-		// Insert directly above 總和; the ledger's +J/−H/+M references shift with it.
+		// Insert directly above 總和; the ledger's +K/−I/+N references shift with it.
 		targetRow = totalRow;
 		finalTotalRow = totalRow + 1;
 		scratchRequests.push({
@@ -582,21 +582,21 @@ export async function addTransfer(client: SheetsClient, p: AddTransferParams) {
 	}
 
 	const r = targetRow;
-	const H = colLetter(TRANSFER_COLS.ntd);
-	const I = colLetter(TRANSFER_COLS.spotUsd);
-	const J = colLetter(TRANSFER_COLS.actualUsd);
-	const K = colLetter(TRANSFER_COLS.spread);
-	const L = colLetter(TRANSFER_COLS.fee);
+	const I = colLetter(TRANSFER_COLS.ntd);
+	const J = colLetter(TRANSFER_COLS.spotUsd);
+	const K = colLetter(TRANSFER_COLS.actualUsd);
+	const L = colLetter(TRANSFER_COLS.spread);
+	const M = colLetter(TRANSFER_COLS.fee);
 	const rowCells = [
-		cellData(p.ntd), // H 新臺幣
-		cellData(`=${H}${r}/${rate}`), // I 當下美金, rate pinned at entry
-		cellData(p.usd), // J 實際美金
-		cellData(`=(${I}${r}-${J}${r})*${rate}`), // K 匯差 in NTD
-		cellData(p.fee), // L 手續費
-		cellData(`=${K}${r}+${L}${r}`), // M 當筆總額外花費
+		cellData(p.ntd), // I 新臺幣
+		cellData(`=${I}${r}/${rate}`), // J 當下美金, rate pinned at entry
+		cellData(p.usd), // K 實際美金
+		cellData(`=(${J}${r}-${K}${r})*${rate}`), // L 匯差 in NTD
+		cellData(p.fee), // M 手續費
+		cellData(`=${L}${r}+${M}${r}`), // N 當筆總額外花費
 	];
 	// Rewrite 總和 over the whole data window: the sheet's original single-cell
-	// =sum(H35) cannot auto-extend, so the op owns the range from now on.
+	// =sum(I35) cannot auto-extend, so the op owns the range from now on.
 	const sumCells = [];
 	for (let c = TRANSFER_COLS.ntd; c <= TRANSFER_COLS.extra; c++) {
 		const col = colLetter(c);
@@ -686,7 +686,7 @@ export async function addLunch(client: SheetsClient, p: AddLunchParams) {
 	let finalTotalRow = totalRow;
 	const requests: object[] = [];
 	if (targetRow === null) {
-		// Insert directly above 總和; the ledger's 午餐超支或回補 =Q reference
+		// Insert directly above 總和; the ledger's 午餐超支或回補 =R reference
 		// tracks the 剩餘 cell (above the insert) and needs no rewiring.
 		targetRow = totalRow;
 		finalTotalRow = totalRow + 1;
@@ -697,7 +697,7 @@ export async function addLunch(client: SheetsClient, p: AddLunchParams) {
 			},
 		});
 	}
-	const Q = colLetter(LUNCH_COLS.amount);
+	const R = colLetter(LUNCH_COLS.amount);
 	requests.push(
 		{
 			updateCells: {
@@ -723,11 +723,11 @@ export async function addLunch(client: SheetsClient, p: AddLunchParams) {
 			},
 		},
 		// Rewrite 總和 over the whole data window: the sheet's original
-		// =sum(Q38:Q39) cannot auto-extend, so the op owns the range from now on.
+		// =sum(R38:R39) cannot auto-extend, so the op owns the range from now on.
 		{
 			updateCells: {
 				start: { sheetId, rowIndex: finalTotalRow - 1, columnIndex: LUNCH_COLS.amount },
-				rows: [{ values: [cellData(`=SUM(${Q}${headerRow + 1}:${Q}${finalTotalRow - 1})`)] }],
+				rows: [{ values: [cellData(`=SUM(${R}${headerRow + 1}:${R}${finalTotalRow - 1})`)] }],
 				fields: "userEnteredValue",
 			},
 		},
@@ -735,8 +735,8 @@ export async function addLunch(client: SheetsClient, p: AddLunchParams) {
 	await client.batchUpdate(requests);
 
 	// Echo the section state AFTER the write so the caller sees the new leftover.
-	const O = colLetter(LUNCH_COLS.date);
-	const readBack = await client.readRange(`${quoteTab(tab)}!${O}${budgetRow}:${Q}${budgetRow}`, "UNFORMATTED_VALUE");
+	const P = colLetter(LUNCH_COLS.date);
+	const readBack = await client.readRange(`${quoteTab(tab)}!${P}${budgetRow}:${R}${budgetRow}`, "UNFORMATTED_VALUE");
 	const num = (v: unknown): number | null => (typeof v === "number" ? v : null);
 	const budget = num(readBack.values[0]?.[0]);
 	const leftover = num(readBack.values[0]?.[2]);
