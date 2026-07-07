@@ -17,6 +17,7 @@ import {
 	CREDIT_POST_LABEL,
 	CREDIT_PRE_LABEL,
 	CREDIT_SECTION_LABEL,
+	CREDIT_SUBTOTAL_LABEL,
 	type CreditCard,
 	currentMonthTab,
 	INCOME_HEADER_LABEL,
@@ -238,7 +239,7 @@ export interface CreditCardBlock {
 	closeDateRow: number;
 	payDateRow: number;
 	dueRow: number;
-	/** Rows of the 結帳日前 / 結帳日後 labels — each holds its bucket's 小計 in the block's value column. */
+	/** Rows of the buckets' 小計 rows — the 小計 label sits in the block's 2nd column, the value in the 3rd. */
 	preSubtotalRow: number;
 	postSubtotalRow: number;
 }
@@ -286,8 +287,21 @@ export function findCreditSection(values: unknown[][], tab: string): CreditCardB
 		const closeDateRow = labelRow(CREDIT_CLOSE_LABEL, titleRow);
 		const payDateRow = labelRow(CREDIT_PAY_LABEL, closeDateRow);
 		const dueRow = labelRow(CREDIT_DUE_LABEL, payDateRow);
-		const preSubtotalRow = labelRow(CREDIT_PRE_LABEL, dueRow);
-		const postSubtotalRow = labelRow(CREDIT_POST_LABEL, preSubtotalRow);
+		const preLabelRow = labelRow(CREDIT_PRE_LABEL, dueRow);
+		// The 小計 label lives in the block's 2nd column; the scan is bounded by
+		// the next 1st-column boundary (the other bucket's label or the next
+		// card title) so a missing 小計 throws instead of adopting a lower one.
+		const subtotalRow = (after: number, boundary: string | null): number => {
+			for (let r = after + 1; r <= values.length; r++) {
+				const first = cellStr(r, startCol);
+				if (cardNames.has(first) || (boundary !== null && first === boundary)) break;
+				if (cellStr(r, startCol + 1) === CREDIT_SUBTOTAL_LABEL) return r;
+			}
+			throw new Error(`The "${card.name}" block in ${tab} is missing its ${CREDIT_SUBTOTAL_LABEL} row.`);
+		};
+		const preSubtotalRow = subtotalRow(preLabelRow, CREDIT_POST_LABEL);
+		const postLabelRow = labelRow(CREDIT_POST_LABEL, preSubtotalRow);
+		const postSubtotalRow = subtotalRow(postLabelRow, null);
 		blocks.push({ card, titleRow, startCol, closeDateRow, payDateRow, dueRow, preSubtotalRow, postSubtotalRow });
 	}
 	return blocks;

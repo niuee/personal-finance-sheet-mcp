@@ -300,8 +300,9 @@ describe("findLunchSection", () => {
 /**
  * lunchGrid + a 信用卡帳單對帳區 (anchor H40) with two card blocks:
  * 國泰 CUBE at H41 (values in J, lag 1) and CHASE Amazon at L41 (values in N,
- * lag 0). Rows: title 41, 結帳日 42, 繳款日 43, 本月需繳款 44, 結帳日前+小計 45,
- * header 46, cushion 47-48, 結帳日後+小計 49, header 50, cushion 51-52.
+ * lag 0). Rows: title 41, 結帳日 42, 繳款日 43, 本月需繳款 44, 結帳日前 45,
+ * header 46, cushion 47-48, 小計 49, 結帳日後 51, header 52, cushion 53-54, 小計 55.
+ * The 小計 label sits in the block's 2nd column (I/M), the value in the 3rd (J/N).
  */
 function creditGrid(): unknown[][] {
 	const g = lunchGrid();
@@ -318,15 +319,19 @@ function creditGrid(): unknown[][] {
 	put(43, 7, "本月需繳款");
 	put(43, 9, 21500);
 	put(44, 7, "結帳日前");
-	put(44, 9, '=SUMIFS(E3:E,G3:G,"國泰 CUBE",A3:A,"<="&J43,A3:A,">0")');
 	put(45, 7, "日期");
 	put(45, 8, "項目");
 	put(45, 9, "金額");
-	put(48, 7, "結帳日後");
-	put(48, 9, '=SUMIFS(E3:E,G3:G,"國泰 CUBE",A3:A,">"&J43)');
-	put(49, 7, "日期");
-	put(49, 8, "項目");
-	put(49, 9, "金額");
+	// rows 47-48 (idx 46-47) intentionally empty data cushion
+	put(48, 8, "小計");
+	put(48, 9, '=SUMIFS(E3:E,G3:G,"國泰 CUBE",A3:A,"<="&J43,A3:A,">0")');
+	put(50, 7, "結帳日後");
+	put(51, 7, "日期");
+	put(51, 8, "項目");
+	put(51, 9, "金額");
+	// rows 53-54 (idx 52-53) intentionally empty data cushion
+	put(54, 8, "小計");
+	put(54, 9, '=SUMIFS(E3:E,G3:G,"國泰 CUBE",A3:A,">"&J43)');
 	// CHASE Amazon — L/M/N (11/12/13)
 	put(40, 11, "CHASE Amazon");
 	put(41, 11, "本月結帳日");
@@ -334,17 +339,19 @@ function creditGrid(): unknown[][] {
 	put(42, 11, "本月繳款日");
 	put(42, 13, dateSerial(2026, 7, 28));
 	put(43, 11, "本月需繳款");
-	put(43, 13, "=N45+'6 月'!N49");
+	put(43, 13, "=N49+'6 月'!N55");
 	put(44, 11, "結帳日前");
-	put(44, 13, '=SUMIFS(D3:D,G3:G,"CHASE Amazon",A3:A,"<="&N43,A3:A,">0")');
 	put(45, 11, "日期");
 	put(45, 12, "項目");
 	put(45, 13, "金額");
-	put(48, 11, "結帳日後");
-	put(48, 13, '=SUMIFS(D3:D,G3:G,"CHASE Amazon",A3:A,">"&N43)');
-	put(49, 11, "日期");
-	put(49, 12, "項目");
-	put(49, 13, "金額");
+	put(48, 12, "小計");
+	put(48, 13, '=SUMIFS(D3:D,G3:G,"CHASE Amazon",A3:A,"<="&N43,A3:A,">0")');
+	put(50, 11, "結帳日後");
+	put(51, 11, "日期");
+	put(51, 12, "項目");
+	put(51, 13, "金額");
+	put(54, 12, "小計");
+	put(54, 13, '=SUMIFS(D3:D,G3:G,"CHASE Amazon",A3:A,">"&N43)');
 	return g;
 }
 
@@ -360,10 +367,10 @@ describe("findCreditSection", () => {
 			closeDateRow: 42,
 			payDateRow: 43,
 			dueRow: 44,
-			preSubtotalRow: 45,
-			postSubtotalRow: 49,
+			preSubtotalRow: 49,
+			postSubtotalRow: 55,
 		});
-		expect(blocks[1]).toMatchObject({ titleRow: 41, startCol: 11, postSubtotalRow: 49 });
+		expect(blocks[1]).toMatchObject({ titleRow: 41, startCol: 11, postSubtotalRow: 55 });
 	});
 
 	it("throws when the tab has no 信用卡帳單對帳區", () => {
@@ -376,13 +383,18 @@ describe("findCreditSection", () => {
 		expect(() => findCreditSection(g, "9 月")).toThrow(/國泰 CUBE.*本月需繳款/);
 	});
 
-	it("never adopts a label from the next card block stacked below in the same column", () => {
+	it("throws naming the card and 小計 when the bounded scan crosses into the next bucket", () => {
 		const g = creditGrid();
-		(g[48] as unknown[])[7] = ""; // CUBE loses 結帳日後...
-		(g[51] ??= [])[7] = "CHASE Freedom"; // ...and Freedom's block starts below
-		(g[52] ??= [])[7] = "本月結帳日";
-		(g[53] ??= [])[7] = "結帳日後"; // a literal match a few rows below Freedom's title — must never be adopted
-		expect(() => findCreditSection(g, "9 月")).toThrow(/國泰 CUBE.*結帳日後/);
+		(g[48] as unknown[])[8] = ""; // CUBE loses its pre-小計 label
+		expect(() => findCreditSection(g, "9 月")).toThrow(/國泰 CUBE.*小計/);
+	});
+
+	it("never adopts a 小計 from the next card block stacked below in the same column", () => {
+		const g = creditGrid();
+		(g[54] as unknown[])[8] = ""; // CUBE loses its post-小計 label
+		(g[57] ??= [])[7] = "CHASE Freedom"; // ...and Freedom's block starts below
+		(g[58] ??= [])[8] = "小計"; // a literal match a few rows below Freedom's title — must never be adopted
+		expect(() => findCreditSection(g, "9 月")).toThrow(/國泰 CUBE.*小計/);
 	});
 });
 
@@ -1269,10 +1281,10 @@ describe("startMonth", () => {
 		// 國泰 CUBE (values in J = column 9): dates bumped 7/19→8/19, 7/6→8/6.
 		expect(at(41, 9).updateCells.rows[0].values).toEqual([{ userEnteredValue: { numberValue: dateSerial(2026, 8, 19) } }]);
 		expect(at(42, 9).updateCells.rows[0].values).toEqual([{ userEnteredValue: { numberValue: dateSerial(2026, 8, 6) } }]);
-		// lag 1: 本月需繳款 = prev tab's 結帳日前小計 (J45) + prev-prev tab's 結帳日後小計 (J49).
-		expect(at(43, 9).updateCells.rows[0].values).toEqual([{ userEnteredValue: { formulaValue: "='9 月'!J45+'8 月'!J49" } }]);
-		// CHASE Amazon (values in N = column 13), lag 0: 本月需繳款 = this tab's 結帳日前小計 (N45) + prev tab's 結帳日後小計 (N49).
-		expect(at(43, 13).updateCells.rows[0].values).toEqual([{ userEnteredValue: { formulaValue: "=N45+'9 月'!N49" } }]);
+		// lag 1: 本月需繳款 = prev tab's 結帳日前小計 (J49) + prev-prev tab's 結帳日後小計 (J55).
+		expect(at(43, 9).updateCells.rows[0].values).toEqual([{ userEnteredValue: { formulaValue: "='9 月'!J49+'8 月'!J55" } }]);
+		// CHASE Amazon (values in N = column 13), lag 0: 本月需繳款 = this tab's 結帳日前小計 (N49) + prev tab's 結帳日後小計 (N55).
+		expect(at(43, 13).updateCells.rows[0].values).toEqual([{ userEnteredValue: { formulaValue: "=N49+'9 月'!N55" } }]);
 		// No 本期帳單總額 row exists anymore — only the two date bumps plus the single due write per card.
 		expect(requests.filter((r: any) => r.updateCells && r.updateCells.start.columnIndex === 9)).toHaveLength(3);
 		expect(requests.filter((r: any) => r.updateCells && r.updateCells.start.columnIndex === 13)).toHaveLength(3);
@@ -1290,7 +1302,7 @@ describe("startMonth", () => {
 			requests.find(
 				(r: any) => r.updateCells && r.updateCells.start.rowIndex === rowIndex && r.updateCells.start.columnIndex === columnIndex,
 			);
-		expect(at(43, 9).updateCells.rows[0].values).toEqual([{ userEnteredValue: { formulaValue: "='9 月'!J45" } }]);
+		expect(at(43, 9).updateCells.rows[0].values).toEqual([{ userEnteredValue: { formulaValue: "='9 月'!J49" } }]);
 		expect(result.creditRebuilt).toEqual(["國泰 CUBE", "CHASE Amazon"]);
 	});
 

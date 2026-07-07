@@ -7,6 +7,7 @@ import {
 	CREDIT_BLOCK_WIDTH,
 	CREDIT_CARDS,
 	CREDIT_SECTION_LABEL,
+	CREDIT_SUBTOTAL_LABEL,
 	currentMonthTab,
 	dateSerial,
 	KNOWN_TAGS,
@@ -225,6 +226,7 @@ describe("conventions", () => {
 			"本月需繳款",
 			"本月需繳",
 			"結帳日前",
+			"小計",
 		]) {
 			expect(CONVENTIONS_TEXT).toContain(needle);
 		}
@@ -251,6 +253,7 @@ describe("conventions", () => {
 		expect(CREDIT_CARDS.filter((c) => c.statementLag === 0).map((c) => c.name)).toEqual(["CHASE Amazon"]);
 		expect(CREDIT_BLOCK_COLS).toEqual([7, 11]); // H and L
 		expect(CREDIT_BLOCK_WIDTH).toBe(3);
+		expect(CREDIT_SUBTOTAL_LABEL).toBe("小計");
 	});
 
 	it("addMonthsClamped bumps a serial by months, clamping the day and wrapping the year", () => {
