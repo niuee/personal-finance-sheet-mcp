@@ -1,7 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
+	addMonthsClamped,
 	BUDGET_HEADER_LABEL,
 	CONVENTIONS_TEXT,
+	CREDIT_BLOCK_COLS,
+	CREDIT_BLOCK_WIDTH,
+	CREDIT_CARDS,
+	CREDIT_SECTION_LABEL,
+	CREDIT_SUBTOTAL_LABEL,
 	currentMonthTab,
 	dateSerial,
 	KNOWN_TAGS,
@@ -110,7 +116,8 @@ describe("conventions", () => {
 		expect(LUNCH_TOTAL_LABEL).toBe("總和");
 		expect(LUNCH_DEFAULT_ITEM).toBe("中餐");
 		expect(LUNCH_ADJUST_LABEL).toBe("午餐超支或回補");
-		expect(LUNCH_COLS).toEqual({ date: 14, item: 15, amount: 16 });
+		expect(LUNCH_COLS).toEqual({ date: 15, item: 16, amount: 17, paidMethod: 18 });
+		expect(LUNCH_COLS.paidMethod).toBe(18); // S — 支付方式
 	});
 
 	it("keeps 沛還 and 薪水 as recurring income, ad-hoc rows are not", () => {
@@ -127,11 +134,13 @@ describe("conventions", () => {
 			usd: 3,
 			twd: 4,
 			paidWith: 5,
+			paidMethod: 6,
 			totalLabel: 3,
 			totalValue: 4,
 			budgetLabel: 1,
 			budgetValue: 3,
 		});
+		expect(MONTH_COLS.paidMethod).toBe(6); // G — 支付方式
 	});
 
 	it("documents the 類別 tags seen in the sheet", () => {
@@ -212,6 +221,12 @@ describe("conventions", () => {
 			"add_lunch",
 			"午餐超支或回補",
 			"編列預算",
+			"信用卡帳單對帳區",
+			"支付方式",
+			"本月需繳款",
+			"本月需繳",
+			"結帳日前",
+			"小計",
 		]) {
 			expect(CONVENTIONS_TEXT).toContain(needle);
 		}
@@ -222,5 +237,30 @@ describe("conventions", () => {
 		expect(TRIP_HEADER_SHOP).toBe("店鋪");
 		expect(TRIP_TOTAL_LABEL).toBe("分類總花費");
 		expect(TRIP_MAX_BLOCK_ROWS).toBe(30);
+	});
+
+	it("exports the 信用卡帳單對帳區 registry and block geometry", () => {
+		expect(CREDIT_SECTION_LABEL).toBe("信用卡帳單對帳區");
+		expect(CREDIT_CARDS.map((c) => c.name)).toEqual([
+			"國泰 CUBE",
+			"CHASE Amazon",
+			"CHASE Freedom",
+			"Apple Card",
+		]);
+		// 國泰 CUBE bills TWD; the US cards bill USD.
+		expect(CREDIT_CARDS.filter((c) => c.billingCurrency === "TWD").map((c) => c.name)).toEqual(["國泰 CUBE"]);
+		// Only CHASE Amazon's 繳款日 pays the statement closed the SAME month.
+		expect(CREDIT_CARDS.filter((c) => c.statementLag === 0).map((c) => c.name)).toEqual(["CHASE Amazon"]);
+		expect(CREDIT_BLOCK_COLS).toEqual([7, 11]); // H and L
+		expect(CREDIT_BLOCK_WIDTH).toBe(3);
+		expect(CREDIT_SUBTOTAL_LABEL).toBe("小計");
+	});
+
+	it("addMonthsClamped bumps a serial by months, clamping the day and wrapping the year", () => {
+		expect(addMonthsClamped(dateSerial(2026, 7, 19), 1)).toBe(dateSerial(2026, 8, 19));
+		expect(addMonthsClamped(dateSerial(2026, 7, 31), 1)).toBe(dateSerial(2026, 8, 31));
+		expect(addMonthsClamped(dateSerial(2026, 8, 31), 1)).toBe(dateSerial(2026, 9, 30));
+		expect(addMonthsClamped(dateSerial(2026, 1, 31), 1)).toBe(dateSerial(2026, 2, 28));
+		expect(addMonthsClamped(dateSerial(2026, 12, 15), 1)).toBe(dateSerial(2027, 1, 15));
 	});
 });

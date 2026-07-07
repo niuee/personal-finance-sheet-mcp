@@ -157,6 +157,13 @@ export function registerTailoredTools(server: McpServer, client: SheetsClient): 
 				.describe(
 					"Which real account paid the row — written to the 支付幣別 column (F); defaults to currency. Use currency USD + paid_with TWD for a USD-priced expense paid from the NTD account (the reverse, TWD-priced + USD-paid, is rejected).",
 				),
+			card: z
+				.string()
+				.min(1)
+				.optional()
+				.describe(
+					"Credit card that charged the row — written to the 支付方式 column (G); the 信用卡帳單對帳區 FILTERs mirror the row into the card's statement bucket (dated rows only). One of: 國泰 CUBE, CHASE Amazon, CHASE Freedom, Apple Card. Omit for cash/bank-transfer rows. Sets 支付幣別 to the card's billing currency unless paid_with is given.",
+				),
 		},
 		async ({ paid_with, ...p }) => {
 			try {
@@ -213,7 +220,7 @@ export function registerTailoredTools(server: McpServer, client: SheetsClient): 
 
 	server.tool(
 		"start_month",
-		"Open a new month: duplicates the previous month's tab (keeping all formulas and recurring items like subscriptions), rewires the 上月…透支 carries to the month just ended's 本月…收支狀況 cells and 本月初新臺幣餘額 to its 本月底新臺幣餘額, clears one-off expenses and ad-hoc income, and empties the 午餐預算 lunch log so the budget's 剩餘 resets. Refuses if the tab already exists.",
+		"Open a new month: duplicates the previous month's tab (keeping all formulas and recurring items like subscriptions), rewires the 上月…透支 carries to the month just ended's 本月…收支狀況 cells and 本月初新臺幣餘額 to its 本月底新臺幣餘額, clears one-off expenses and ad-hoc income, empties the 午餐預算 lunch log so the budget's 剩餘 resets, rolls the 信用卡帳單對帳區 forward (結帳日/繳款日 +1 month, 本月需繳款 rewired across the two months it covers). Refuses if the tab already exists.",
 		{ month: monthParam.describe("The month to create, 1-12") },
 		async ({ month }) => {
 			try {
@@ -248,7 +255,7 @@ export function registerTailoredTools(server: McpServer, client: SheetsClient): 
 
 	server.tool(
 		"add_transfer",
-		"Log a 乾坤大挪移 NTD→USD transfer into a monthly tab (defaults to the current month): writes the entry into the transfer block (columns G-M), pins 當下美金/匯差 to the USDTWD spot rate at entry time, and keeps the 總和 sums covering every row. The 銀行餘額 ledgers pick it up automatically: +實際美金 into 本月底美金餘額, −新臺幣 from 本月底新臺幣餘額, and 匯差+手續費 into 本月新臺幣支出 as this month's NTD spending. Use this instead of update_range for transfers.",
+		"Log a 乾坤大挪移 NTD→USD transfer into a monthly tab (defaults to the current month): writes the entry into the transfer block (columns H-N), pins 當下美金/匯差 to the USDTWD spot rate at entry time, and keeps the 總和 sums covering every row. The 銀行餘額 ledgers pick it up automatically: +實際美金 into 本月底美金餘額, −新臺幣 from 本月底新臺幣餘額, and 匯差+手續費 into 本月新臺幣支出 as this month's NTD spending. Use this instead of update_range for transfers.",
 		{
 			ntd: z.number().positive().describe("NTD debited from the bank (新臺幣)"),
 			usd: z.number().positive().describe("USD that actually arrived (實際美金)"),
@@ -271,7 +278,7 @@ export function registerTailoredTools(server: McpServer, client: SheetsClient): 
 
 	server.tool(
 		"add_lunch",
-		"Log a lunch into the 午餐預算 section of a monthly tab (titled 中餐預算 on early tabs — both work) (columns O-Q; defaults to the current month): writes 日期/項目/金額 and keeps the section's 總和 covering every row. The month's lunch BUDGET is the recurring 中餐 row in the expense list — never also add_expense a lunch. The leftover (剩餘 = 編列預算 − 總和) feeds the 銀行餘額 block's 午餐超支或回補 row: unspent budget returns to 本月底新臺幣餘額, an overdraft deducts more. Returns budget/spent/leftover after the entry.",
+		"Log a lunch into the 午餐預算 section of a monthly tab (titled 中餐預算 on early tabs — both work) (columns P-S; defaults to the current month): writes 日期/項目/金額 and keeps the section's 總和 covering every row. The month's lunch BUDGET is the recurring 中餐 row in the expense list — never also add_expense a lunch. The leftover (剩餘 = 編列預算 − 總和) feeds the 銀行餘額 block's 午餐超支或回補 row: unspent budget returns to 本月底新臺幣餘額, an overdraft deducts more. Returns budget/spent/leftover after the entry. A card lunch (card param) also lands in that card's 信用卡帳單對帳區 bucket.",
 		{
 			amount: z.number().positive().describe("金額 in NTD"),
 			item: z.string().min(1).optional().describe("項目 (default: 中餐)"),
@@ -280,6 +287,13 @@ export function registerTailoredTools(server: McpServer, client: SheetsClient): 
 				.min(1)
 				.optional()
 				.describe("Lunch date: M/D, MM/DD, or YYYY-MM-DD (defaults to today in Taipei)"),
+			card: z
+				.string()
+				.min(1)
+				.optional()
+				.describe(
+					"TWD-billed credit card that paid the lunch (currently 國泰 CUBE) — written to the 支付方式 column (S); the 對帳區's TWD-card buckets mirror it into the statement. Omit for cash.",
+				),
 			month: monthParam.optional().describe("Target month 1-12 (default: current month)"),
 		},
 		async (p) => {

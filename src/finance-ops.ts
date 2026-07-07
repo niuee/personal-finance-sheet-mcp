@@ -5,8 +5,20 @@
  */
 
 import {
+	addMonthsClamped,
 	BANK_BLOCK_LABEL,
 	BUDGET_HEADER_LABEL,
+	CREDIT_BLOCK_COLS,
+	CREDIT_BLOCK_WIDTH,
+	CREDIT_CARDS,
+	CREDIT_CLOSE_LABEL,
+	CREDIT_DUE_LABEL,
+	CREDIT_PAY_LABEL,
+	CREDIT_POST_LABEL,
+	CREDIT_PRE_LABEL,
+	CREDIT_SECTION_LABEL,
+	CREDIT_SUBTOTAL_LABEL,
+	type CreditCard,
 	currentMonthTab,
 	INCOME_HEADER_LABEL,
 	LUNCH_ADJUST_LABEL,
@@ -128,8 +140,8 @@ export function findExpenseWindow(values: unknown[][], tab: string): ExpenseWind
 	return { totalRow, start: Number(m[1]), end: Number(m[2]) };
 }
 
-/** The 乾坤大挪移 section spans G–M, wider than GRID_READ — read the full width. */
-export const TRANSFER_GRID_READ = "A1:M60";
+/** The 乾坤大挪移 section spans H–N, wider than GRID_READ — read the full width. */
+export const TRANSFER_GRID_READ = "A1:N60";
 
 export interface TransferSection {
 	/** 1-indexed row of the 日期/新臺幣/… header. */
@@ -161,10 +173,12 @@ export function findTransferSection(values: unknown[][], tab: string): TransferS
 	throw new Error(`No ${TRANSFER_TOTAL_LABEL} row under the ${TRANSFER_SECTION_LABEL} header in ${tab}.`);
 }
 
-// The lunch section grows one row per entry and pushes the 銀行餘額 block
-// below it downward, so the window must hold a full month of daily entries —
-// a too-shallow read makes startMonth's 上月…餘額 rewire silently skip.
-export const LUNCH_GRID_READ = "A1:Q120";
+// The deep month grid: the lunch section (P–S) grows one row per entry and
+// pushes the 銀行餘額 block down, and the 信用卡帳單對帳區 (H–N) runs from
+// row 50 to ~117 — a too-shallow read makes startMonth's rewires silently skip.
+// The width must reach column S (支付方式) or the lunch empty-slot scan and
+// card mirroring would never see it.
+export const FULL_GRID_READ = "A1:S160";
 
 export interface LunchSection {
 	/** 1-indexed row holding the 編列預算 / 剩餘 values. */
@@ -178,13 +192,13 @@ export interface LunchSection {
 /** Both titles the lunch section has carried; the anchor scan accepts either. */
 const LUNCH_ANCHOR_LABELS = [LUNCH_SECTION_LABEL, LUNCH_SECTION_LEGACY_LABEL];
 
-/** Locate the 午餐預算 block (grid of LUNCH_GRID_READ; labels match in any render). Throws when absent or malformed. */
+/** Locate the 午餐預算 block (grid of FULL_GRID_READ; labels match in any render). Throws when absent or malformed. */
 export function findLunchSection(values: unknown[][], tab: string): LunchSection {
 	const dateCol = LUNCH_COLS.date;
 	const anchorRow = findRowByLabels(values, dateCol, LUNCH_ANCHOR_LABELS);
 	if (anchorRow === null) {
 		throw new Error(
-			`No ${LUNCH_SECTION_LABEL} section in ${tab} (searched column ${colLetter(dateCol)} of ${LUNCH_GRID_READ}) — the lunch-budget log exists from 7月 2026 on.`,
+			`No ${LUNCH_SECTION_LABEL} section in ${tab} (searched column ${colLetter(dateCol)} of ${FULL_GRID_READ}) — the lunch-budget log exists from 7月 2026 on.`,
 		);
 	}
 	// add_transfer's full-section path inserts a whole sheet row directly above
@@ -214,6 +228,83 @@ export function findLunchSection(values: unknown[][], tab: string): LunchSection
 		}
 	}
 	throw new Error(`No ${LUNCH_TOTAL_LABEL} row under the ${LUNCH_SECTION_LABEL} header in ${tab}.`);
+}
+
+export interface CreditCardBlock {
+	card: CreditCard;
+	/** 1-indexed row of the card-name title cell. */
+	titleRow: number;
+	/** 0-indexed column of the title — the block's first column (H or L). */
+	startCol: number;
+	closeDateRow: number;
+	payDateRow: number;
+	dueRow: number;
+	/** Rows of the buckets' 小計 rows — the 小計 label sits in the block's 2nd column, the value in the 3rd. */
+	preSubtotalRow: number;
+	postSubtotalRow: number;
+}
+
+/**
+ * Locate the 信用卡帳單對帳區 card blocks (grid of FULL_GRID_READ). Returns
+ * a block per CREDIT_CARDS entry present on the sheet, in registry order;
+ * registry cards absent from the sheet are skipped (the section is
+ * hand-maintained). Throws when the section anchor is missing, or when a
+ * found card's block lacks one of its label rows — a label scan never runs
+ * past the next card title stacked below in the same column.
+ */
+export function findCreditSection(values: unknown[][], tab: string): CreditCardBlock[] {
+	const anchorRow = findRowByValue(values, CREDIT_BLOCK_COLS[0], CREDIT_SECTION_LABEL);
+	if (anchorRow === null) {
+		throw new Error(
+			`No ${CREDIT_SECTION_LABEL} section in ${tab} (searched column ${colLetter(CREDIT_BLOCK_COLS[0])} of ${FULL_GRID_READ}) — the card blocks exist from 7月 2026 on.`,
+		);
+	}
+	const cellStr = (r: number, c: number) => String(values[r - 1]?.[c] ?? "").trim();
+	const cardNames = new Set(CREDIT_CARDS.map((c) => c.name));
+	const blocks: CreditCardBlock[] = [];
+	for (const card of CREDIT_CARDS) {
+		let titleRow: number | null = null;
+		let startCol = CREDIT_BLOCK_COLS[0] as number;
+		for (const col of CREDIT_BLOCK_COLS) {
+			for (let r = anchorRow + 1; r <= values.length; r++) {
+				if (cellStr(r, col) === card.name) {
+					titleRow = r;
+					startCol = col;
+					break;
+				}
+			}
+			if (titleRow !== null) break;
+		}
+		if (titleRow === null) continue;
+		const labelRow = (label: string, after: number): number => {
+			for (let r = after + 1; r <= values.length; r++) {
+				const v = cellStr(r, startCol);
+				if (v === label) return r;
+				if (cardNames.has(v)) break; // ran into the next card block stacked below
+			}
+			throw new Error(`The "${card.name}" block in ${tab} is missing its ${label} row.`);
+		};
+		const closeDateRow = labelRow(CREDIT_CLOSE_LABEL, titleRow);
+		const payDateRow = labelRow(CREDIT_PAY_LABEL, closeDateRow);
+		const dueRow = labelRow(CREDIT_DUE_LABEL, payDateRow);
+		const preLabelRow = labelRow(CREDIT_PRE_LABEL, dueRow);
+		// The 小計 label lives in the block's 2nd column; the scan is bounded by
+		// the next 1st-column boundary (the other bucket's label or the next
+		// card title) so a missing 小計 throws instead of adopting a lower one.
+		const subtotalRow = (after: number, boundary: string | null): number => {
+			for (let r = after + 1; r <= values.length; r++) {
+				const first = cellStr(r, startCol);
+				if (cardNames.has(first) || (boundary !== null && first === boundary)) break;
+				if (cellStr(r, startCol + 1) === CREDIT_SUBTOTAL_LABEL) return r;
+			}
+			throw new Error(`The "${card.name}" block in ${tab} is missing its ${CREDIT_SUBTOTAL_LABEL} row.`);
+		};
+		const preSubtotalRow = subtotalRow(preLabelRow, CREDIT_POST_LABEL);
+		const postLabelRow = labelRow(CREDIT_POST_LABEL, preSubtotalRow);
+		const postSubtotalRow = subtotalRow(postLabelRow, null);
+		blocks.push({ card, titleRow, startCol, closeDateRow, payDateRow, dueRow, preSubtotalRow, postSubtotalRow });
+	}
+	return blocks;
 }
 
 export interface IncomeWindow {
@@ -415,15 +506,28 @@ export interface AddExpenseParams {
 	date?: string;
 	/** Per-row 類別 tag written into column C; omitted = leave the cell blank. */
 	tag?: string;
-	/** Which real account paid the row (支付幣別, column F); defaults to `currency`. */
+	/** Which real account paid the row (支付幣別, column F); defaults to the card's billing currency when `card` is set, else to `currency`. */
 	paidWith?: "TWD" | "USD";
+	/** Credit card that charged the row (支付方式, column G) — must be a CREDIT_CARDS name; omitted = cash/transfer, cell left blank. */
+	card?: string;
 }
 
 export async function addExpense(client: SheetsClient, p: AddExpenseParams) {
 	const tab = p.month !== undefined ? monthTabName(p.month) : currentMonthTab();
 	// Parse before any read/write so a bad date fails closed.
 	const dateSerialValue = p.date !== undefined ? parseDateInput(p.date) : null;
-	const paidWith = p.paidWith ?? p.currency;
+	const card = p.card !== undefined ? CREDIT_CARDS.find((c) => c.name === p.card) : undefined;
+	if (p.card !== undefined && card === undefined) {
+		throw new Error(
+			`Unknown card "${p.card}" — the 支付方式 column recognizes: ${CREDIT_CARDS.map((c) => c.name).join(", ")}.`,
+		);
+	}
+	if (card !== undefined && card.billingCurrency === "USD" && p.currency !== "USD") {
+		throw new Error(
+			`${card.name} bills in USD and its 對帳區 buckets pull the 美金 column (D), which is blank on TWD-priced rows — log the expense in USD.`,
+		);
+	}
+	const paidWith = p.paidWith ?? card?.billingCurrency ?? p.currency;
 	if (p.currency === "TWD" && paidWith === "USD") {
 		throw new Error(
 			"A TWD-priced expense paid from the USD account is not representable: 本月美金支出 sums the USD column (D), which is blank on TWD-priced rows. Log it in USD (currency USD, paid_with USD) instead.",
@@ -463,10 +567,11 @@ export async function addExpense(client: SheetsClient, p: AddExpenseParams) {
 	}
 
 	const tagCell = cellData(p.tag ?? null);
+	const cardCell = cellData(p.card ?? null);
 	const rowCells =
 		p.currency === "USD"
-			? [cellData(p.item), tagCell, cellData(p.amount), cellData(`=${USD_COL}${targetRow}*GOOGLEFINANCE("CURRENCY:USDTWD")`), cellData(paidWith)]
-			: [cellData(p.item), tagCell, cellData(null), cellData(p.amount), cellData(paidWith)];
+			? [cellData(p.item), tagCell, cellData(p.amount), cellData(`=${USD_COL}${targetRow}*GOOGLEFINANCE("CURRENCY:USDTWD")`), cellData(paidWith), cardCell]
+			: [cellData(p.item), tagCell, cellData(null), cellData(p.amount), cellData(paidWith), cardCell];
 	requests.push({
 		updateCells: {
 			start: { sheetId, rowIndex: targetRow - 1, columnIndex: MONTH_COLS.item },
@@ -506,6 +611,7 @@ export async function addExpense(client: SheetsClient, p: AddExpenseParams) {
 		paidWith,
 		date: p.date ?? null,
 		tag: p.tag ?? null,
+		card: p.card ?? null,
 	};
 }
 
@@ -534,7 +640,7 @@ export async function addTransfer(client: SheetsClient, p: AddTransferParams) {
 	assertNotTruncated(truncated, tab, TRANSFER_GRID_READ);
 	const { headerRow, totalRow } = findTransferSection(values, tab);
 
-	// First row between the header and 總和 that is empty across G–M.
+	// First row between the header and 總和 that is empty across H–N.
 	let targetRow: number | null = null;
 	for (let r = headerRow + 1; r < totalRow; r++) {
 		const cells = (values[r - 1] ?? []).slice(TRANSFER_COLS.date, TRANSFER_COLS.extra + 1);
@@ -549,7 +655,7 @@ export async function addTransfer(client: SheetsClient, p: AddTransferParams) {
 	let finalTotalRow = totalRow;
 	const scratchRequests: object[] = [];
 	if (targetRow === null) {
-		// Insert directly above 總和; the ledger's +J/−H/+M references shift with it.
+		// Insert directly above 總和; the ledger's +K/−I/+N references shift with it.
 		targetRow = totalRow;
 		finalTotalRow = totalRow + 1;
 		scratchRequests.push({
@@ -582,21 +688,21 @@ export async function addTransfer(client: SheetsClient, p: AddTransferParams) {
 	}
 
 	const r = targetRow;
-	const H = colLetter(TRANSFER_COLS.ntd);
-	const I = colLetter(TRANSFER_COLS.spotUsd);
-	const J = colLetter(TRANSFER_COLS.actualUsd);
-	const K = colLetter(TRANSFER_COLS.spread);
-	const L = colLetter(TRANSFER_COLS.fee);
+	const I = colLetter(TRANSFER_COLS.ntd);
+	const J = colLetter(TRANSFER_COLS.spotUsd);
+	const K = colLetter(TRANSFER_COLS.actualUsd);
+	const L = colLetter(TRANSFER_COLS.spread);
+	const M = colLetter(TRANSFER_COLS.fee);
 	const rowCells = [
-		cellData(p.ntd), // H 新臺幣
-		cellData(`=${H}${r}/${rate}`), // I 當下美金, rate pinned at entry
-		cellData(p.usd), // J 實際美金
-		cellData(`=(${I}${r}-${J}${r})*${rate}`), // K 匯差 in NTD
-		cellData(p.fee), // L 手續費
-		cellData(`=${K}${r}+${L}${r}`), // M 當筆總額外花費
+		cellData(p.ntd), // I 新臺幣
+		cellData(`=${I}${r}/${rate}`), // J 當下美金, rate pinned at entry
+		cellData(p.usd), // K 實際美金
+		cellData(`=(${J}${r}-${K}${r})*${rate}`), // L 匯差 in NTD
+		cellData(p.fee), // M 手續費
+		cellData(`=${L}${r}+${M}${r}`), // N 當筆總額外花費
 	];
 	// Rewrite 總和 over the whole data window: the sheet's original single-cell
-	// =sum(H35) cannot auto-extend, so the op owns the range from now on.
+	// =sum(I35) cannot auto-extend, so the op owns the range from now on.
 	const sumCells = [];
 	for (let c = TRANSFER_COLS.ntd; c <= TRANSFER_COLS.extra; c++) {
 		const col = colLetter(c);
@@ -659,6 +765,8 @@ export interface AddLunchParams {
 	/** M/D, MM/DD, YYYY/M/D, or YYYY-MM-DD; omitted = today in Taipei. */
 	date?: string;
 	month?: number;
+	/** Credit card that paid the lunch (支付方式, column S) — must be a TWD-billed CREDIT_CARDS name; omitted = blank (cash). */
+	card?: string;
 }
 
 export async function addLunch(client: SheetsClient, p: AddLunchParams) {
@@ -666,15 +774,26 @@ export async function addLunch(client: SheetsClient, p: AddLunchParams) {
 	// Parse before any read/write so a bad date fails closed.
 	const dateSerialValue = p.date !== undefined ? parseDateInput(p.date) : todaySerial();
 	const item = (p.item ?? LUNCH_DEFAULT_ITEM).trim() || LUNCH_DEFAULT_ITEM;
+	const card = p.card !== undefined ? CREDIT_CARDS.find((c) => c.name === p.card) : undefined;
+	if (p.card !== undefined && card === undefined) {
+		throw new Error(
+			`Unknown card "${p.card}" — the 支付方式 column recognizes: ${CREDIT_CARDS.map((c) => c.name).join(", ")}.`,
+		);
+	}
+	if (card !== undefined && card.billingCurrency !== "TWD") {
+		throw new Error(
+			`Lunches are NTD amounts and ${card.name} bills in USD — only TWD-billed cards can pay a lunch (currently: ${CREDIT_CARDS.filter((c) => c.billingCurrency === "TWD").map((c) => c.name).join(", ")}).`,
+		);
+	}
 
-	const { values, truncated } = await client.readRange(`${quoteTab(tab)}!${LUNCH_GRID_READ}`, "FORMULA");
-	assertNotTruncated(truncated, tab, LUNCH_GRID_READ);
+	const { values, truncated } = await client.readRange(`${quoteTab(tab)}!${FULL_GRID_READ}`, "FORMULA");
+	assertNotTruncated(truncated, tab, FULL_GRID_READ);
 	const { budgetRow, headerRow, totalRow } = findLunchSection(values, tab);
 
-	// First row between the header and 總和 that is empty across O–Q.
+	// First row between the header and 總和 that is empty across P–S.
 	let targetRow: number | null = null;
 	for (let r = headerRow + 1; r < totalRow; r++) {
-		const cells = (values[r - 1] ?? []).slice(LUNCH_COLS.date, LUNCH_COLS.amount + 1);
+		const cells = (values[r - 1] ?? []).slice(LUNCH_COLS.date, LUNCH_COLS.paidMethod + 1);
 		if (!cells.some((c) => c !== "" && c != null)) {
 			targetRow = r;
 			break;
@@ -686,7 +805,7 @@ export async function addLunch(client: SheetsClient, p: AddLunchParams) {
 	let finalTotalRow = totalRow;
 	const requests: object[] = [];
 	if (targetRow === null) {
-		// Insert directly above 總和; the ledger's 午餐超支或回補 =Q reference
+		// Insert directly above 總和; the ledger's 午餐超支或回補 =R reference
 		// tracks the 剩餘 cell (above the insert) and needs no rewiring.
 		targetRow = totalRow;
 		finalTotalRow = totalRow + 1;
@@ -697,7 +816,7 @@ export async function addLunch(client: SheetsClient, p: AddLunchParams) {
 			},
 		});
 	}
-	const Q = colLetter(LUNCH_COLS.amount);
+	const R = colLetter(LUNCH_COLS.amount);
 	requests.push(
 		{
 			updateCells: {
@@ -718,16 +837,16 @@ export async function addLunch(client: SheetsClient, p: AddLunchParams) {
 		{
 			updateCells: {
 				start: { sheetId, rowIndex: targetRow - 1, columnIndex: LUNCH_COLS.item },
-				rows: [{ values: [cellData(item), cellData(p.amount)] }],
+				rows: [{ values: [cellData(item), cellData(p.amount), cellData(p.card ?? null)] }],
 				fields: "userEnteredValue",
 			},
 		},
 		// Rewrite 總和 over the whole data window: the sheet's original
-		// =sum(Q38:Q39) cannot auto-extend, so the op owns the range from now on.
+		// =sum(R38:R39) cannot auto-extend, so the op owns the range from now on.
 		{
 			updateCells: {
 				start: { sheetId, rowIndex: finalTotalRow - 1, columnIndex: LUNCH_COLS.amount },
-				rows: [{ values: [cellData(`=SUM(${Q}${headerRow + 1}:${Q}${finalTotalRow - 1})`)] }],
+				rows: [{ values: [cellData(`=SUM(${R}${headerRow + 1}:${R}${finalTotalRow - 1})`)] }],
 				fields: "userEnteredValue",
 			},
 		},
@@ -735,8 +854,8 @@ export async function addLunch(client: SheetsClient, p: AddLunchParams) {
 	await client.batchUpdate(requests);
 
 	// Echo the section state AFTER the write so the caller sees the new leftover.
-	const O = colLetter(LUNCH_COLS.date);
-	const readBack = await client.readRange(`${quoteTab(tab)}!${O}${budgetRow}:${Q}${budgetRow}`, "UNFORMATTED_VALUE");
+	const P = colLetter(LUNCH_COLS.date);
+	const readBack = await client.readRange(`${quoteTab(tab)}!${P}${budgetRow}:${R}${budgetRow}`, "UNFORMATTED_VALUE");
 	const num = (v: unknown): number | null => (typeof v === "number" ? v : null);
 	const budget = num(readBack.values[0]?.[0]);
 	const leftover = num(readBack.values[0]?.[2]);
@@ -747,6 +866,7 @@ export async function addLunch(client: SheetsClient, p: AddLunchParams) {
 		date: serialToIso(dateSerialValue),
 		item,
 		amount: p.amount,
+		card: p.card ?? null,
 		budget,
 		spent: budget !== null && leftover !== null ? round2(budget - leftover) : null,
 		leftover,
@@ -755,8 +875,8 @@ export async function addLunch(client: SheetsClient, p: AddLunchParams) {
 
 export async function monthSummary(client: SheetsClient, month?: number) {
 	const tab = month !== undefined ? monthTabName(month) : currentMonthTab();
-	const { values, truncated } = await client.readRange(`${quoteTab(tab)}!${LUNCH_GRID_READ}`, "UNFORMATTED_VALUE");
-	assertNotTruncated(truncated, tab, LUNCH_GRID_READ);
+	const { values, truncated } = await client.readRange(`${quoteTab(tab)}!${FULL_GRID_READ}`, "UNFORMATTED_VALUE");
+	assertNotTruncated(truncated, tab, FULL_GRID_READ);
 
 	const num = (v: unknown): number | null => (typeof v === "number" ? v : null);
 	const cellAt = (row: number | null, col: number): number | null =>
@@ -790,7 +910,7 @@ export async function monthSummary(client: SheetsClient, month?: number) {
 		}
 	}
 
-	// 午餐預算 lunch-budget section (O–Q); null on tabs that predate it, and
+	// 午餐預算 lunch-budget section (P–R); null on tabs that predate it, and
 	// also null (not thrown) when the section is torn beyond recognition —
 	// this read-only summary must not die over a malformed lunch block.
 	let lunch: { 編列預算: number | null; 總和: number | null; 剩餘: number | null } | null = null;
@@ -873,6 +993,7 @@ export async function getCategories(client: SheetsClient, month?: number) {
 export async function startMonth(client: SheetsClient, month: number) {
 	const newTab = monthTabName(month);
 	const prevTab = monthTabName(previousMonth(month));
+	const prevPrevTab = monthTabName(previousMonth(previousMonth(month)));
 
 	const tabs = await client.listTabs();
 	if (tabs.some((t) => t.title === newTab)) {
@@ -881,6 +1002,7 @@ export async function startMonth(client: SheetsClient, month: number) {
 	if (!tabs.some((t) => t.title === prevTab)) {
 		throw new Error(`Previous month tab "${prevTab}" not found — cannot duplicate it.`);
 	}
+	const prevPrevExists = tabs.some((t) => t.title === prevPrevTab);
 
 	const prevSheetId = await client.getSheetId(prevTab);
 	const dup = await client.batchUpdate([
@@ -889,11 +1011,26 @@ export async function startMonth(client: SheetsClient, month: number) {
 	const sheetId = dup.replies?.[0]?.duplicateSheet?.properties?.sheetId;
 	if (sheetId == null) throw new Error("duplicateSheet did not return the new tab's sheetId.");
 
-	const { values, truncated } = await client.readRange(`${quoteTab(newTab)}!${LUNCH_GRID_READ}`, "FORMULA");
-	assertNotTruncated(truncated, newTab, LUNCH_GRID_READ);
+	const { values, truncated } = await client.readRange(`${quoteTab(newTab)}!${FULL_GRID_READ}`, "FORMULA");
+	assertNotTruncated(truncated, newTab, FULL_GRID_READ);
 	const totalRow = findRowByValue(values, MONTH_COLS.totalLabel, TOTAL_ROW_LABEL);
 	if (totalRow === null) {
 		throw new Error(`Could not find the "${TOTAL_ROW_LABEL}" row in the duplicated tab ${newTab}.`);
+	}
+
+	// Fail closed on the pre-支付方式 geometry: if ${prevTab} was never migrated,
+	// ${TRANSFER_SECTION_LABEL} still sits at G-M instead of H-N. The one-off
+	// row deletes below are scoped to columns A-G (they now include the 支付方式
+	// cell) — against an unmigrated tab that range would rip straight through
+	// the transfer section (G shifts up with the deletes, H-M stay put). Check
+	// the duplicated grid (same layout as the source) before writing anything else.
+	if (findRowByValue(values, TRANSFER_COLS.date - 1, TRANSFER_SECTION_LABEL) !== null) {
+		throw new Error(
+			`${prevTab} still has the pre-支付方式 column layout (${TRANSFER_SECTION_LABEL} sits at G-M, not H-N) — ` +
+				`the one-off row deletes below are scoped to columns A-G and would tear that section in half. ` +
+				`Delete the just-created "${newTab}" tab, insert a blank column G on ${prevTab} ` +
+				`(right-click column G → insert 1 left, header 支付方式 in G2), and re-run start_month.`,
+		);
 	}
 
 	const requests: object[] = [
@@ -1000,7 +1137,7 @@ export async function startMonth(client: SheetsClient, month: number) {
 		});
 	}
 
-	// The lunch log restarts each month: clear the 午餐預算 data rows (O–Q).
+	// The lunch log restarts each month: clear the 午餐預算 data rows (P–S).
 	// Cells are cleared, not deleted, so nothing shifts; the 總和 =SUM over the
 	// empty window reads 0 and 剩餘 resets to the full budget. The anchor probe
 	// keeps pre-section tabs silent. A malformed section (e.g. torn by a
@@ -1020,7 +1157,7 @@ export async function startMonth(client: SheetsClient, month: number) {
 							startRowIndex: lunch.headerRow,
 							endRowIndex: lunch.totalRow - 1,
 							startColumnIndex: LUNCH_COLS.date,
-							endColumnIndex: LUNCH_COLS.amount + 1,
+							endColumnIndex: LUNCH_COLS.paidMethod + 1,
 						},
 						cell: {},
 						fields: "userEnteredValue",
@@ -1030,6 +1167,53 @@ export async function startMonth(client: SheetsClient, month: number) {
 			}
 		} catch (err) {
 			lunchWarning = err instanceof Error ? err.message : String(err);
+		}
+	}
+
+	// The 信用卡帳單對帳區 rolls forward: bump each card's 結帳日/繳款日 one
+	// month and rewire 本月需繳款 directly across two months — no more
+	// 本期帳單總額 row in between. CHASE Amazon (lag 0): this tab's 結帳日前
+	// 小計 + the previous tab's 結帳日後小計. The other three (lag 1): the
+	// previous tab's 結帳日前小計 + the tab-before-that's 結帳日後小計; when
+	// that prev-prev tab doesn't exist in the spreadsheet, its term is
+	// omitted entirely (a prev-prev tab that exists but lacks the section
+	// would still contribute an empty cell = 0 — verified acceptable). The
+	// buckets' SUMIFS/mirror formulas are same-tab references and survive
+	// duplication untouched. The new tab is a duplicate, so prev-tab row
+	// numbers equal this grid's. Same fail-soft contract as the lunch clear —
+	// duplicateSheet has already committed, so a torn section surfaces a
+	// warning instead of throwing; pre-section tabs skip silently.
+	const creditRebuilt: string[] = [];
+	let creditWarning: string | undefined;
+	if (findRowByValue(values, CREDIT_BLOCK_COLS[0], CREDIT_SECTION_LABEL) !== null) {
+		try {
+			for (const block of findCreditSection(values, newTab)) {
+				const valueCol = block.startCol + CREDIT_BLOCK_WIDTH - 1;
+				const col = colLetter(valueCol);
+				const write = (row: number, value: string | number) => {
+					requests.push({
+						updateCells: {
+							start: { sheetId, rowIndex: row - 1, columnIndex: valueCol },
+							rows: [{ values: [cellData(value)] }],
+							fields: "userEnteredValue",
+						},
+					});
+				};
+				for (const row of [block.closeDateRow, block.payDateRow]) {
+					const serial = values[row - 1]?.[valueCol];
+					if (typeof serial === "number") write(row, addMonthsClamped(serial, 1));
+				}
+				const prevPost = `${quoteTab(prevTab)}!${col}${block.postSubtotalRow}`;
+				write(
+					block.dueRow,
+					block.card.statementLag === 0
+						? `=${col}${block.preSubtotalRow}+${prevPost}`
+						: `=${quoteTab(prevTab)}!${col}${block.preSubtotalRow}${prevPrevExists ? `+${quoteTab(prevPrevTab)}!${col}${block.postSubtotalRow}` : ""}`,
+				);
+				creditRebuilt.push(block.card.name);
+			}
+		} catch (err) {
+			creditWarning = err instanceof Error ? err.message : String(err);
 		}
 	}
 
@@ -1059,10 +1243,11 @@ export async function startMonth(client: SheetsClient, month: number) {
 		}
 	}
 
-	// Bottom-up so earlier deletions don't shift later indices. Scoped to A–F:
-	// a whole-row delete would rip through the 乾坤大挪移 / 午餐預算 sections
-	// (G–Q) that share these sheet rows; references across the column boundary
-	// adjust on their own in both directions.
+	// Bottom-up so earlier deletions don't shift later indices. Scoped to A–G
+	// (the expense row includes the 支付方式 cell): a whole-row delete would
+	// rip through the 乾坤大挪移 / 午餐預算 / 信用卡 sections (H–R) that
+	// share these sheet rows; references across the column boundary adjust
+	// on their own in both directions.
 	for (const r of [...rowsToDelete].sort((a, b) => b - a)) {
 		requests.push({
 			deleteRange: {
@@ -1071,7 +1256,7 @@ export async function startMonth(client: SheetsClient, month: number) {
 					startRowIndex: r - 1,
 					endRowIndex: r,
 					startColumnIndex: 0,
-					endColumnIndex: MONTH_COLS.paidWith + 1,
+					endColumnIndex: MONTH_COLS.paidMethod + 1,
 				},
 				shiftDimension: "ROWS",
 			},
@@ -1079,7 +1264,7 @@ export async function startMonth(client: SheetsClient, month: number) {
 	}
 	await client.batchUpdate(requests);
 
-	return { tab: newTab, duplicatedFrom: prevTab, kept, cleared, clearedIncomes, lunchCleared, lunchWarning };
+	return { tab: newTab, duplicatedFrom: prevTab, kept, cleared, clearedIncomes, lunchCleared, lunchWarning, creditRebuilt, creditWarning };
 }
 
 export interface TripEntryParams {
