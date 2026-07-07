@@ -219,6 +219,11 @@ describe("conventions", () => {
 			"add_lunch",
 			"午餐超支或回補",
 			"編列預算",
+			"信用卡帳單對帳區",
+			"支付方式",
+			"本期帳單總額",
+			"本月需繳",
+			"結帳日前",
 		]) {
 			expect(CONVENTIONS_TEXT).toContain(needle);
 		}

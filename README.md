@@ -9,7 +9,7 @@ A personal [Model Context Protocol](https://modelcontextprotocol.io/introduction
 - **append_rows** — append new rows below the existing data in a tab.
 - **update_range** — overwrite cells in a range with new values. `expect_empty:true` refuses the write if any target cell is currently non-empty (for append-like writes); the response always includes `previousValues` (what was overwritten, with formulas) so a mistake can be reverted.
 - **add_tab** — create a new empty tab.
-- **add_expense** — log an expense into a monthly tab (defaults to the current month).
+- **add_expense** — log an expense into a monthly tab (defaults to the current month); a card param routes it into the 信用卡帳單對帳區.
 - **month_summary** — get a month's numbers as clean JSON.
 - **start_month** — open a new month by duplicating the previous month's tab.
 - **add_trip_entry** — log a purchase into a trip tab's mosaic category block, discovering the block by title and choosing between jpy (¥-priced) or twd (NTD-direct) rows.
