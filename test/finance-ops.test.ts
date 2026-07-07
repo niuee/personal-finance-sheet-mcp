@@ -356,6 +356,33 @@ function creditGrid(): unknown[][] {
 	return g;
 }
 
+/** creditGrid + the 帳戶實際數字對應 block in B/D rows 34-43, below the 銀行餘額 block. */
+function realBalanceGrid(): unknown[][] {
+	const g = creditGrid();
+	const put = (idx: number, col: number, v: unknown) => {
+		(g[idx] ??= [])[col] = v;
+	};
+	put(33, 1, "帳戶實際數字對應");
+	put(34, 1, "本月初新臺幣真實餘額");
+	put(34, 3, "='8 月'!D38");
+	put(35, 1, "本月新臺幣現金支出");
+	put(35, 3, '=SUMIFS(E3:E10, F3:F10, "TWD", G3:G10, "現金") + M36');
+	put(36, 1, "本月新臺幣信用卡繳費");
+	put(36, 3, "=J44");
+	put(37, 1, "本月底新臺幣真實餘額");
+	put(37, 3, '=D35+SUMIF(C14:C17, "TWD", D14:D17) - D36 - D37 - I36');
+	// row 39 blank — the gap between the two currency blocks
+	put(39, 1, "本月初美金真實餘額");
+	put(39, 3, "='8 月'!D43");
+	put(40, 1, "本月美金現金支出");
+	put(40, 3, '=SUMIFS(D3:D10, F3:F10, "USD", G3:G10, "現金")');
+	put(41, 1, "本月美金信用卡繳費");
+	put(41, 3, "=N44");
+	put(42, 1, "本月底美金真實餘額");
+	put(42, 3, '=D40+SUMIF(C14:C17, "USD", D14:D17) - D41 - D42 + K36');
+	return g;
+}
+
 describe("findCreditSection", () => {
 	it("locates every card block present, skipping registry cards missing from the sheet", () => {
 		const blocks = findCreditSection(creditGrid(), "9 月");
@@ -1659,6 +1686,41 @@ describe("startMonth", () => {
 		expect(result.lunchWarning).toMatch(/日期|午餐預算/);
 	});
 
+	it("chains both 帳戶實際數字對應 seeds to the previous month's 真實餘額 cells", async () => {
+		const client = startMonthClient(realBalanceGrid(), ["9 月", "8 月"]);
+
+		await startMonth(client, 10);
+
+		const requests = (client.batchUpdate as any).mock.calls[1][0];
+		const seedAt = (rowIndex: number) =>
+			requests.find(
+				(r: any) =>
+					r.updateCells && r.updateCells.start.rowIndex === rowIndex && r.updateCells.start.columnIndex === MONTH_COLS.budgetValue,
+			);
+		// 本月初新臺幣真實餘額 (row 35) ← 9 月's 本月底新臺幣真實餘額 (row 38).
+		expect(seedAt(34).updateCells.rows[0].values).toEqual([{ userEnteredValue: { formulaValue: "='9 月'!D38" } }]);
+		// 本月初美金真實餘額 (row 40) ← 9 月's 本月底美金真實餘額 (row 43) —
+		// unlike the 銀行餘額 ledger, the USD side chains here too.
+		expect(seedAt(39).updateCells.rows[0].values).toEqual([{ userEnteredValue: { formulaValue: "='9 月'!D43" } }]);
+	});
+
+	it("skips a 真實餘額 chain whose 本月底 anchor is missing, keeping the other currency's", async () => {
+		const g = realBalanceGrid();
+		(g[42] as unknown[])[1] = ""; // tear off the USD 本月底美金真實餘額 anchor
+		const client = startMonthClient(g, ["9 月", "8 月"]);
+
+		await startMonth(client, 10);
+
+		const requests = (client.batchUpdate as any).mock.calls[1][0];
+		const seedAt = (rowIndex: number) =>
+			requests.find(
+				(r: any) =>
+					r.updateCells && r.updateCells.start.rowIndex === rowIndex && r.updateCells.start.columnIndex === MONTH_COLS.budgetValue,
+			);
+		expect(seedAt(34)).toBeDefined();
+		expect(seedAt(39)).toBeUndefined();
+	});
+
 	it("bumps each card's 結帳日/繳款日 one month and rewires 本月需繳款 across two months per statementLag", async () => {
 		const client = startMonthClient(creditGrid(), ["9 月", "8 月"]);
 
@@ -2436,6 +2498,9 @@ describe("setIncome", () => {
 		await expect(setIncome(client, { item: "本月底新臺幣餘額", amount: 1, currency: "TWD", month: 9 })).rejects.toThrow("layout label");
 		await expect(setIncome(client, { item: "午餐超支或回補", amount: 1, currency: "TWD", month: 9 })).rejects.toThrow("layout label");
 		await expect(setIncome(client, { item: "上月美金透支", amount: 1, currency: "USD", month: 9 })).rejects.toThrow("layout label");
+		await expect(setIncome(client, { item: "帳戶實際數字對應", amount: 1, currency: "TWD", month: 9 })).rejects.toThrow("layout label");
+		await expect(setIncome(client, { item: "本月底新臺幣真實餘額", amount: 1, currency: "TWD", month: 9 })).rejects.toThrow("layout label");
+		await expect(setIncome(client, { item: "本月初美金真實餘額", amount: 1, currency: "USD", month: 9 })).rejects.toThrow("layout label");
 		expect((client.readRange as any).mock.calls).toHaveLength(0);
 	});
 

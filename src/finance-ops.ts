@@ -43,6 +43,15 @@ import {
 	PREV_NTD_OVERDRAFT_LABEL,
 	PREV_USD_OVERDRAFT_LABEL,
 	previousMonth,
+	REAL_NTD_CARD_PAYMENT_LABEL,
+	REAL_NTD_CASH_SPENDING_LABEL,
+	REAL_NTD_END_BALANCE_LABEL,
+	REAL_NTD_START_BALANCE_LABEL,
+	REAL_SECTION_LABEL,
+	REAL_USD_CARD_PAYMENT_LABEL,
+	REAL_USD_CASH_SPENDING_LABEL,
+	REAL_USD_END_BALANCE_LABEL,
+	REAL_USD_START_BALANCE_LABEL,
 	RECURRING_INCOME,
 	RECURRING_ITEMS,
 	REMAINDER_LABEL,
@@ -517,6 +526,15 @@ const NON_INCOME_LABELS = new Set<string>([
 	NTD_CONSERVATIVE_END_LABEL,
 	NTD_END_BALANCE_LABEL,
 	LUNCH_ADJUST_LABEL,
+	REAL_SECTION_LABEL,
+	REAL_NTD_START_BALANCE_LABEL,
+	REAL_NTD_CASH_SPENDING_LABEL,
+	REAL_NTD_CARD_PAYMENT_LABEL,
+	REAL_NTD_END_BALANCE_LABEL,
+	REAL_USD_START_BALANCE_LABEL,
+	REAL_USD_CASH_SPENDING_LABEL,
+	REAL_USD_CARD_PAYMENT_LABEL,
+	REAL_USD_END_BALANCE_LABEL,
 ]);
 
 /**
@@ -1399,6 +1417,29 @@ export async function startMonth(client: SheetsClient, month: number) {
 				fields: "userEnteredValue",
 			},
 		});
+	}
+
+	// The 帳戶實際數字對應 block chains BOTH currencies forward the same way:
+	// each 本月初…真實餘額 points at the month-just-ended's 本月底…真實餘額.
+	// Unlike the 銀行餘額 ledger above, the USD side has no carry expense row
+	// to absorb a shortfall — the real-account view only ever chains. Same
+	// duplicate-grid row math and write-before-delete lockstep as the NTD
+	// chain; tabs predating the section (6月 and earlier) skip silently.
+	for (const [startLabel, endLabel] of [
+		[REAL_NTD_START_BALANCE_LABEL, REAL_NTD_END_BALANCE_LABEL],
+		[REAL_USD_START_BALANCE_LABEL, REAL_USD_END_BALANCE_LABEL],
+	] as const) {
+		const startRow = findRowByValue(values, MONTH_COLS.budgetLabel, startLabel);
+		const endRow = findRowByValue(values, MONTH_COLS.budgetLabel, endLabel);
+		if (startRow !== null && endRow !== null) {
+			requests.push({
+				updateCells: {
+					start: { sheetId, rowIndex: startRow - 1, columnIndex: MONTH_COLS.budgetValue },
+					rows: [{ values: [cellData(`=${quoteTab(prevTab)}!${colLetter(MONTH_COLS.budgetValue)}${endRow}`)] }],
+					fields: "userEnteredValue",
+				},
+			});
+		}
 	}
 
 	// The lunch log restarts each month: clear the 午餐預算 data rows (P–S).
