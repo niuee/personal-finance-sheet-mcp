@@ -197,8 +197,9 @@ Approved by Vincent after the initial build. He then **reorganized the
 
 1. **Block layout (per card):** card name, 本月結帳日, 本月繳款日,
    **本月需繳款** (renamed from 本月需繳), then 結帳日前 / 結帳日後
-   buckets (label row carries the 小計 in the block's 3rd column, then a
-   日期/項目/金額 header and ~12 spill rows). **The 本期帳單總額 row is
+   buckets (label row, a 日期/項目/金額 header, ~12 spill rows, then a
+   dedicated 小計 row — label in the block's 2nd column, =SUMIFS in the
+   3rd). **The 本期帳單總額 row is
    gone**; 本月需繳款 is computed across two months instead:
    lag 0 (CHASE Amazon) = this tab's 結帳日前小計 + prev tab's
    結帳日後小計; lag 1 (the rest) = prev tab's 結帳日前小計 + prev-prev
