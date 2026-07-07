@@ -128,8 +128,8 @@ export function findExpenseWindow(values: unknown[][], tab: string): ExpenseWind
 	return { totalRow, start: Number(m[1]), end: Number(m[2]) };
 }
 
-/** The 乾坤大挪移 section spans G–M, wider than GRID_READ — read the full width. */
-export const TRANSFER_GRID_READ = "A1:M60";
+/** The 乾坤大挪移 section spans H–N, wider than GRID_READ — read the full width. */
+export const TRANSFER_GRID_READ = "A1:N60";
 
 export interface TransferSection {
 	/** 1-indexed row of the 日期/新臺幣/… header. */
@@ -161,10 +161,10 @@ export function findTransferSection(values: unknown[][], tab: string): TransferS
 	throw new Error(`No ${TRANSFER_TOTAL_LABEL} row under the ${TRANSFER_SECTION_LABEL} header in ${tab}.`);
 }
 
-// The lunch section grows one row per entry and pushes the 銀行餘額 block
-// below it downward, so the window must hold a full month of daily entries —
-// a too-shallow read makes startMonth's 上月…餘額 rewire silently skip.
-export const LUNCH_GRID_READ = "A1:Q120";
+// The deep month grid: the lunch section (P–R) grows one row per entry and
+// pushes the 銀行餘額 block down, and the 信用卡帳單對帳區 (H–N) runs from
+// row 50 to ~117 — a too-shallow read makes startMonth's rewires silently skip.
+export const FULL_GRID_READ = "A1:R160";
 
 export interface LunchSection {
 	/** 1-indexed row holding the 編列預算 / 剩餘 values. */
@@ -178,13 +178,13 @@ export interface LunchSection {
 /** Both titles the lunch section has carried; the anchor scan accepts either. */
 const LUNCH_ANCHOR_LABELS = [LUNCH_SECTION_LABEL, LUNCH_SECTION_LEGACY_LABEL];
 
-/** Locate the 午餐預算 block (grid of LUNCH_GRID_READ; labels match in any render). Throws when absent or malformed. */
+/** Locate the 午餐預算 block (grid of FULL_GRID_READ; labels match in any render). Throws when absent or malformed. */
 export function findLunchSection(values: unknown[][], tab: string): LunchSection {
 	const dateCol = LUNCH_COLS.date;
 	const anchorRow = findRowByLabels(values, dateCol, LUNCH_ANCHOR_LABELS);
 	if (anchorRow === null) {
 		throw new Error(
-			`No ${LUNCH_SECTION_LABEL} section in ${tab} (searched column ${colLetter(dateCol)} of ${LUNCH_GRID_READ}) — the lunch-budget log exists from 7月 2026 on.`,
+			`No ${LUNCH_SECTION_LABEL} section in ${tab} (searched column ${colLetter(dateCol)} of ${FULL_GRID_READ}) — the lunch-budget log exists from 7月 2026 on.`,
 		);
 	}
 	// add_transfer's full-section path inserts a whole sheet row directly above
@@ -534,7 +534,7 @@ export async function addTransfer(client: SheetsClient, p: AddTransferParams) {
 	assertNotTruncated(truncated, tab, TRANSFER_GRID_READ);
 	const { headerRow, totalRow } = findTransferSection(values, tab);
 
-	// First row between the header and 總和 that is empty across G–M.
+	// First row between the header and 總和 that is empty across H–N.
 	let targetRow: number | null = null;
 	for (let r = headerRow + 1; r < totalRow; r++) {
 		const cells = (values[r - 1] ?? []).slice(TRANSFER_COLS.date, TRANSFER_COLS.extra + 1);
@@ -667,11 +667,11 @@ export async function addLunch(client: SheetsClient, p: AddLunchParams) {
 	const dateSerialValue = p.date !== undefined ? parseDateInput(p.date) : todaySerial();
 	const item = (p.item ?? LUNCH_DEFAULT_ITEM).trim() || LUNCH_DEFAULT_ITEM;
 
-	const { values, truncated } = await client.readRange(`${quoteTab(tab)}!${LUNCH_GRID_READ}`, "FORMULA");
-	assertNotTruncated(truncated, tab, LUNCH_GRID_READ);
+	const { values, truncated } = await client.readRange(`${quoteTab(tab)}!${FULL_GRID_READ}`, "FORMULA");
+	assertNotTruncated(truncated, tab, FULL_GRID_READ);
 	const { budgetRow, headerRow, totalRow } = findLunchSection(values, tab);
 
-	// First row between the header and 總和 that is empty across O–Q.
+	// First row between the header and 總和 that is empty across P–R.
 	let targetRow: number | null = null;
 	for (let r = headerRow + 1; r < totalRow; r++) {
 		const cells = (values[r - 1] ?? []).slice(LUNCH_COLS.date, LUNCH_COLS.amount + 1);
@@ -755,8 +755,8 @@ export async function addLunch(client: SheetsClient, p: AddLunchParams) {
 
 export async function monthSummary(client: SheetsClient, month?: number) {
 	const tab = month !== undefined ? monthTabName(month) : currentMonthTab();
-	const { values, truncated } = await client.readRange(`${quoteTab(tab)}!${LUNCH_GRID_READ}`, "UNFORMATTED_VALUE");
-	assertNotTruncated(truncated, tab, LUNCH_GRID_READ);
+	const { values, truncated } = await client.readRange(`${quoteTab(tab)}!${FULL_GRID_READ}`, "UNFORMATTED_VALUE");
+	assertNotTruncated(truncated, tab, FULL_GRID_READ);
 
 	const num = (v: unknown): number | null => (typeof v === "number" ? v : null);
 	const cellAt = (row: number | null, col: number): number | null =>
@@ -790,7 +790,7 @@ export async function monthSummary(client: SheetsClient, month?: number) {
 		}
 	}
 
-	// 午餐預算 lunch-budget section (O–Q); null on tabs that predate it, and
+	// 午餐預算 lunch-budget section (P–R); null on tabs that predate it, and
 	// also null (not thrown) when the section is torn beyond recognition —
 	// this read-only summary must not die over a malformed lunch block.
 	let lunch: { 編列預算: number | null; 總和: number | null; 剩餘: number | null } | null = null;
@@ -889,8 +889,8 @@ export async function startMonth(client: SheetsClient, month: number) {
 	const sheetId = dup.replies?.[0]?.duplicateSheet?.properties?.sheetId;
 	if (sheetId == null) throw new Error("duplicateSheet did not return the new tab's sheetId.");
 
-	const { values, truncated } = await client.readRange(`${quoteTab(newTab)}!${LUNCH_GRID_READ}`, "FORMULA");
-	assertNotTruncated(truncated, newTab, LUNCH_GRID_READ);
+	const { values, truncated } = await client.readRange(`${quoteTab(newTab)}!${FULL_GRID_READ}`, "FORMULA");
+	assertNotTruncated(truncated, newTab, FULL_GRID_READ);
 	const totalRow = findRowByValue(values, MONTH_COLS.totalLabel, TOTAL_ROW_LABEL);
 	if (totalRow === null) {
 		throw new Error(`Could not find the "${TOTAL_ROW_LABEL}" row in the duplicated tab ${newTab}.`);
@@ -1000,7 +1000,7 @@ export async function startMonth(client: SheetsClient, month: number) {
 		});
 	}
 
-	// The lunch log restarts each month: clear the 午餐預算 data rows (O–Q).
+	// The lunch log restarts each month: clear the 午餐預算 data rows (P–R).
 	// Cells are cleared, not deleted, so nothing shifts; the 總和 =SUM over the
 	// empty window reads 0 and 剩餘 resets to the full budget. The anchor probe
 	// keeps pre-section tabs silent. A malformed section (e.g. torn by a
@@ -1059,10 +1059,11 @@ export async function startMonth(client: SheetsClient, month: number) {
 		}
 	}
 
-	// Bottom-up so earlier deletions don't shift later indices. Scoped to A–F:
-	// a whole-row delete would rip through the 乾坤大挪移 / 午餐預算 sections
-	// (G–Q) that share these sheet rows; references across the column boundary
-	// adjust on their own in both directions.
+	// Bottom-up so earlier deletions don't shift later indices. Scoped to A–G
+	// (the expense row includes the 支付方式 cell): a whole-row delete would
+	// rip through the 乾坤大挪移 / 午餐預算 / 信用卡 sections (H–R) that
+	// share these sheet rows; references across the column boundary adjust
+	// on their own in both directions.
 	for (const r of [...rowsToDelete].sort((a, b) => b - a)) {
 		requests.push({
 			deleteRange: {
@@ -1071,7 +1072,7 @@ export async function startMonth(client: SheetsClient, month: number) {
 					startRowIndex: r - 1,
 					endRowIndex: r,
 					startColumnIndex: 0,
-					endColumnIndex: MONTH_COLS.paidWith + 1,
+					endColumnIndex: MONTH_COLS.paidMethod + 1,
 				},
 				shiftDimension: "ROWS",
 			},

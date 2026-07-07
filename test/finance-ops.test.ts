@@ -20,8 +20,8 @@ import {
 	findRowByValue,
 	findTransferSection,
 	findTripBlocks,
+	FULL_GRID_READ,
 	getCategories,
-	LUNCH_GRID_READ,
 	monthSummary,
 	safeUpdateRange,
 	setIncome,
@@ -119,7 +119,7 @@ function oldLayoutGrid(): unknown[][] {
 function currentMonthGrid(): unknown[][] {
 	const g: unknown[][] = [];
 	g[0] = ["9 月花費"];
-	g[1] = ["日期", "項目", "類別", "美金", "新臺幣", "支付幣別"];
+	g[1] = ["日期", "項目", "類別", "美金", "新臺幣", "支付幣別", "支付方式"];
 	g[2] = ["", "上月美金透支", "透支", "=IF(-('8 月'!D19) > 0, -('8 月'!D19), 0)", '=D3*GOOGLEFINANCE("CURRENCY:USDTWD")', "USD"];
 	g[3] = ["", "上月新臺幣透支", "透支", "", "=IF(-('8 月'!D20) > 0, -('8 月'!D20), 0)", "TWD"];
 	g[4] = ["", "Google Cloud", "訂閱", 11.53, '=D5*GOOGLEFINANCE("CURRENCY:USDTWD")', "USD"];
@@ -138,13 +138,13 @@ function currentMonthGrid(): unknown[][] {
 	g[22] = ["", "本月美金收入", "", '=SUMIF(C14:C17,"USD",D14:D17)'];
 	g[23] = ["", "本月美金支出", "", '=SUMIF(F3:F10,"USD",D3:D10)'];
 	g[24] = ["", "本月初美金餘額", "", 0];
-	g[25] = ["", "本月底美金餘額", "", "=D25+D23-D24+J36"];
+	g[25] = ["", "本月底美金餘額", "", "=D25+D23-D24+K36"];
 	g[26] = ["", "本月新臺幣收入", "", '=SUMIF(C14:C17,"TWD",D14:D17)'];
-	g[27] = ["", "本月新臺幣支出", "", '=SUMIF(F3:F10,"TWD",E3:E10)+M36'];
-	g[28] = ["", "午餐超支或回補", "", "=Q35"];
+	g[27] = ["", "本月新臺幣支出", "", '=SUMIF(F3:F10,"TWD",E3:E10)+N36'];
+	g[28] = ["", "午餐超支或回補", "", "=R35"];
 	g[29] = ["", "本月初新臺幣餘額", "", "='8 月'!D32"];
-	g[30] = ["", "保守預計本月底新臺幣餘額", "", "=D30+D27-D28-H36+IF(Q35>0, 0, Q35)"];
-	g[31] = ["", "本月底新臺幣餘額", "", "=D30+D27-D28-H36+D29"];
+	g[30] = ["", "保守預計本月底新臺幣餘額", "", "=D30+D27-D28-I36+IF(R35>0, 0, R35)"];
+	g[31] = ["", "本月底新臺幣餘額", "", "=D30+D27-D28-I36+D29"];
 	return g;
 }
 
@@ -160,33 +160,33 @@ function splitCarryOldLayoutGrid(): unknown[][] {
 	return g;
 }
 
-/** currentMonthGrid + a 乾坤大挪移 transfer block at G33:M36 (data slot row 35 empty). */
+/** currentMonthGrid + a 乾坤大挪移 transfer block at H33:N36 (data slot row 35 empty). */
 function transferGrid(): unknown[][] {
 	const g = currentMonthGrid();
-	g[32] = ["", "", "", "", "", "", "乾坤大挪移"];
-	g[33] = ["", "", "", "", "", "", "日期", "新臺幣", "當下美金", "實際美金", "匯差", "手續費", "當筆總額外花費"];
+	g[32] = ["", "", "", "", "", "", "", "乾坤大挪移"];
+	g[33] = ["", "", "", "", "", "", "", "日期", "新臺幣", "當下美金", "實際美金", "匯差", "手續費", "當筆總額外花費"];
 	// row 35 empty — the first data slot
-	g[35] = ["", "", "", "", "", "", "總和", "=sum(H35)", "=sum(I35)", "=sum(J35)", "=sum(K35)", "=sum(L35)", "=sum(M35)"];
+	g[35] = ["", "", "", "", "", "", "", "總和", "=sum(I35)", "=sum(J35)", "=sum(K35)", "=sum(L35)", "=sum(M35)", "=sum(N35)"];
 	return g;
 }
 
-/** transferGrid + a 午餐預算 lunch block at O33:Q38 (data slot row 37 empty). */
+/** transferGrid + a 午餐預算 lunch block at P33:R38 (data slot row 37 empty). */
 function lunchGrid(): unknown[][] {
 	const g = transferGrid();
 	const put = (idx: number, col: number, v: unknown) => {
 		(g[idx] ??= [])[col] = v;
 	};
-	put(32, 14, "午餐預算");
-	put(33, 14, "編列預算");
-	put(33, 16, "剩餘 (負數會加回去支出）");
-	put(34, 14, "=E5"); // 編列預算 ← the 中餐 expense cell
-	put(34, 16, "=O35-Q38"); // 剩餘 = 編列預算 − 總和
-	put(35, 14, "日期");
-	put(35, 15, "項目");
-	put(35, 16, "金額");
+	put(32, 15, "午餐預算");
+	put(33, 15, "編列預算");
+	put(33, 17, "剩餘 (負數會加回去支出）");
+	put(34, 15, "=E5"); // 編列預算 ← the 中餐 expense cell
+	put(34, 17, "=P35-R38"); // 剩餘 = 編列預算 − 總和
+	put(35, 15, "日期");
+	put(35, 16, "項目");
+	put(35, 17, "金額");
 	// row 37 (index 36) empty — the first data slot
-	put(37, 15, "總和");
-	put(37, 16, "=sum(Q37)");
+	put(37, 16, "總和");
+	put(37, 17, "=sum(R37)");
 	return g;
 }
 
@@ -265,7 +265,7 @@ describe("findLunchSection", () => {
 
 	it("accepts the legacy 中餐預算 anchor title", () => {
 		const g = lunchGrid();
-		(g[32] as unknown[])[14] = "中餐預算";
+		(g[32] as unknown[])[15] = "中餐預算";
 		expect(findLunchSection(g, "9 月")).toEqual({ budgetRow: 35, headerRow: 36, totalRow: 38 });
 	});
 
@@ -275,13 +275,13 @@ describe("findLunchSection", () => {
 
 	it("throws when the header row under the anchor is missing", () => {
 		const g = lunchGrid();
-		(g[35] as unknown[])[14] = "";
+		(g[35] as unknown[])[15] = "";
 		expect(() => findLunchSection(g, "9 月")).toThrow("日期");
 	});
 
 	it("throws when there is no 總和 row", () => {
 		const g = lunchGrid();
-		(g[37] as unknown[])[15] = "";
+		(g[37] as unknown[])[16] = "";
 		expect(() => findLunchSection(g, "9 月")).toThrow("總和");
 	});
 
@@ -313,42 +313,42 @@ describe("addTransfer", () => {
 		const client = transferClient(transferGrid());
 		const result = await addTransfer(client, { ntd: 30000, usd: 1000, fee: 30, month: 9, date: "9/2" });
 
-		expect((client.readRange as any).mock.calls[0]).toEqual(["'9 月'!A1:M60", "FORMULA"]);
-		// batch 1: scratch GOOGLEFINANCE into I35, no insert needed
+		expect((client.readRange as any).mock.calls[0]).toEqual(["'9 月'!A1:N60", "FORMULA"]);
+		// batch 1: scratch GOOGLEFINANCE into J35, no insert needed
 		const batch1 = (client.batchUpdate as any).mock.calls[0][0];
 		expect(batch1).toHaveLength(1);
-		expect(batch1[0].updateCells.start).toEqual({ sheetId: 111, rowIndex: 34, columnIndex: 8 });
+		expect(batch1[0].updateCells.start).toEqual({ sheetId: 111, rowIndex: 34, columnIndex: 9 });
 		expect(batch1[0].updateCells.rows[0].values[0].userEnteredValue).toEqual({
 			formulaValue: '=GOOGLEFINANCE("CURRENCY:USDTWD")',
 		});
-		expect((client.readRange as any).mock.calls[1]).toEqual(["'9 月'!I35", "UNFORMATTED_VALUE"]);
+		expect((client.readRange as any).mock.calls[1]).toEqual(["'9 月'!J35", "UNFORMATTED_VALUE"]);
 
 		// batch 2: 日期, the entry row, the 總和 rewrite
 		const batch2 = (client.batchUpdate as any).mock.calls[1][0];
 		const dateCell = batch2[0].updateCells;
-		expect(dateCell.start).toEqual({ sheetId: 111, rowIndex: 34, columnIndex: 6 });
+		expect(dateCell.start).toEqual({ sheetId: 111, rowIndex: 34, columnIndex: 7 });
 		expect(dateCell.rows[0].values[0].userEnteredFormat).toEqual({
 			numberFormat: { type: "DATE", pattern: "mm/dd" },
 		});
 		const rowCells = batch2[1].updateCells;
-		expect(rowCells.start).toEqual({ sheetId: 111, rowIndex: 34, columnIndex: 7 });
+		expect(rowCells.start).toEqual({ sheetId: 111, rowIndex: 34, columnIndex: 8 });
 		expect(rowCells.rows[0].values.map((v: any) => v.userEnteredValue)).toEqual([
-			{ numberValue: 30000 }, // H 新臺幣
-			{ formulaValue: "=H35/29.85" }, // I 當下美金 (pinned)
-			{ numberValue: 1000 }, // J 實際美金
-			{ formulaValue: "=(I35-J35)*29.85" }, // K 匯差 (pinned)
-			{ numberValue: 30 }, // L 手續費
-			{ formulaValue: "=K35+L35" }, // M 當筆總額外花費
+			{ numberValue: 30000 }, // I 新臺幣
+			{ formulaValue: "=I35/29.85" }, // J 當下美金 (pinned)
+			{ numberValue: 1000 }, // K 實際美金
+			{ formulaValue: "=(J35-K35)*29.85" }, // L 匯差 (pinned)
+			{ numberValue: 30 }, // M 手續費
+			{ formulaValue: "=L35+M35" }, // N 當筆總額外花費
 		]);
 		const sums = batch2[2].updateCells;
-		expect(sums.start).toEqual({ sheetId: 111, rowIndex: 35, columnIndex: 7 });
+		expect(sums.start).toEqual({ sheetId: 111, rowIndex: 35, columnIndex: 8 });
 		expect(sums.rows[0].values.map((v: any) => v.userEnteredValue.formulaValue)).toEqual([
-			"=SUM(H35:H35)",
 			"=SUM(I35:I35)",
 			"=SUM(J35:J35)",
 			"=SUM(K35:K35)",
 			"=SUM(L35:L35)",
 			"=SUM(M35:M35)",
+			"=SUM(N35:N35)",
 		]);
 
 		// 30000 − 1000×29.85 = 150 spread; +30 fee = 180
@@ -369,7 +369,7 @@ describe("addTransfer", () => {
 
 	it("inserts a row above 總和 when the section is full and widens the sums", async () => {
 		const grid = transferGrid();
-		grid[34] = ["", "", "", "", "", "", 46266, 30000, "=H35/29.9", 1000, "=(I35-J35)*29.9", 30, "=K35+L35"];
+		grid[34] = ["", "", "", "", "", "", "", 46266, 30000, "=I35/29.9", 1000, "=(J35-K35)*29.9", 30, "=L35+M35"];
 		const client = transferClient(grid);
 		const result = await addTransfer(client, { ntd: 15000, usd: 500, fee: 15, month: 9, date: "9/9" });
 
@@ -380,13 +380,13 @@ describe("addTransfer", () => {
 			startIndex: 35,
 			endIndex: 36,
 		});
-		expect(batch1[1].updateCells.start).toEqual({ sheetId: 111, rowIndex: 35, columnIndex: 8 });
-		expect((client.readRange as any).mock.calls[1]).toEqual(["'9 月'!I36", "UNFORMATTED_VALUE"]);
+		expect(batch1[1].updateCells.start).toEqual({ sheetId: 111, rowIndex: 35, columnIndex: 9 });
+		expect((client.readRange as any).mock.calls[1]).toEqual(["'9 月'!J36", "UNFORMATTED_VALUE"]);
 
 		const batch2 = (client.batchUpdate as any).mock.calls[1][0];
-		expect(batch2[2].updateCells.start).toEqual({ sheetId: 111, rowIndex: 36, columnIndex: 7 });
+		expect(batch2[2].updateCells.start).toEqual({ sheetId: 111, rowIndex: 36, columnIndex: 8 });
 		expect(batch2[2].updateCells.rows[0].values[0].userEnteredValue).toEqual({
-			formulaValue: "=SUM(H35:H36)",
+			formulaValue: "=SUM(I35:I36)",
 		});
 		expect(result).toMatchObject({ row: 36, inserted: true });
 	});
@@ -403,7 +403,7 @@ describe("addTransfer", () => {
 		await expect(addTransfer(client, { ntd: 100, usd: 3, fee: 0, month: 9 })).rejects.toThrow("GOOGLEFINANCE");
 		const calls = (client.batchUpdate as any).mock.calls;
 		expect(calls).toHaveLength(2); // scratch write, then the clearing write
-		expect(calls[1][0][0].updateCells.start).toEqual({ sheetId: 111, rowIndex: 34, columnIndex: 8 });
+		expect(calls[1][0][0].updateCells.start).toEqual({ sheetId: 111, rowIndex: 34, columnIndex: 9 });
 		expect(calls[1][0][0].updateCells.rows[0].values).toEqual([{}]);
 	});
 
@@ -433,7 +433,7 @@ describe("addTransfer", () => {
 function lunchClient(grid: unknown[][], budgetRow: unknown[] = [3900, "", 3547]): SheetsClient {
 	return {
 		readRange: vi.fn(async (range: string) =>
-			range.includes("A1:Q120")
+			range.includes("A1:R160")
 				? { range, values: grid, truncated: false }
 				: { range, values: [budgetRow], truncated: false },
 		),
@@ -447,26 +447,26 @@ describe("addLunch", () => {
 		const client = lunchClient(lunchGrid());
 		const result = await addLunch(client, { amount: 143, month: 9, date: "9/2" });
 
-		expect((client.readRange as any).mock.calls[0]).toEqual(["'9 月'!A1:Q120", "FORMULA"]);
+		expect((client.readRange as any).mock.calls[0]).toEqual(["'9 月'!A1:R160", "FORMULA"]);
 		const requests = (client.batchUpdate as any).mock.calls[0][0];
 		expect(requests).toHaveLength(3); // date cell, item+amount, 總和 rewrite — no insert needed
 		const dateCell = requests[0].updateCells;
-		expect(dateCell.start).toEqual({ sheetId: 111, rowIndex: 36, columnIndex: 14 });
+		expect(dateCell.start).toEqual({ sheetId: 111, rowIndex: 36, columnIndex: 15 });
 		expect(dateCell.rows[0].values[0].userEnteredFormat).toEqual({
 			numberFormat: { type: "DATE", pattern: "mm/dd" },
 		});
 		const rowCells = requests[1].updateCells;
-		expect(rowCells.start).toEqual({ sheetId: 111, rowIndex: 36, columnIndex: 15 });
+		expect(rowCells.start).toEqual({ sheetId: 111, rowIndex: 36, columnIndex: 16 });
 		expect(rowCells.rows[0].values.map((v: any) => v.userEnteredValue)).toEqual([
-			{ stringValue: "中餐" }, // P 項目 defaults
-			{ numberValue: 143 }, // Q 金額
+			{ stringValue: "中餐" }, // Q 項目 defaults
+			{ numberValue: 143 }, // R 金額
 		]);
 		const sum = requests[2].updateCells;
-		expect(sum.start).toEqual({ sheetId: 111, rowIndex: 37, columnIndex: 16 });
-		expect(sum.rows[0].values[0].userEnteredValue).toEqual({ formulaValue: "=SUM(Q37:Q37)" });
+		expect(sum.start).toEqual({ sheetId: 111, rowIndex: 37, columnIndex: 17 });
+		expect(sum.rows[0].values[0].userEnteredValue).toEqual({ formulaValue: "=SUM(R37:R37)" });
 
 		// the 編列預算/剩餘 row is read back AFTER the write so the echo includes this entry
-		expect((client.readRange as any).mock.calls[1]).toEqual(["'9 月'!O35:Q35", "UNFORMATTED_VALUE"]);
+		expect((client.readRange as any).mock.calls[1]).toEqual(["'9 月'!P35:R35", "UNFORMATTED_VALUE"]);
 		expect(result).toEqual({
 			tab: "9 月",
 			row: 37,
@@ -482,9 +482,9 @@ describe("addLunch", () => {
 
 	it("inserts a row above 總和 when the section is full and widens the sum", async () => {
 		const g = lunchGrid();
-		(g[36] ??= [])[14] = 46266;
-		(g[36] as unknown[])[15] = "中餐";
-		(g[36] as unknown[])[16] = 143;
+		(g[36] ??= [])[15] = 46266;
+		(g[36] as unknown[])[16] = "中餐";
+		(g[36] as unknown[])[17] = 143;
 		const client = lunchClient(g);
 		const result = await addLunch(client, { amount: 210, month: 9, date: "9/9" });
 
@@ -494,10 +494,10 @@ describe("addLunch", () => {
 			range: { sheetId: 111, dimension: "ROWS", startIndex: 37, endIndex: 38 },
 			inheritFromBefore: true,
 		});
-		expect(requests[1].updateCells.start).toEqual({ sheetId: 111, rowIndex: 37, columnIndex: 14 });
-		expect(requests[3].updateCells.start).toEqual({ sheetId: 111, rowIndex: 38, columnIndex: 16 });
+		expect(requests[1].updateCells.start).toEqual({ sheetId: 111, rowIndex: 37, columnIndex: 15 });
+		expect(requests[3].updateCells.start).toEqual({ sheetId: 111, rowIndex: 38, columnIndex: 17 });
 		expect(requests[3].updateCells.rows[0].values[0].userEnteredValue).toEqual({
-			formulaValue: "=SUM(Q37:Q38)",
+			formulaValue: "=SUM(R37:R38)",
 		});
 		expect(result).toMatchObject({ row: 38, inserted: true });
 	});
@@ -774,7 +774,7 @@ describe("monthSummary", () => {
 		const client = fakeClient(grid);
 		const result = await monthSummary(client, 9);
 
-		expect((client.readRange as any).mock.calls[0]).toEqual(["'9 月'!A1:Q120", "UNFORMATTED_VALUE"]);
+		expect((client.readRange as any).mock.calls[0]).toEqual(["'9 月'!A1:R160", "UNFORMATTED_VALUE"]);
 		expect(result).toEqual({
 			tab: "9 月",
 			花費總額: 72127.21,
@@ -861,12 +861,12 @@ describe("monthSummary", () => {
 	it("reports the 午餐預算 section and 午餐超支或回補", async () => {
 		const grid = lunchGrid();
 		// UNFORMATTED render: formulas come back as computed numbers
-		(grid[34] as unknown[])[14] = 3900; // 編列預算
-		(grid[34] as unknown[])[16] = 3547; // 剩餘
-		(grid[36] ??= [])[14] = 46204;
-		(grid[36] as unknown[])[15] = "中餐";
-		(grid[36] as unknown[])[16] = 353;
-		(grid[37] as unknown[])[16] = 353; // 總和
+		(grid[34] as unknown[])[15] = 3900; // 編列預算
+		(grid[34] as unknown[])[17] = 3547; // 剩餘
+		(grid[36] ??= [])[15] = 46204;
+		(grid[36] as unknown[])[16] = "中餐";
+		(grid[36] as unknown[])[17] = 353;
+		(grid[37] as unknown[])[17] = 353; // 總和
 		grid[28] = ["", "午餐超支或回補", "", 3547];
 		const client = fakeClient(grid);
 
@@ -878,7 +878,7 @@ describe("monthSummary", () => {
 
 	it("resolves with 午餐預算 null when the lunch section is torn beyond recognition", async () => {
 		const g = lunchGrid();
-		(g[35] as unknown[])[14] = ""; // no 日期 header within 8 rows of the anchor
+		(g[35] as unknown[])[15] = ""; // no 日期 header within 8 rows of the anchor
 		const client = fakeClient(g);
 
 		const result = await monthSummary(client, 9);
@@ -935,10 +935,10 @@ describe("startMonth", () => {
 			},
 		});
 		// 近鐵 80000系 (row 8) is the only non-recurring item in the fixture
-		// Scoped to A–F: the 乾坤大挪移 / 中餐預算 sections share these sheet rows.
+		// Scoped to A–G: the 乾坤大挪移 / 中餐預算 sections share these sheet rows.
 		expect(requests[3]).toEqual({
 			deleteRange: {
-				range: { sheetId: 555, startRowIndex: 7, endRowIndex: 8, startColumnIndex: 0, endColumnIndex: 6 },
+				range: { sheetId: 555, startRowIndex: 7, endRowIndex: 8, startColumnIndex: 0, endColumnIndex: 7 },
 				shiftDimension: "ROWS",
 			},
 		});
@@ -1023,7 +1023,7 @@ describe("startMonth", () => {
 		expect(deletes).toEqual([
 			{
 				deleteRange: {
-					range: { sheetId: 555, startRowIndex: 16, endRowIndex: 17, startColumnIndex: 0, endColumnIndex: 6 },
+					range: { sheetId: 555, startRowIndex: 16, endRowIndex: 17, startColumnIndex: 0, endColumnIndex: 7 },
 					shiftDimension: "ROWS",
 				},
 			},
@@ -1037,13 +1037,13 @@ describe("startMonth", () => {
 
 		const result = await startMonth(client, 10);
 
-		expect((client.readRange as any).mock.calls[0]).toEqual(["'10 月'!A1:Q120", "FORMULA"]);
+		expect((client.readRange as any).mock.calls[0]).toEqual(["'10 月'!A1:R160", "FORMULA"]);
 		const requests = (client.batchUpdate as any).mock.calls[1][0];
-		// data rows 37..37 (0-indexed 36..37), columns O–Q (14..17) — cells cleared, nothing shifts
-		const clear = requests.find((r: any) => r.repeatCell && r.repeatCell.range.startColumnIndex === 14);
+		// data rows 37..37 (0-indexed 36..37), columns P–R (15..18) — cells cleared, nothing shifts
+		const clear = requests.find((r: any) => r.repeatCell && r.repeatCell.range.startColumnIndex === 15);
 		expect(clear).toEqual({
 			repeatCell: {
-				range: { sheetId: 555, startRowIndex: 36, endRowIndex: 37, startColumnIndex: 14, endColumnIndex: 17 },
+				range: { sheetId: 555, startRowIndex: 36, endRowIndex: 37, startColumnIndex: 15, endColumnIndex: 18 },
 				cell: {},
 				fields: "userEnteredValue",
 			},
@@ -1053,7 +1053,7 @@ describe("startMonth", () => {
 
 	it("skips the lunch clear and surfaces a warning instead of throwing when the section is torn", async () => {
 		const g = lunchGrid();
-		(g[35] as unknown[])[14] = ""; // no 日期 header within 8 rows of the anchor
+		(g[35] as unknown[])[15] = ""; // no 日期 header within 8 rows of the anchor
 		const client = startMonthClient(g, ["9 月", "8 月"]);
 
 		const result = await startMonth(client, 10);

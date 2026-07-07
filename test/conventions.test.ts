@@ -110,7 +110,7 @@ describe("conventions", () => {
 		expect(LUNCH_TOTAL_LABEL).toBe("總和");
 		expect(LUNCH_DEFAULT_ITEM).toBe("中餐");
 		expect(LUNCH_ADJUST_LABEL).toBe("午餐超支或回補");
-		expect(LUNCH_COLS).toEqual({ date: 14, item: 15, amount: 16 });
+		expect(LUNCH_COLS).toEqual({ date: 15, item: 16, amount: 17 });
 	});
 
 	it("keeps 沛還 and 薪水 as recurring income, ad-hoc rows are not", () => {
@@ -127,11 +127,13 @@ describe("conventions", () => {
 			usd: 3,
 			twd: 4,
 			paidWith: 5,
+			paidMethod: 6,
 			totalLabel: 3,
 			totalValue: 4,
 			budgetLabel: 1,
 			budgetValue: 3,
 		});
+		expect(MONTH_COLS.paidMethod).toBe(6); // G — 支付方式
 	});
 
 	it("documents the 類別 tags seen in the sheet", () => {

@@ -122,6 +122,8 @@ export const MONTH_COLS = {
 	twd: 4,
 	/** F — 支付幣別, which real account paid the row (USD/TWD). */
 	paidWith: 5,
+	/** G — 支付方式, which credit card charged the row (a CREDIT_CARDS name); blank = cash/transfer. */
+	paidMethod: 6,
 	/** D — the 花費總額 label. */
 	totalLabel: 3,
 	/** E — the 花費總額 =SUM window. */
@@ -134,42 +136,42 @@ export const MONTH_COLS = {
 
 /**
  * 乾坤大挪移 — the NTD→USD transfer log, present on monthly tabs from 7月
- * 2026 (start_month copies it forward). Title in column G, a header row
- * below it, data rows, then a 總和 row (label in G, =SUM per column H–M).
- * The 銀行餘額 block wires to the 總和 row: 本月底美金餘額 +J (USD
- * received), 本月底新臺幣餘額 −H (NTD sent), 本月新臺幣支出 +M (匯差+手續費
+ * 2026 (start_month copies it forward). Title in column H, a header row
+ * below it, data rows, then a 總和 row (label in H, =SUM per column I–N).
+ * The 銀行餘額 block wires to the 總和 row: 本月底美金餘額 +K (USD
+ * received), 本月底新臺幣餘額 −I (NTD sent), 本月新臺幣支出 +N (匯差+手續費
  * count as the month's NTD spending). The principal is a transfer, not
  * income/spending.
  */
 export const TRANSFER_SECTION_LABEL = "乾坤大挪移";
 export const TRANSFER_TOTAL_LABEL = "總和";
 
-/** 0-indexed columns of the 乾坤大挪移 section (G–M). */
+/** 0-indexed columns of the 乾坤大挪移 section (H–N, one right of the original G–M since the 支付方式 column landed in G). */
 export const TRANSFER_COLS = {
-	/** G — 日期; also the column of the section title and the 總和 label. */
-	date: 6,
-	/** H — 新臺幣 debited from the bank. */
-	ntd: 7,
-	/** I — 當下美金 = 新臺幣 / spot rate, pinned at entry time. */
-	spotUsd: 8,
-	/** J — 實際美金: the USD that actually arrived. */
-	actualUsd: 9,
-	/** K — 匯差 in NTD = (當下美金 − 實際美金) × the pinned rate. */
-	spread: 10,
-	/** L — 手續費 in NTD. */
-	fee: 11,
-	/** M — 當筆總額外花費 = 匯差 + 手續費. */
-	extra: 12,
+	/** H — 日期; also the column of the section title and the 總和 label. */
+	date: 7,
+	/** I — 新臺幣 debited from the bank. */
+	ntd: 8,
+	/** J — 當下美金 = 新臺幣 / spot rate, pinned at entry time. */
+	spotUsd: 9,
+	/** K — 實際美金: the USD that actually arrived. */
+	actualUsd: 10,
+	/** L — 匯差 in NTD = (當下美金 − 實際美金) × the pinned rate. */
+	spread: 11,
+	/** M — 手續費 in NTD. */
+	fee: 12,
+	/** N — 當筆總額外花費 = 匯差 + 手續費. */
+	extra: 13,
 } as const;
 
 /**
- * 午餐預算 (originally titled 中餐預算) — the lunch-budget log (columns O–Q), present on monthly tabs from
+ * 午餐預算 (originally titled 中餐預算) — the lunch-budget log (columns P–R), present on monthly tabs from
  * 7月 2026 (start_month copies it forward and clears its data rows). The
  * recurring 中餐 row in the expense list IS the month's lunch budget; actual
- * lunches are logged here, never in the expense list. Title in O; two rows
- * below it a values row (O=編列預算 pointing at the 中餐 expense cell,
- * Q=剩餘 = 編列預算 − 總和); then a 日期/項目/金額 header, data rows, and a
- * 總和 row (label in P, =SUM in Q). The 銀行餘額 block wires to the leftover:
+ * lunches are logged here, never in the expense list. Title in P; two rows
+ * below it a values row (P=編列預算 pointing at the 中餐 expense cell,
+ * R=剩餘 = 編列預算 − 總和); then a 日期/項目/金額 header, data rows, and a
+ * 總和 row (label in Q, =SUM in R). The 銀行餘額 block wires to the leftover:
  * 午餐超支或回補 = the 剩餘 cell, feeding 本月底新臺幣餘額 (and, only when
  * negative, 保守預計本月底新臺幣餘額) — unspent budget flows back to the
  * bank, an overdraft (negative 剩餘) deducts more.
@@ -181,14 +183,14 @@ export const LUNCH_TOTAL_LABEL = "總和";
 export const LUNCH_DEFAULT_ITEM = "中餐";
 export const LUNCH_ADJUST_LABEL = "午餐超支或回補";
 
-/** 0-indexed columns of the 午餐預算 section (O–Q). */
+/** 0-indexed columns of the 午餐預算 section (P–R, one right of the original O–Q since the 支付方式 column landed in G). */
 export const LUNCH_COLS = {
-	/** O — 日期; also the column of the section title, the 編列預算 label, and the budget value. */
-	date: 14,
-	/** P — 項目; also the column of the 總和 label. */
-	item: 15,
-	/** Q — 金額; also the 剩餘 value and the 總和 =SUM cell. */
-	amount: 16,
+	/** P — 日期; also the column of the section title, the 編列預算 label, and the budget value. */
+	date: 15,
+	/** Q — 項目; also the column of the 總和 label. */
+	item: 16,
+	/** R — 金額; also the 剩餘 value and the 總和 =SUM cell. */
+	amount: 17,
 } as const;
 
 /** Sheets date serial: days since 1899-12-30. */

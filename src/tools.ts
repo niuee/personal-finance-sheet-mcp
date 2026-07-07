@@ -248,7 +248,7 @@ export function registerTailoredTools(server: McpServer, client: SheetsClient): 
 
 	server.tool(
 		"add_transfer",
-		"Log a 乾坤大挪移 NTD→USD transfer into a monthly tab (defaults to the current month): writes the entry into the transfer block (columns G-M), pins 當下美金/匯差 to the USDTWD spot rate at entry time, and keeps the 總和 sums covering every row. The 銀行餘額 ledgers pick it up automatically: +實際美金 into 本月底美金餘額, −新臺幣 from 本月底新臺幣餘額, and 匯差+手續費 into 本月新臺幣支出 as this month's NTD spending. Use this instead of update_range for transfers.",
+		"Log a 乾坤大挪移 NTD→USD transfer into a monthly tab (defaults to the current month): writes the entry into the transfer block (columns H-N), pins 當下美金/匯差 to the USDTWD spot rate at entry time, and keeps the 總和 sums covering every row. The 銀行餘額 ledgers pick it up automatically: +實際美金 into 本月底美金餘額, −新臺幣 from 本月底新臺幣餘額, and 匯差+手續費 into 本月新臺幣支出 as this month's NTD spending. Use this instead of update_range for transfers.",
 		{
 			ntd: z.number().positive().describe("NTD debited from the bank (新臺幣)"),
 			usd: z.number().positive().describe("USD that actually arrived (實際美金)"),
@@ -271,7 +271,7 @@ export function registerTailoredTools(server: McpServer, client: SheetsClient): 
 
 	server.tool(
 		"add_lunch",
-		"Log a lunch into the 午餐預算 section of a monthly tab (titled 中餐預算 on early tabs — both work) (columns O-Q; defaults to the current month): writes 日期/項目/金額 and keeps the section's 總和 covering every row. The month's lunch BUDGET is the recurring 中餐 row in the expense list — never also add_expense a lunch. The leftover (剩餘 = 編列預算 − 總和) feeds the 銀行餘額 block's 午餐超支或回補 row: unspent budget returns to 本月底新臺幣餘額, an overdraft deducts more. Returns budget/spent/leftover after the entry.",
+		"Log a lunch into the 午餐預算 section of a monthly tab (titled 中餐預算 on early tabs — both work) (columns P-R; defaults to the current month): writes 日期/項目/金額 and keeps the section's 總和 covering every row. The month's lunch BUDGET is the recurring 中餐 row in the expense list — never also add_expense a lunch. The leftover (剩餘 = 編列預算 − 總和) feeds the 銀行餘額 block's 午餐超支或回補 row: unspent budget returns to 本月底新臺幣餘額, an overdraft deducts more. Returns budget/spent/leftover after the entry.",
 		{
 			amount: z.number().positive().describe("金額 in NTD"),
 			item: z.string().min(1).optional().describe("項目 (default: 中餐)"),
