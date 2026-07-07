@@ -1734,7 +1734,26 @@ export async function addTripEntry(client: SheetsClient, p: TripEntryParams) {
 	// Totals whose SUM range doesn't cover the new row get rewritten.
 	const rewrites = totals.filter((t) => t.parsed !== null && (row < t.parsed.a || row > t.parsed.b));
 
-	if (insertNeeded || rewrites.length > 0) {
+	// 支付方式 is a dropdown (chip) column. A written value only renders as a chip
+	// if the cell carries the dropdown's data-validation rule — empty rows and
+	// freshly inserted cells don't, so the plain string shows as bare text. Copy
+	// the rule from an existing entry in the same block onto the target cell so
+	// the new payment method renders like a hand-picked one. Source is the first
+	// real entry above the target (shift-safe: it never moves when we insert below).
+	const payCol = startCol + 3;
+	let validationSrcRow: number | null = null;
+	if (p.paymentMethod.trim() !== "") {
+		for (let r = firstDataRow; r < endRow; r++) {
+			if (r === row) continue;
+			const pay = cellStr(r, payCol);
+			if (pay === "" || pay === "支付方式" || pay === "預算" || pay.includes(TRIP_TOTAL_LABEL)) continue;
+			if (cellStr(r, startCol) === TRIP_HEADER_DATE) continue;
+			validationSrcRow = r;
+			break;
+		}
+	}
+
+	if (insertNeeded || rewrites.length > 0 || validationSrcRow !== null) {
 		const sheetId = await client.getSheetId(p.tab);
 		const requests: object[] = [];
 		if (insertNeeded) {
@@ -1761,6 +1780,29 @@ export async function addTripEntry(client: SheetsClient, p: TripEntryParams) {
 					start: { sheetId, rowIndex: totalRowFinal - 1, columnIndex: t.col },
 					rows: [{ values: [cellData(`=SUM(${t.parsed!.col}${a}:${t.parsed!.col}${b})`)] }],
 					fields: "userEnteredValue",
+				},
+			});
+		}
+		if (validationSrcRow !== null) {
+			// Paste only the data validation (the chip dropdown) — not values or
+			// formatting — from an existing entry onto the target 支付方式 cell.
+			requests.push({
+				copyPaste: {
+					source: {
+						sheetId,
+						startRowIndex: validationSrcRow - 1,
+						endRowIndex: validationSrcRow,
+						startColumnIndex: payCol,
+						endColumnIndex: payCol + 1,
+					},
+					destination: {
+						sheetId,
+						startRowIndex: row - 1,
+						endRowIndex: row,
+						startColumnIndex: payCol,
+						endColumnIndex: payCol + 1,
+					},
+					pasteType: "PASTE_DATA_VALIDATION",
 				},
 			});
 		}

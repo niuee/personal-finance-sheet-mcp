@@ -2040,6 +2040,17 @@ function tripClient(grid: unknown[][]): SheetsClient {
 	} as unknown as SheetsClient;
 }
 
+/** The copyPaste request that carries the 支付方式 dropdown from an existing entry onto the new cell. */
+function payValidationCopy(srcRow: number, destRow: number, payCol: number) {
+	return {
+		copyPaste: {
+			source: { sheetId: 111, startRowIndex: srcRow - 1, endRowIndex: srcRow, startColumnIndex: payCol, endColumnIndex: payCol + 1 },
+			destination: { sheetId: 111, startRowIndex: destRow - 1, endRowIndex: destRow, startColumnIndex: payCol, endColumnIndex: payCol + 1 },
+			pasteType: "PASTE_DATA_VALIDATION",
+		},
+	};
+}
+
 describe("addTripEntry (mosaic)", () => {
 	it("writes a JPY entry into the first empty row, adapting the previous row's formulas", async () => {
 		const client = tripClient(mosaicGrid());
@@ -2054,13 +2065,38 @@ describe("addTripEntry (mosaic)", () => {
 			jpy: 2200,
 		});
 
-		// row 4 is the first empty band-A row; totals =SUM(E3:E5)/=SUM(G3:G5) already cover it
-		expect((client.batchUpdate as any).mock.calls.length).toBe(0);
+		// row 4 is the first empty band-A row; totals =SUM(E3:E5)/=SUM(G3:G5) already cover it,
+		// so the only batch request is the 支付方式 dropdown copy from the row-3 entry.
+		expect((client.batchUpdate as any).mock.calls[0][0]).toEqual([payValidationCopy(3, 4, 3)]);
 		expect((client.updateRange as any).mock.calls[0]).toEqual([
 			"'京都'!A4:G4",
 			[["10/10", "Volks", "N規小物", "Suica", 2200, "=E4*0.22", "=CEILING(F4)"]],
 		]);
 		expect(result).toMatchObject({ category: "模型", row: 4, currency: "JPY" });
+	});
+
+	it("skips the dropdown copy when the block has no existing entry to copy from", async () => {
+		const g: unknown[][] = [];
+		g[0] = ["日期", "店鋪", "品項", "支付方式", "日幣原價", "臺幣", "臺幣進位"];
+		g[1] = ["模型"];
+		// rows 3-4 empty; total already covers them
+		g[4] = ["", "", "", "分類總花費", "=SUM(E3:E4)", "", "=SUM(G3:G4)"];
+		const client = tripClient(g);
+
+		const result = await addTripEntry(client, {
+			tab: "京都",
+			category: "模型",
+			date: "10/10",
+			shop: "Volks",
+			item: "N規小物",
+			paymentMethod: "Suica",
+			jpy: 2200,
+		});
+
+		// No prior entry to source the 支付方式 dropdown from → no batch request, plain write.
+		expect((client.batchUpdate as any).mock.calls.length).toBe(0);
+		expect((client.updateRange as any).mock.calls[0][0]).toBe("'京都'!A3:G3");
+		expect(result).toMatchObject({ category: "模型", row: 3 });
 	});
 
 	it("writes a TWD-direct entry with an empty ¥ cell and a CEILING round", async () => {
@@ -2076,7 +2112,7 @@ describe("addTripEntry (mosaic)", () => {
 			twd: 1500,
 		});
 
-		expect((client.batchUpdate as any).mock.calls.length).toBe(0);
+		expect((client.batchUpdate as any).mock.calls[0][0]).toEqual([payValidationCopy(3, 5, 11)]);
 		expect((client.updateRange as any).mock.calls[0]).toEqual([
 			"'京都'!I5:O5",
 			[["08/01", "", "回程補付", "已算在預算", "", 1500, "=CEILING(N5)"]],
@@ -2114,6 +2150,7 @@ describe("addTripEntry (mosaic)", () => {
 					fields: "userEnteredValue",
 				},
 			},
+			payValidationCopy(3, 4, 3),
 		]);
 		expect((client.updateRange as any).mock.calls[0][0]).toBe("'京都'!A4:G4");
 	});
@@ -2152,6 +2189,7 @@ describe("addTripEntry (mosaic)", () => {
 					fields: "userEnteredValue",
 				},
 			},
+			payValidationCopy(10, 11, 11),
 		]);
 		expect((client.updateRange as any).mock.calls[0]).toEqual([
 			"'京都'!I11:O11",
@@ -2254,6 +2292,7 @@ describe("addTripEntry (mosaic)", () => {
 					fields: "userEnteredValue",
 				},
 			},
+			payValidationCopy(3, 5, 3),
 		]);
 		expect((client.updateRange as any).mock.calls[0]).toEqual([
 			"'京都'!A5:G5",
@@ -2275,7 +2314,7 @@ describe("addTripEntry (mosaic)", () => {
 			jpy: 12000,
 		});
 
-		expect((client.batchUpdate as any).mock.calls.length).toBe(0);
+		expect((client.batchUpdate as any).mock.calls[0][0]).toEqual([payValidationCopy(3, 5, 11)]);
 		expect((client.updateRange as any).mock.calls[0]).toEqual([
 			"'京都'!I5:O5",
 			[["07/27", "", "追加住宿", "信用卡", 12000, "=M5*0.22", "=CEILING(N5)"]],
