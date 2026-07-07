@@ -127,7 +127,7 @@ export function findExpenseWindow(values: unknown[][], tab: string): ExpenseWind
 	const totalRow = findRowByValue(values, MONTH_COLS.totalLabel, TOTAL_ROW_LABEL);
 	if (totalRow === null) {
 		throw new Error(
-			`Could not find the "${TOTAL_ROW_LABEL}" row in ${tab} (searched column ${colLetter(MONTH_COLS.totalLabel)} of ${GRID_READ}).`,
+			`Could not find the "${TOTAL_ROW_LABEL}" row in ${tab} (searched column ${colLetter(MONTH_COLS.totalLabel)}).`,
 		);
 	}
 	const totalFormula = String(values[totalRow - 1]?.[MONTH_COLS.totalValue] ?? "");
@@ -242,6 +242,9 @@ export interface CreditCardBlock {
 	/** Rows of the buckets' 小計 rows — the 小計 label sits in the block's 2nd column, the value in the 3rd. */
 	preSubtotalRow: number;
 	postSubtotalRow: number;
+	/** The bucket label rows (結帳日前/結帳日後); the 日期/項目/金額 header sits at label+1, data from label+2 to 小計−1. */
+	preLabelRow: number;
+	postLabelRow: number;
 }
 
 /**
@@ -302,9 +305,135 @@ export function findCreditSection(values: unknown[][], tab: string): CreditCardB
 		const preSubtotalRow = subtotalRow(preLabelRow, CREDIT_POST_LABEL);
 		const postLabelRow = labelRow(CREDIT_POST_LABEL, preSubtotalRow);
 		const postSubtotalRow = subtotalRow(postLabelRow, null);
-		blocks.push({ card, titleRow, startCol, closeDateRow, payDateRow, dueRow, preSubtotalRow, postSubtotalRow });
+		blocks.push({
+			card,
+			titleRow,
+			startCol,
+			closeDateRow,
+			payDateRow,
+			dueRow,
+			preSubtotalRow,
+			postSubtotalRow,
+			preLabelRow,
+			postLabelRow,
+		});
 	}
 	return blocks;
+}
+
+/** Case/whitespace-insensitive compare, mirroring Sheets' `=` semantics (e.g. "國泰 Cube" vs "國泰 CUBE"). */
+function norm(v: unknown): string {
+	return String(v ?? "")
+		.trim()
+		.toLowerCase();
+}
+
+export interface BucketGuardResult {
+	/** insertDimension requests to append to the caller's batch (empty when no growth needed). */
+	requests: object[];
+	/** Which bucket the entry lands in; null when the guard was skipped. */
+	bucket: "結帳日前" | "結帳日後" | null;
+	/** Rows that will be inserted above the bucket's 小計. */
+	rowsAdded: number;
+	/** Why the guard was skipped (section missing/torn, close date not a number); undefined when it ran. */
+	warning?: string;
+}
+
+/**
+ * Keep a 對帳區 bucket's mirror spill area big enough for the entry the
+ * caller is about to write. Fail-soft — NEVER throws: any anomaly (missing
+ * or torn section, unknown card, non-numeric 結帳日) degrades to a no-op
+ * result with `warning`, and the caller's write proceeds regardless. Whole-row
+ * inserts also widen the horizontally adjacent card's same bucket — harmless;
+ * references adjust.
+ *
+ * `excludeRow` (1-indexed) skips a row in the expense-row counting loop —
+ * pass the row being re-dated so its stale (pre-update) date isn't counted
+ * on top of the unconditional "pending row" +1 below, which already accounts
+ * for where it's landing. Lunch rows are never re-dated, so the lunch loop
+ * ignores it.
+ */
+export function creditBucketGuard(
+	values: unknown[][],
+	tab: string,
+	sheetId: number,
+	cardName: string,
+	dateSerialValue: number,
+	rowOffset: number,
+	excludeRow?: number,
+): BucketGuardResult {
+	// Pre-section tabs (before 7月 2026) are normal — skip silently, no warning.
+	if (findRowByValue(values, CREDIT_BLOCK_COLS[0], CREDIT_SECTION_LABEL) === null) {
+		return { requests: [], bucket: null, rowsAdded: 0 };
+	}
+	let blocks: CreditCardBlock[];
+	try {
+		blocks = findCreditSection(values, tab);
+	} catch (err) {
+		return { requests: [], bucket: null, rowsAdded: 0, warning: err instanceof Error ? err.message : String(err) };
+	}
+	const wantName = norm(cardName);
+	const block = blocks.find((b) => norm(b.card.name) === wantName);
+	if (block === undefined) {
+		return {
+			requests: [],
+			bucket: null,
+			rowsAdded: 0,
+			warning: `No ${CREDIT_SECTION_LABEL} block for card "${cardName}" in ${tab}.`,
+		};
+	}
+	const valueCol = block.startCol + CREDIT_BLOCK_WIDTH - 1;
+	const closeSerial = values[block.closeDateRow - 1]?.[valueCol];
+	if (typeof closeSerial !== "number") {
+		return {
+			requests: [],
+			bucket: null,
+			rowsAdded: 0,
+			warning: `${block.card.name}'s ${CREDIT_CLOSE_LABEL} in ${tab} is not a number — cannot place the entry into a bucket.`,
+		};
+	}
+
+	const isPre = dateSerialValue <= closeSerial;
+	const bucket: "結帳日前" | "結帳日後" = isPre ? "結帳日前" : "結帳日後";
+	const labelRow = isPre ? block.preLabelRow : block.postLabelRow;
+	const subtotalRow = isPre ? block.preSubtotalRow : block.postSubtotalRow;
+	const inBucket = (serial: unknown): boolean =>
+		typeof serial === "number" && (isPre ? serial <= closeSerial : serial > closeSerial);
+
+	let matches = 1; // the pending row: not in the grid yet, or its date isn't
+	for (let r = 3; r <= values.length; r++) {
+		if (r === excludeRow) continue;
+		const row = values[r - 1] ?? [];
+		if (norm(row[MONTH_COLS.paidMethod]) === wantName && inBucket(row[MONTH_COLS.date])) matches++;
+	}
+	if (block.card.billingCurrency === "TWD") {
+		for (let r = 3; r <= values.length; r++) {
+			const row = values[r - 1] ?? [];
+			if (norm(row[LUNCH_COLS.paidMethod]) === wantName && inBucket(row[LUNCH_COLS.date])) matches++;
+		}
+	}
+
+	const capacity = subtotalRow - labelRow - 2;
+	const deficit = matches - capacity;
+	if (deficit <= 0) return { requests: [], bucket, rowsAdded: 0 };
+
+	return {
+		requests: [
+			{
+				insertDimension: {
+					range: {
+						sheetId,
+						dimension: "ROWS",
+						startIndex: subtotalRow + rowOffset - 1,
+						endIndex: subtotalRow + rowOffset - 1 + deficit,
+					},
+					inheritFromBefore: true,
+				},
+			},
+		],
+		bucket,
+		rowsAdded: deficit,
+	};
 }
 
 export interface IncomeWindow {
@@ -534,8 +663,8 @@ export async function addExpense(client: SheetsClient, p: AddExpenseParams) {
 		);
 	}
 
-	const { values, truncated } = await client.readRange(`${quoteTab(tab)}!${GRID_READ}`, "FORMULA");
-	assertNotTruncated(truncated, tab, GRID_READ);
+	const { values, truncated } = await client.readRange(`${quoteTab(tab)}!${FULL_GRID_READ}`, "FORMULA");
+	assertNotTruncated(truncated, tab, FULL_GRID_READ);
 
 	const { totalRow, start: windowStart, end: windowEnd } = findExpenseWindow(values, tab);
 
@@ -598,6 +727,14 @@ export async function addExpense(client: SheetsClient, p: AddExpenseParams) {
 		});
 	}
 
+	// A dateless card row is not mirrored into a bucket, so the guard only
+	// runs once both a card and a date are on the row.
+	let guard: BucketGuardResult | undefined;
+	if (p.card !== undefined && dateSerialValue !== null) {
+		guard = creditBucketGuard(values, tab, sheetId, p.card, dateSerialValue, inserted ? 1 : 0);
+		requests.push(...guard.requests);
+	}
+
 	// The expense lands inside the 花費總額 SUM window, so the total picks it up
 	// automatically (an insert at the window's edge auto-extends the range).
 	await client.batchUpdate(requests);
@@ -612,6 +749,9 @@ export async function addExpense(client: SheetsClient, p: AddExpenseParams) {
 		date: p.date ?? null,
 		tag: p.tag ?? null,
 		card: p.card ?? null,
+		bucket: guard?.bucket ?? null,
+		bucketRowsAdded: guard?.rowsAdded ?? 0,
+		bucketWarning: guard?.warning,
 	};
 }
 
@@ -851,6 +991,17 @@ export async function addLunch(client: SheetsClient, p: AddLunchParams) {
 			},
 		},
 	);
+
+	// Lunches always carry a date, so the guard runs whenever a card is given;
+	// its insert (below the lunch section) is appended last, after the writes
+	// above — the lunch insert (if any) shifts the credit section down, hence
+	// the offset.
+	let guard: BucketGuardResult | undefined;
+	if (p.card !== undefined) {
+		guard = creditBucketGuard(values, tab, sheetId, p.card, dateSerialValue, inserted ? 1 : 0);
+		requests.push(...guard.requests);
+	}
+
 	await client.batchUpdate(requests);
 
 	// Echo the section state AFTER the write so the caller sees the new leftover.
@@ -870,6 +1021,119 @@ export async function addLunch(client: SheetsClient, p: AddLunchParams) {
 		budget,
 		spent: budget !== null && leftover !== null ? round2(budget - leftover) : null,
 		leftover,
+		bucket: guard?.bucket ?? null,
+		bucketRowsAdded: guard?.rowsAdded ?? 0,
+		bucketWarning: guard?.warning,
+	};
+}
+
+export interface SetExpenseDateParams {
+	item: string;
+	/** M/D, MM/DD, YYYY/M/D, or YYYY-MM-DD. */
+	date: string;
+	month?: number;
+	/** 1-indexed sheet row, to disambiguate duplicate 項目 names. */
+	row?: number;
+}
+
+/**
+ * Fill in (or change) the 日期 of an existing expense row — the hand-edit
+ * case no other tool can intercept (a dateless recurring charge that later
+ * gets dated). Finds the row by exact trimmed 項目 within the expense
+ * window; runs the bucket room guard when the row's 支付方式 names a known
+ * card.
+ */
+export async function setExpenseDate(client: SheetsClient, p: SetExpenseDateParams) {
+	// Parse before any read/write so a bad date fails closed.
+	const serial = parseDateInput(p.date);
+	const tab = p.month !== undefined ? monthTabName(p.month) : currentMonthTab();
+	const item = p.item.trim();
+
+	const { values, truncated } = await client.readRange(`${quoteTab(tab)}!${FULL_GRID_READ}`, "FORMULA");
+	assertNotTruncated(truncated, tab, FULL_GRID_READ);
+	const { totalRow, start: windowStart, end: windowEnd } = findExpenseWindow(values, tab);
+
+	const candidates: number[] = [];
+	for (let r = windowStart; r <= Math.min(windowEnd, totalRow - 1); r++) {
+		if (String(values[r - 1]?.[MONTH_COLS.item] ?? "").trim() === item) candidates.push(r);
+	}
+	if (candidates.length === 0) {
+		throw new Error(`No "${item}" row inside the expense window of ${tab}.`);
+	}
+
+	let row: number;
+	if (p.row !== undefined) {
+		if (!candidates.includes(p.row)) {
+			throw new Error(
+				`Row ${p.row} is not one of the "${item}" rows inside the expense window of ${tab} (rows ${candidates.join(", ")}).`,
+			);
+		}
+		row = p.row;
+	} else if (candidates.length === 1) {
+		row = candidates[0] as number;
+	} else {
+		const dateless = candidates.filter((r) => {
+			const v = values[r - 1]?.[MONTH_COLS.date];
+			return typeof v !== "number" && String(v ?? "").trim() === "";
+		});
+		if (dateless.length === 1) {
+			row = dateless[0] as number;
+		} else {
+			throw new Error(`Multiple "${item}" rows match (rows ${candidates.join(", ")}) — pass row to pick one.`);
+		}
+	}
+
+	const prevValue = values[row - 1]?.[MONTH_COLS.date];
+	const previousDate = typeof prevValue === "number" ? serialToIso(prevValue) : null;
+
+	const sheetId = await client.getSheetId(tab);
+	const requests: object[] = [
+		{
+			updateCells: {
+				start: { sheetId, rowIndex: row - 1, columnIndex: MONTH_COLS.date },
+				rows: [
+					{
+						values: [
+							{
+								userEnteredValue: { numberValue: serial },
+								userEnteredFormat: { numberFormat: { type: "DATE", pattern: "mm/dd" } },
+							},
+						],
+					},
+				],
+				fields: "userEnteredValue,userEnteredFormat.numberFormat",
+			},
+		},
+	];
+
+	const g = String(values[row - 1]?.[MONTH_COLS.paidMethod] ?? "").trim();
+	let bucket: BucketGuardResult["bucket"] = null;
+	let bucketRowsAdded = 0;
+	let bucketWarning: string | undefined;
+	if (g !== "") {
+		const registryCard = CREDIT_CARDS.find((c) => norm(c.name) === norm(g));
+		if (registryCard === undefined) {
+			bucketWarning = `The row's 支付方式 "${g}" is not a known card — bucket room not checked.`;
+		} else {
+			const guard = creditBucketGuard(values, tab, sheetId, registryCard.name, serial, 0, row);
+			requests.push(...guard.requests);
+			bucket = guard.bucket;
+			bucketRowsAdded = guard.rowsAdded;
+			bucketWarning = guard.warning;
+		}
+	}
+
+	await client.batchUpdate(requests);
+	return {
+		tab,
+		row,
+		item,
+		date: serialToIso(serial),
+		previousDate,
+		card: g || null,
+		bucket,
+		bucketRowsAdded,
+		bucketWarning,
 	};
 }
 

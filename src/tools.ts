@@ -11,6 +11,7 @@ import {
 	getCategories,
 	monthSummary,
 	safeUpdateRange,
+	setExpenseDate,
 	setIncome,
 	startMonth,
 } from "./finance-ops";
@@ -162,12 +163,30 @@ export function registerTailoredTools(server: McpServer, client: SheetsClient): 
 				.min(1)
 				.optional()
 				.describe(
-					"Credit card that charged the row — written to the 支付方式 column (G); the 信用卡帳單對帳區 FILTERs mirror the row into the card's statement bucket (dated rows only). One of: 國泰 CUBE, CHASE Amazon, CHASE Freedom, Apple Card. Omit for cash/bank-transfer rows. Sets 支付幣別 to the card's billing currency unless paid_with is given.",
+					"Credit card that charged the row — written to the 支付方式 column (G); the 信用卡帳單對帳區 FILTERs mirror the row into the card's statement bucket (dated rows only). One of: 國泰 CUBE, CHASE Amazon, CHASE Freedom, Apple Card. Omit for cash/bank-transfer rows. Sets 支付幣別 to the card's billing currency unless paid_with is given. When the row also has a date, the target 對帳區 bucket is grown automatically if its spill area is full.",
 				),
 		},
 		async ({ paid_with, ...p }) => {
 			try {
 				return ok(await addExpense(client, { ...p, paidWith: paid_with }));
+			} catch (e) {
+				return toError(e);
+			}
+		},
+	);
+
+	server.tool(
+		"set_expense_date",
+		"Fill in (or change) the 日期 of an existing expense row on a monthly tab — e.g. when a dateless recurring subscription charges a credit card, dating the row is what drops it into the 信用卡帳單對帳區 bucket. Finds the row by exact 項目; with duplicate names it prefers the single dateless row (pass row to disambiguate). If the row's 支付方式 holds a card, the target bucket is grown automatically when its spill area is full.",
+		{
+			item: z.string().min(1).describe("項目 of the expense row, exactly as written"),
+			date: z.string().min(1).describe("Date: M/D, MM/DD, or YYYY-MM-DD (year defaults to the current Taipei year)"),
+			month: monthParam.optional().describe("Target month 1-12 (default: current month)"),
+			row: z.number().int().min(3).optional().describe("1-indexed sheet row, to disambiguate duplicate 項目 names"),
+		},
+		async (p) => {
+			try {
+				return ok(await setExpenseDate(client, p));
 			} catch (e) {
 				return toError(e);
 			}
@@ -292,7 +311,7 @@ export function registerTailoredTools(server: McpServer, client: SheetsClient): 
 				.min(1)
 				.optional()
 				.describe(
-					"TWD-billed credit card that paid the lunch (currently 國泰 CUBE) — written to the 支付方式 column (S); the 對帳區's TWD-card buckets mirror it into the statement. Omit for cash.",
+					"TWD-billed credit card that paid the lunch (currently 國泰 CUBE) — written to the 支付方式 column (S); the 對帳區's TWD-card buckets mirror it into the statement. Omit for cash. When the row also has a date, the target 對帳區 bucket is grown automatically if its spill area is full.",
 				),
 			month: monthParam.optional().describe("Target month 1-12 (default: current month)"),
 		},

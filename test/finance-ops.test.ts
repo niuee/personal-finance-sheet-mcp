@@ -25,6 +25,7 @@ import {
 	getCategories,
 	monthSummary,
 	safeUpdateRange,
+	setExpenseDate,
 	setIncome,
 	startMonth,
 } from "../src/finance-ops";
@@ -367,6 +368,8 @@ describe("findCreditSection", () => {
 			closeDateRow: 42,
 			payDateRow: 43,
 			dueRow: 44,
+			preLabelRow: 45,
+			postLabelRow: 51,
 			preSubtotalRow: 49,
 			postSubtotalRow: 55,
 		});
@@ -582,6 +585,9 @@ describe("addLunch", () => {
 			budget: 3900,
 			spent: 353, // 編列預算 − 剩餘
 			leftover: 3547,
+			bucket: null,
+			bucketRowsAdded: 0,
+			bucketWarning: undefined,
 		});
 	});
 
@@ -680,6 +686,51 @@ describe("addLunch", () => {
 		const result = await addLunch(client, { amount: 55, month: 9, date: "9/2" });
 		expect(result.inserted).toBe(true); // slot skipped → inserts above 總和
 	});
+
+	describe("bucket room guard", () => {
+		it("grows the card's bucket when the lunch entry overflows its mirror", async () => {
+			const g = creditGrid();
+			g[4] = [dateSerial(2026, 7, 10), "既有1", "訂閱", "", 100, "TWD", "國泰 Cube"];
+			g[5] = [dateSerial(2026, 7, 10), "既有2", "訂閱", "", 100, "TWD", "國泰 Cube"];
+			const client = fakeClient(g);
+			const result = await addLunch(client, { amount: 120, month: 9, date: "7/10", card: "國泰 CUBE" });
+			expect(result.inserted).toBe(false);
+			const requests = (client.batchUpdate as any).mock.calls[0][0];
+			const insert = requests.find((r: any) => r.insertDimension);
+			expect(insert.insertDimension).toEqual({
+				range: { sheetId: 111, dimension: "ROWS", startIndex: 48, endIndex: 49 },
+				inheritFromBefore: true,
+			});
+			expect(result).toMatchObject({ bucket: "結帳日前", bucketRowsAdded: 1 });
+		});
+
+		it("shifts the card bucket insert by the lunch section's own row insert", async () => {
+			const g = creditGrid();
+			g[4] = [dateSerial(2026, 7, 10), "既有1", "訂閱", "", 100, "TWD", "國泰 Cube"];
+			g[5] = [dateSerial(2026, 7, 10), "既有2", "訂閱", "", 100, "TWD", "國泰 Cube"];
+			(g[36] ??= [])[15] = dateSerial(2026, 7, 5);
+			(g[36] as unknown[])[16] = "早餐";
+			(g[36] as unknown[])[17] = 60;
+			const client = fakeClient(g);
+			const result = await addLunch(client, { amount: 120, month: 9, date: "7/10", card: "國泰 CUBE" });
+			expect(result.inserted).toBe(true);
+			const requests = (client.batchUpdate as any).mock.calls[0][0];
+			const bucketInsert = requests.find((r: any) => r.insertDimension && r.insertDimension.range.startIndex === 49);
+			expect(bucketInsert.insertDimension).toEqual({
+				range: { sheetId: 111, dimension: "ROWS", startIndex: 49, endIndex: 50 },
+				inheritFromBefore: true,
+			});
+			expect(result).toMatchObject({ bucketRowsAdded: 1 });
+		});
+
+		it("skips the guard when no card is given", async () => {
+			const client = fakeClient(creditGrid());
+			const result = await addLunch(client, { amount: 100, month: 9, date: "7/10" });
+			expect(result.bucket).toBeNull();
+			expect(result.bucketRowsAdded).toBe(0);
+			expect(result.bucketWarning).toBeUndefined();
+		});
+	});
 });
 
 describe("addExpense", () => {
@@ -688,7 +739,7 @@ describe("addExpense", () => {
 
 		const result = await addExpense(client, { item: "晚餐", amount: 250, currency: "TWD", month: 9 });
 
-		expect((client.readRange as any).mock.calls[0]).toEqual(["'9 月'!A1:H60", "FORMULA"]);
+		expect((client.readRange as any).mock.calls[0]).toEqual(["'9 月'!A1:S160", "FORMULA"]);
 		const requests = (client.batchUpdate as any).mock.calls[0][0];
 		expect(requests).toEqual([
 			{
@@ -948,6 +999,346 @@ describe("addExpense", () => {
 		await addExpense(client, { item: "咖啡", amount: 55, currency: "TWD", month: 9 });
 		const write = ((client.batchUpdate as any).mock.calls[0][0]).find((r: any) => r.updateCells);
 		expect(write.updateCells.rows[0].values[5]).toEqual({}); // cellData(null)
+	});
+
+	describe("bucket room guard", () => {
+		it("reports the bucket with no growth needed when the mirror has room", async () => {
+			const client = fakeClient(creditGrid());
+			const result = await addExpense(client, {
+				item: "Netflix",
+				amount: 390,
+				currency: "TWD",
+				month: 9,
+				date: "7/10",
+				card: "國泰 CUBE",
+			});
+			const requests = (client.batchUpdate as any).mock.calls[0][0];
+			expect(requests.some((r: any) => r.insertDimension)).toBe(false);
+			expect(result).toMatchObject({ bucket: "結帳日前", bucketRowsAdded: 0 });
+			expect(result.bucketWarning).toBeUndefined();
+		});
+
+		it("grows the bucket when the pending row overflows the mirror's spill area", async () => {
+			const g = creditGrid();
+			g[4] = [dateSerial(2026, 7, 10), "既有1", "訂閱", "", 100, "TWD", "國泰 Cube"];
+			g[5] = [dateSerial(2026, 7, 10), "既有2", "訂閱", "", 100, "TWD", "國泰 Cube"];
+			const client = fakeClient(g);
+			const result = await addExpense(client, {
+				item: "Netflix",
+				amount: 390,
+				currency: "TWD",
+				month: 9,
+				date: "7/10",
+				card: "國泰 CUBE",
+			});
+			const requests = (client.batchUpdate as any).mock.calls[0][0];
+			const insert = requests.find((r: any) => r.insertDimension);
+			expect(insert.insertDimension).toEqual({
+				range: { sheetId: 111, dimension: "ROWS", startIndex: 48, endIndex: 49 },
+				inheritFromBefore: true,
+			});
+			expect(result).toMatchObject({ bucket: "結帳日前", bucketRowsAdded: 1 });
+		});
+
+		it("shifts the bucket-room insert by the write's own row insert when the expense window is full", async () => {
+			const g = creditGrid();
+			g[4] = [dateSerial(2026, 7, 10), "既有1", "訂閱", "", 100, "TWD", "國泰 Cube"];
+			g[5] = [dateSerial(2026, 7, 10), "既有2", "訂閱", "", 100, "TWD", "國泰 Cube"];
+			g[6] = ["", "filler1", "雜", "", 1];
+			g[7] = ["", "filler2", "雜", "", 1];
+			g[8] = ["", "filler3", "雜", "", 1];
+			g[9] = ["", "filler4", "雜", "", 1];
+			const client = fakeClient(g);
+			const result = await addExpense(client, {
+				item: "Netflix",
+				amount: 390,
+				currency: "TWD",
+				month: 9,
+				date: "7/10",
+				card: "國泰 CUBE",
+			});
+			expect(result.inserted).toBe(true);
+			const requests = (client.batchUpdate as any).mock.calls[0][0];
+			const bucketInsert = requests.find((r: any) => r.insertDimension && r.insertDimension.range.startIndex === 49);
+			expect(bucketInsert.insertDimension).toEqual({
+				range: { sheetId: 111, dimension: "ROWS", startIndex: 49, endIndex: 50 },
+				inheritFromBefore: true,
+			});
+			expect(result).toMatchObject({ bucketRowsAdded: 1 });
+		});
+
+		it("counts matching 午餐預算 rows toward the TWD-billed card's bucket", async () => {
+			const g = creditGrid();
+			g[4] = [dateSerial(2026, 7, 10), "既有1", "訂閱", "", 100, "TWD", "國泰 Cube"];
+			(g[36] ??= [])[15] = dateSerial(2026, 7, 10);
+			(g[36] as unknown[])[16] = "中餐";
+			(g[36] as unknown[])[17] = 120;
+			(g[36] as unknown[])[18] = "國泰 Cube";
+			const client = fakeClient(g);
+			const result = await addExpense(client, {
+				item: "Netflix",
+				amount: 390,
+				currency: "TWD",
+				month: 9,
+				date: "7/10",
+				card: "國泰 CUBE",
+			});
+			const requests = (client.batchUpdate as any).mock.calls[0][0];
+			expect(requests.some((r: any) => r.insertDimension)).toBe(true);
+			expect(result).toMatchObject({ bucketRowsAdded: 1 });
+		});
+
+		it("routes a post-close-date entry into 結帳日後 and grows it on overflow", async () => {
+			const g = creditGrid();
+			g[4] = [dateSerial(2026, 7, 25), "既有1", "訂閱", "", 100, "TWD", "國泰 Cube"];
+			g[5] = [dateSerial(2026, 7, 25), "既有2", "訂閱", "", 100, "TWD", "國泰 Cube"];
+			const client = fakeClient(g);
+			const result = await addExpense(client, {
+				item: "Netflix",
+				amount: 390,
+				currency: "TWD",
+				month: 9,
+				date: "7/25",
+				card: "國泰 CUBE",
+			});
+			const requests = (client.batchUpdate as any).mock.calls[0][0];
+			const insert = requests.find((r: any) => r.insertDimension);
+			expect(insert.insertDimension).toEqual({
+				range: { sheetId: 111, dimension: "ROWS", startIndex: 54, endIndex: 55 },
+				inheritFromBefore: true,
+			});
+			expect(result).toMatchObject({ bucket: "結帳日後", bucketRowsAdded: 1 });
+		});
+
+		it("never counts 午餐預算 rows for a USD-billed card", async () => {
+			const g = creditGrid();
+			g[4] = [dateSerial(2026, 7, 1), "既有", "訂閱", 5, "", "USD", "CHASE Amazon"];
+			(g[36] ??= [])[15] = dateSerial(2026, 7, 1);
+			(g[36] as unknown[])[16] = "中餐";
+			(g[36] as unknown[])[17] = 120;
+			(g[36] as unknown[])[18] = "CHASE Amazon";
+			const client = fakeClient(g);
+			const result = await addExpense(client, {
+				item: "Kindle",
+				amount: 9.99,
+				currency: "USD",
+				month: 9,
+				date: "7/1",
+				card: "CHASE Amazon",
+			});
+			const requests = (client.batchUpdate as any).mock.calls[0][0];
+			expect(requests.some((r: any) => r.insertDimension)).toBe(false);
+			expect(result).toMatchObject({ bucket: "結帳日前", bucketRowsAdded: 0 });
+		});
+
+		it("skips the guard for a dateless card row", async () => {
+			const client = fakeClient(creditGrid());
+			const result = await addExpense(client, {
+				item: "Netflix",
+				amount: 390,
+				currency: "TWD",
+				month: 9,
+				card: "國泰 CUBE",
+			});
+			const requests = (client.batchUpdate as any).mock.calls[0][0];
+			expect(requests.some((r: any) => r.insertDimension)).toBe(false);
+			expect(result.bucket).toBeNull();
+			expect(result.bucketRowsAdded).toBe(0);
+			expect(result.bucketWarning).toBeUndefined();
+		});
+
+		it("writes the expense even when the tab has no 信用卡帳單對帳區 (pre-section tabs)", async () => {
+			const client = fakeClient(lunchGrid());
+			const result = await addExpense(client, {
+				item: "Netflix",
+				amount: 390,
+				currency: "TWD",
+				month: 9,
+				date: "7/10",
+				card: "國泰 CUBE",
+			});
+			expect((client.batchUpdate as any).mock.calls).toHaveLength(1);
+			expect(result.bucket).toBeNull();
+			expect(result.bucketWarning).toBeUndefined();
+		});
+
+		it("writes the expense and surfaces a warning when the credit section is torn", async () => {
+			const g = creditGrid();
+			(g[43] as unknown[])[7] = ""; // CUBE loses its 本月需繳款 label -> findCreditSection throws
+			const client = fakeClient(g);
+			const result = await addExpense(client, {
+				item: "Netflix",
+				amount: 390,
+				currency: "TWD",
+				month: 9,
+				date: "7/10",
+				card: "國泰 CUBE",
+			});
+			expect((client.batchUpdate as any).mock.calls).toHaveLength(1);
+			expect(result.bucketWarning).toBeDefined();
+			expect(result.bucket).toBeNull();
+		});
+	});
+});
+
+describe("setExpenseDate", () => {
+	/** creditGrid() with a controlled dateless "Netflix" row at row 7 (idx 6), G blank. */
+	function dateGrid(): unknown[][] {
+		const g = creditGrid();
+		g[6] = ["", "Netflix", "訂閱", "", 390, "TWD", ""];
+		return g;
+	}
+
+	it("dates a dateless row and returns previousDate null", async () => {
+		const client = fakeClient(dateGrid());
+		const result = await setExpenseDate(client, { item: "Netflix", date: "7/10", month: 9 });
+
+		expect((client.readRange as any).mock.calls[0]).toEqual(["'9 月'!A1:S160", "FORMULA"]);
+		const requests = (client.batchUpdate as any).mock.calls[0][0];
+		expect(requests[0]).toEqual({
+			updateCells: {
+				start: { sheetId: 111, rowIndex: 6, columnIndex: 0 },
+				rows: [
+					{
+						values: [
+							{
+								userEnteredValue: { numberValue: dateSerial(2026, 7, 10) },
+								userEnteredFormat: { numberFormat: { type: "DATE", pattern: "mm/dd" } },
+							},
+						],
+					},
+				],
+				fields: "userEnteredValue,userEnteredFormat.numberFormat",
+			},
+		});
+		expect(result).toMatchObject({
+			tab: "9 月",
+			row: 7,
+			item: "Netflix",
+			date: "2026-07-10",
+			previousDate: null,
+			card: null,
+			bucket: null,
+			bucketRowsAdded: 0,
+		});
+	});
+
+	it("changes an existing date and returns the previous ISO date", async () => {
+		const g = dateGrid();
+		(g[6] as unknown[])[0] = dateSerial(2026, 7, 1);
+		const client = fakeClient(g);
+
+		const result = await setExpenseDate(client, { item: "Netflix", date: "7/15", month: 9 });
+
+		expect(result.previousDate).toBe("2026-07-01");
+		expect(result.date).toBe("2026-07-15");
+		expect(result.row).toBe(7);
+	});
+
+	it("prefers the single dateless row among duplicate 項目 names", async () => {
+		const g = dateGrid();
+		g[7] = [dateSerial(2026, 7, 3), "Netflix", "訂閱", "", 390, "TWD", ""]; // row 8, dated duplicate
+		const client = fakeClient(g);
+
+		const result = await setExpenseDate(client, { item: "Netflix", date: "7/20", month: 9 });
+
+		expect(result.row).toBe(7);
+	});
+
+	it("throws listing the rows when every duplicate 項目 already has a date", async () => {
+		const g = dateGrid();
+		(g[6] as unknown[])[0] = dateSerial(2026, 7, 1);
+		g[7] = [dateSerial(2026, 7, 3), "Netflix", "訂閱", "", 390, "TWD", ""];
+		const client = fakeClient(g);
+
+		await expect(setExpenseDate(client, { item: "Netflix", date: "7/20", month: 9 })).rejects.toThrow(
+			/Multiple "Netflix" rows match \(rows 7, 8\)/,
+		);
+		expect((client.batchUpdate as any).mock.calls).toHaveLength(0);
+	});
+
+	it("lets the row param disambiguate explicitly", async () => {
+		const g = dateGrid();
+		(g[6] as unknown[])[0] = dateSerial(2026, 7, 1);
+		g[7] = [dateSerial(2026, 7, 3), "Netflix", "訂閱", "", 390, "TWD", ""];
+		const client = fakeClient(g);
+
+		const result = await setExpenseDate(client, { item: "Netflix", date: "7/20", month: 9, row: 8 });
+
+		expect(result.row).toBe(8);
+	});
+
+	it("throws when row does not match the item", async () => {
+		const client = fakeClient(dateGrid());
+		await expect(setExpenseDate(client, { item: "Netflix", date: "7/20", month: 9, row: 5 })).rejects.toThrow(
+			/Row 5 is not one of the "Netflix" rows/,
+		);
+		expect((client.batchUpdate as any).mock.calls).toHaveLength(0);
+	});
+
+	it("throws naming the tab when the item is missing", async () => {
+		const client = fakeClient(dateGrid());
+		await expect(setExpenseDate(client, { item: "不存在", date: "7/20", month: 9 })).rejects.toThrow(
+			/No "不存在" row inside the expense window of 9 月/,
+		);
+	});
+
+	it("runs the bucket guard when the row's 支付方式 holds a known card", async () => {
+		const g = dateGrid();
+		(g[6] as unknown[])[6] = "國泰 CUBE";
+		g[4] = [dateSerial(2026, 7, 12), "既有1", "訂閱", "", 100, "TWD", "國泰 Cube"];
+		g[5] = [dateSerial(2026, 7, 12), "既有2", "訂閱", "", 100, "TWD", "國泰 Cube"];
+		const client = fakeClient(g);
+
+		const result = await setExpenseDate(client, { item: "Netflix", date: "7/10", month: 9 });
+
+		const requests = (client.batchUpdate as any).mock.calls[0][0];
+		const insert = requests.find((r: any) => r.insertDimension);
+		expect(insert).toBeDefined();
+		expect(result).toMatchObject({ card: "國泰 CUBE", bucket: "結帳日前", bucketRowsAdded: 1 });
+	});
+
+	it("excludes the row being re-dated from its own bucket scan (no double count)", async () => {
+		const g = dateGrid();
+		g[6] = [dateSerial(2026, 7, 1), "Netflix", "訂閱", "", 390, "TWD", "國泰 CUBE"]; // row 7, already dated pre-bucket
+		g[4] = [dateSerial(2026, 7, 12), "既有1", "訂閱", "", 100, "TWD", "國泰 Cube"]; // row 5, the only other dated CUBE row
+		const client = fakeClient(g);
+
+		const result = await setExpenseDate(client, { item: "Netflix", date: "7/15", month: 9 });
+
+		const requests = (client.batchUpdate as any).mock.calls[0][0];
+		expect(requests.some((r: any) => r.insertDimension)).toBe(false);
+		expect(result).toMatchObject({ bucket: "結帳日前", bucketRowsAdded: 0 });
+	});
+
+	it("warns and skips the guard when 支付方式 holds an unknown value", async () => {
+		const g = dateGrid();
+		(g[6] as unknown[])[6] = "玉山 Ubear";
+		const client = fakeClient(g);
+
+		const result = await setExpenseDate(client, { item: "Netflix", date: "7/10", month: 9 });
+
+		const requests = (client.batchUpdate as any).mock.calls[0][0];
+		expect(requests.some((r: any) => r.insertDimension)).toBe(false);
+		expect(result.bucketWarning).toMatch(/玉山 Ubear/);
+		expect(result.bucket).toBeNull();
+	});
+
+	it("leaves bucket null when 支付方式 is empty", async () => {
+		const client = fakeClient(dateGrid());
+		const result = await setExpenseDate(client, { item: "Netflix", date: "7/10", month: 9 });
+		expect(result.card).toBeNull();
+		expect(result.bucket).toBeNull();
+		expect(result.bucketWarning).toBeUndefined();
+	});
+
+	it("rejects a bad date before any read or write", async () => {
+		const client = fakeClient(dateGrid());
+		await expect(setExpenseDate(client, { item: "Netflix", date: "not-a-date", month: 9 })).rejects.toThrow(
+			"Unrecognized date",
+		);
+		expect((client.readRange as any).mock.calls).toHaveLength(0);
+		expect((client.batchUpdate as any).mock.calls).toHaveLength(0);
 	});
 });
 

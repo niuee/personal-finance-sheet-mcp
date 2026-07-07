@@ -227,6 +227,7 @@ describe("conventions", () => {
 			"本月需繳",
 			"結帳日前",
 			"小計",
+			"set_expense_date",
 		]) {
 			expect(CONVENTIONS_TEXT).toContain(needle);
 		}
