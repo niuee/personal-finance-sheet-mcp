@@ -225,7 +225,6 @@ export const CREDIT_BILL_TOTAL_LABEL = "本期帳單總額";
 export const CREDIT_DUE_LABEL = "本月需繳";
 export const CREDIT_PRE_LABEL = "結帳日前";
 export const CREDIT_POST_LABEL = "結帳日後";
-export const CREDIT_SUBTOTAL_LABEL = "小計";
 /** 0-indexed start columns of the two block columns in the 2×2 card grid (H and L). */
 export const CREDIT_BLOCK_COLS = [7, 11] as const;
 /** A block is 3 columns wide: labels/日期, 項目, values/金額. */

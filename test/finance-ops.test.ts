@@ -385,6 +385,7 @@ describe("findCreditSection", () => {
 		(g[49] as unknown[])[7] = ""; // CUBE loses 結帳日後...
 		(g[52] ??= [])[7] = "CHASE Freedom Unlimited"; // ...and Freedom's block starts below
 		(g[53] ??= [])[7] = "本月結帳日";
+		(g[54] ??= [])[7] = "結帳日後"; // a literal match a few rows below Freedom's title — must never be adopted
 		expect(() => findCreditSection(g, "9 月")).toThrow(/國泰 CUBE.*結帳日後/);
 	});
 });
@@ -891,7 +892,7 @@ describe("addExpense", () => {
 		expect((client.readRange as any).mock.calls.length).toBe(0);
 	});
 
-	it("leaves 支付方式 untouched when card is omitted", async () => {
+	it("writes a blank 支付方式 when card is omitted", async () => {
 		const client = fakeClient(monthGrid());
 		await addExpense(client, { item: "咖啡", amount: 55, currency: "TWD", month: 9 });
 		const write = ((client.batchUpdate as any).mock.calls[0][0]).find((r: any) => r.updateCells);
@@ -1092,6 +1093,18 @@ describe("startMonth", () => {
 			lunchCleared: false,
 			creditRebuilt: [],
 		});
+	});
+
+	it("throws when the previous month tab still has the pre-支付方式 geometry (乾坤大挪移 at G-M)", async () => {
+		const g = currentMonthGrid();
+		(g[32] ??= [])[6] = "乾坤大挪移"; // old position: column G (index 6), one left of the current H anchor
+		const client = startMonthClient(g, ["9 月", "8 月"]);
+
+		await expect(startMonth(client, 10)).rejects.toThrow(/乾坤大挪移|支付方式/);
+
+		// duplicateSheet already ran (it's the first batchUpdate call) but the guard
+		// must fire before any further request is issued.
+		expect((client.batchUpdate as any).mock.calls.length).toBe(1);
 	});
 
 	it("refuses to overwrite an existing tab and requires the previous month", async () => {

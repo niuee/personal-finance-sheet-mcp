@@ -495,7 +495,7 @@ export interface AddExpenseParams {
 	tag?: string;
 	/** Which real account paid the row (支付幣別, column F); defaults to the card's billing currency when `card` is set, else to `currency`. */
 	paidWith?: "TWD" | "USD";
-	/** Credit card that charged the row (支付方式, column G) — must be a CREDIT_CARDS name; omitted = cash/transfer, cell untouched. */
+	/** Credit card that charged the row (支付方式, column G) — must be a CREDIT_CARDS name; omitted = cash/transfer, cell left blank. */
 	card?: string;
 }
 
@@ -987,6 +987,21 @@ export async function startMonth(client: SheetsClient, month: number) {
 	const totalRow = findRowByValue(values, MONTH_COLS.totalLabel, TOTAL_ROW_LABEL);
 	if (totalRow === null) {
 		throw new Error(`Could not find the "${TOTAL_ROW_LABEL}" row in the duplicated tab ${newTab}.`);
+	}
+
+	// Fail closed on the pre-支付方式 geometry: if ${prevTab} was never migrated,
+	// ${TRANSFER_SECTION_LABEL} still sits at G-M instead of H-N. The one-off
+	// row deletes below are scoped to columns A-G (they now include the 支付方式
+	// cell) — against an unmigrated tab that range would rip straight through
+	// the transfer section (G shifts up with the deletes, H-M stay put). Check
+	// the duplicated grid (same layout as the source) before writing anything else.
+	if (findRowByValue(values, TRANSFER_COLS.date - 1, TRANSFER_SECTION_LABEL) !== null) {
+		throw new Error(
+			`${prevTab} still has the pre-支付方式 column layout (${TRANSFER_SECTION_LABEL} sits at G-M, not H-N) — ` +
+				`the one-off row deletes below are scoped to columns A-G and would tear that section in half. ` +
+				`Delete the just-created "${newTab}" tab, insert a blank column G on ${prevTab} ` +
+				`(right-click column G → insert 1 left, header 支付方式 in G2), and re-run start_month.`,
+		);
 	}
 
 	const requests: object[] = [
