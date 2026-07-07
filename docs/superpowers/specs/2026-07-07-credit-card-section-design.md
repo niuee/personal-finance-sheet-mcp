@@ -222,3 +222,36 @@ Approved by Vincent after the initial build. He then **reorganized the
 4. **8月/9月**: still old geometry with one planning row each; after
    the PR deploys they are deleted and recreated via
    start_month(8)/start_month(9), then the planning one-offs re-logged.
+
+## Addendum 2 (2026-07-07): automatic bucket growth
+
+Approved by Vincent. The bucket mirrors spill only into the empty rows
+between the header and the 小計 row; overflow shows #REF! until rows are
+inserted. The tools now keep the room sufficient automatically:
+
+- A shared **bucket room guard** in the ops layer: for a card + a date,
+  pick the bucket (date vs the block's 本月結帳日), count the rows the
+  mirror will show after the write (expense rows matching G, plus lunch
+  rows matching S for the TWD-billed card; trimmed case-insensitive
+  compare, mirroring Sheets' `=` semantics), compare with capacity
+  (小計row − label row − 2), and when the new entry overflows, append an
+  insertDimension for exactly the deficit directly above the 小計 row —
+  in the same batch as the write, offset by any row the write itself
+  inserts above the section. Fail-soft: a missing/torn section or a
+  non-numeric 結帳日 skips the guard and surfaces a warning in the
+  result, never blocks the write.
+- **add_expense**: guard runs when `card` AND `date` are both present
+  (a dateless card row is not mirrored).
+- **add_lunch**: guard runs whenever `card` is present (lunches always
+  have a date).
+- **New tool `set_expense_date`**: dates an existing expense row (the
+  hand-edit case no tool could intercept). Finds the row by exact
+  trimmed 項目 within the expense window; with duplicates it prefers the
+  single dateless row, else errors listing the row numbers (optional
+  `row` param disambiguates). Writes the 日期 (serial, mm/dd format),
+  returns the previous value, and runs the guard when the row's G holds
+  a registry card (unknown G value → warning, no guard).
+- `findCreditSection` exposes `preLabelRow`/`postLabelRow` (needed for
+  capacity); addExpense reads FULL_GRID_READ.
+- Hand edits in the sheet UI still trigger nothing — overflow there
+  shows #REF! until the next guarded write or a manual insert.
