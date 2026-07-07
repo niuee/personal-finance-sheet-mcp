@@ -6,6 +6,7 @@ import {
 	addLunch,
 	addTransfer,
 	addTripEntry,
+	adjustBalance,
 	annotateRows,
 	findCells,
 	getCategories,
@@ -187,6 +188,23 @@ export function registerTailoredTools(server: McpServer, client: SheetsClient): 
 		async (p) => {
 			try {
 				return ok(await setExpenseDate(client, p));
+			} catch (e) {
+				return toError(e);
+			}
+		},
+	);
+
+	server.tool(
+		"adjust_balance",
+		"Reconcile a month-end balance against the real bank account. Pass the ACTUAL balance the account shows; the tool writes actual − the computed 本月底…真實餘額 into that currency's …餘額調整 cell (e.g. computed 500, actual 450 → writes -50). The single 調整 cell feeds the 調整後 rows of BOTH the 帳戶實際數字對應 and 銀行餘額 views, and next month's 本月初 cells chain from those 調整後 rows. Overwrites any previous adjustment (delta is always against the raw computed value — re-running never accumulates). Never write the 調整 cell by hand via update_range.",
+		{
+			currency: z.enum(["TWD", "USD"]).describe("Which account was checked"),
+			actual: z.number().describe("The balance the real bank account actually shows"),
+			month: monthParam.optional().describe("Target month 1-12 (default: current month)"),
+		},
+		async (p) => {
+			try {
+				return ok(await adjustBalance(client, p));
 			} catch (e) {
 				return toError(e);
 			}

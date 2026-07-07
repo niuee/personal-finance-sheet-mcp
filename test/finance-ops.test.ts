@@ -5,6 +5,7 @@ import {
 	addLunch,
 	addTransfer,
 	addTripEntry,
+	adjustBalance,
 	annotateRows,
 	cellData,
 	colIndex,
@@ -380,6 +381,31 @@ function realBalanceGrid(): unknown[][] {
 	put(41, 3, "=N44");
 	put(42, 1, "本月底美金真實餘額");
 	put(42, 3, '=D40+SUMIF(C14:C17, "USD", D14:D17) - D41 - D42 + K36');
+	return g;
+}
+
+/**
+ * realBalanceGrid + the 調整 layout (2026-07): a per-currency adjustment cell
+ * shared by the 調整後 rows of both the 銀行餘額 and 真實餘額 views. Rows
+ * 44-49 in B/D; the finders key on the labels, not the positions.
+ */
+function adjustedBalanceGrid(): unknown[][] {
+	const g = realBalanceGrid();
+	const put = (idx: number, col: number, v: unknown) => {
+		(g[idx] ??= [])[col] = v;
+	};
+	put(43, 1, "新臺幣餘額調整");
+	put(43, 3, 0);
+	put(44, 1, "調整後本月底新臺幣真實餘額");
+	put(44, 3, "=D38+D44");
+	put(45, 1, "美金餘額調整");
+	put(45, 3, 0);
+	put(46, 1, "調整後本月底美金真實餘額");
+	put(46, 3, "=D43+D46");
+	put(47, 1, "調整後的本月底新臺幣餘額");
+	put(47, 3, "=D32+D44");
+	put(48, 1, "調整後本月底美金餘額");
+	put(48, 3, "=D26+D46");
 	return g;
 }
 
@@ -1556,6 +1582,73 @@ describe("monthSummary", () => {
 
 });
 
+describe("adjustBalance", () => {
+	/** adjustedBalanceGrid with literal numbers in the 本月底…真實餘額 cells (the op reads an UNFORMATTED render). */
+	function gridWithNumbers(): unknown[][] {
+		const g = adjustedBalanceGrid();
+		(g[37] as unknown[])[3] = 500; // 本月底新臺幣真實餘額 (row 38)
+		(g[42] as unknown[])[3] = 120.5; // 本月底美金真實餘額 (row 43)
+		return g;
+	}
+
+	it("writes actual − calculated into the currency's 調整 cell", async () => {
+		const client = fakeClient(gridWithNumbers());
+
+		const result = await adjustBalance(client, { currency: "TWD", actual: 450, month: 9 });
+
+		const requests = (client.batchUpdate as any).mock.calls[0][0];
+		expect(requests).toEqual([
+			{
+				updateCells: {
+					start: { sheetId: 111, rowIndex: 43, columnIndex: 3 }, // 新臺幣餘額調整 (row 44)
+					rows: [{ values: [{ userEnteredValue: { numberValue: -50 } }] }],
+					fields: "userEnteredValue",
+				},
+			},
+		]);
+		expect(result).toMatchObject({
+			tab: "9 月",
+			currency: "TWD",
+			calculated: 500,
+			actual: 450,
+			adjustment: -50,
+			previousAdjustment: 0,
+		});
+	});
+
+	it("targets the USD 調整 cell and rounds the delta to cents", async () => {
+		const client = fakeClient(gridWithNumbers());
+
+		const result = await adjustBalance(client, { currency: "USD", actual: 100.204, month: 9 });
+
+		expect(result.adjustment).toBe(-20.3); // 100.204 − 120.5 = −20.296 → 2dp
+		const requests = (client.batchUpdate as any).mock.calls[0][0];
+		expect(requests[0].updateCells.start).toEqual({ sheetId: 111, rowIndex: 45, columnIndex: 3 }); // 美金餘額調整 (row 46)
+	});
+
+	it("overwrites a previous adjustment — the delta is against the RAW 本月底, not the 調整後 value", async () => {
+		const g = gridWithNumbers();
+		(g[43] as unknown[])[3] = -37; // an earlier NTD 調整
+		const client = fakeClient(g);
+
+		const result = await adjustBalance(client, { currency: "TWD", actual: 450, month: 9 });
+
+		expect(result).toMatchObject({ adjustment: -50, previousAdjustment: -37 });
+	});
+
+	it("throws when the tab predates the 調整 rows, before writing", async () => {
+		const client = fakeClient(realBalanceGrid());
+		await expect(adjustBalance(client, { currency: "TWD", actual: 450, month: 9 })).rejects.toThrow("新臺幣餘額調整");
+		expect((client.batchUpdate as any).mock.calls).toHaveLength(0);
+	});
+
+	it("throws when the calculated 本月底 cell is not a number", async () => {
+		// adjustedBalanceGrid leaves the end cells as formula strings — a broken render.
+		const client = fakeClient(adjustedBalanceGrid());
+		await expect(adjustBalance(client, { currency: "TWD", actual: 450, month: 9 })).rejects.toThrow("本月底新臺幣真實餘額");
+	});
+});
+
 describe("startMonth", () => {
 	function startMonthClient(grid: unknown[][], tabs: string[]) {
 		const batchUpdate = vi
@@ -1759,6 +1852,41 @@ describe("startMonth", () => {
 		// 本月初美金真實餘額 (row 40) ← 9 月's 本月底美金真實餘額 (row 43) —
 		// unlike the 銀行餘額 ledger, the USD side chains here too.
 		expect(seedAt(39).updateCells.rows[0].values).toEqual([{ userEnteredValue: { formulaValue: "='9 月'!D43" } }]);
+	});
+
+	it("chains every 本月初 cell to the 調整後 rows and zeroes the duplicated 調整 cells", async () => {
+		const client = startMonthClient(adjustedBalanceGrid(), ["9 月", "8 月"]);
+
+		await startMonth(client, 10);
+
+		const requests = (client.batchUpdate as any).mock.calls[1][0];
+		const at = (rowIndex: number) =>
+			requests.find(
+				(r: any) =>
+					r.updateCells && r.updateCells.start.rowIndex === rowIndex && r.updateCells.start.columnIndex === MONTH_COLS.budgetValue,
+			);
+		// 銀行餘額: 本月初美金餘額 (row 25) chains now — no more hardcoded 0.
+		expect(at(24).updateCells.rows[0].values).toEqual([{ userEnteredValue: { formulaValue: "='9 月'!D49" } }]);
+		// 本月初新臺幣餘額 (row 30) ← 調整後的本月底新臺幣餘額 (row 48), not the raw row 32.
+		expect(at(29).updateCells.rows[0].values).toEqual([{ userEnteredValue: { formulaValue: "='9 月'!D48" } }]);
+		// 真實餘額 chains prefer the 調整後 rows (45 / 47) over the raw ends (38 / 43).
+		expect(at(34).updateCells.rows[0].values).toEqual([{ userEnteredValue: { formulaValue: "='9 月'!D45" } }]);
+		expect(at(39).updateCells.rows[0].values).toEqual([{ userEnteredValue: { formulaValue: "='9 月'!D47" } }]);
+		// The duplicate carries last month's 調整 — reset both cells (rows 44 / 46) to 0.
+		expect(at(43).updateCells.rows[0].values).toEqual([{ userEnteredValue: { numberValue: 0 } }]);
+		expect(at(45).updateCells.rows[0].values).toEqual([{ userEnteredValue: { numberValue: 0 } }]);
+	});
+
+	it("leaves 本月初美金餘額 untouched on tabs without the 調整 rows (legacy 透支-carry design)", async () => {
+		const client = startMonthClient(realBalanceGrid(), ["9 月", "8 月"]);
+
+		await startMonth(client, 10);
+
+		const requests = (client.batchUpdate as any).mock.calls[1][0];
+		// 本月初美金餘額 is row 25 (rowIndex 24) — no chain write without a 調整後 target.
+		expect(
+			requests.some((r: any) => r.updateCells?.start.rowIndex === 24 && r.updateCells.start.columnIndex === MONTH_COLS.budgetValue),
+		).toBe(false);
 	});
 
 	it("skips a 真實餘額 chain whose 本月底 anchor is missing, keeping the other currency's", async () => {
