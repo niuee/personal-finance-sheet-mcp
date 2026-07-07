@@ -8,18 +8,17 @@
 export const TOTAL_ROW_LABEL = "花費總額";
 
 /** 類別 tags seen in the sheet's column C. Documentation, not validation — the cell is free text. */
-export const KNOWN_TAGS = ["訂閱", "吃喝", "交通", "生活用品", "娛樂", "購物", "其他", "透支"] as const;
+export const KNOWN_TAGS = ["訂閱", "吃喝", "交通", "生活用品", "娛樂", "購物", "其他", "透支", "學貸"] as const;
 
 /** Column-A anchor labels for the budget/income section (values in the adjacent column). */
 export const OVERDRAFT_LABEL = "上月透支";
 /**
- * Post-split carry rows (from 7月 2026, after backfill): each currency's
- * UNSETTLED deficit from last month — 月…餘額+…透支沖銷, negative exactly
- * when the 沖銷 could not fire — rolls into its own row, independently of
- * the other currency and of 月剩餘. 上月美金透支 carries USD in column D
- * (F=USD, so it debits the USD ledger like any USD row); 上月新臺幣透支
- * carries TWD in column E (F=TWD). Tabs predating the split keep the
- * single TWD 上月透支 row.
+ * Per-currency carry rows (rows 3-4 from 7月 2026): each currency's negative
+ * 本月…收支狀況 from last month rolls in as this month's expense —
+ * =IF(-('prev'!D<收支狀況 row>) > 0, -(…), 0). 上月美金透支 carries USD in
+ * column D (F=USD, so it debits the USD ledger like any USD row);
+ * 上月新臺幣透支 carries TWD in column E (F=TWD). Tabs predating the split
+ * keep the single TWD 上月透支 row.
  */
 export const PREV_USD_OVERDRAFT_LABEL = "上月美金透支";
 export const PREV_NTD_OVERDRAFT_LABEL = "上月新臺幣透支";
@@ -29,51 +28,45 @@ export const REMAINDER_LABEL = "剩餘";
 export const USD_PAYMENT_LABEL = "美金支付";
 export const NTD_PAYMENT_LABEL = "新臺幣支付";
 export const BUDGET_HEADER_LABEL = "總預算";
+/** The income list's own header row (項目/幣別/金額 in B-D) directly under 總預算. */
+export const INCOME_HEADER_LABEL = "項目";
 
 /**
- * Post-migration budget-block rows (labels in column B, values in column D).
- * 月美金餘額/月新臺幣餘額 are THIS month's 收入−支出 per currency (no
- * carry-over); from 7月 2026, 月新臺幣餘額 additionally adds 午餐超支或回補
- * so the lunch leftover counts toward the month's own performance. 月剩餘
- * converts the USD net at GOOGLEFINANCE USDTWD and adds the NTD net. They
- * replace the old 剩餘 / 美金支付 / 新臺幣支付 rows.
+ * Month-view rows (labels in column B, values in column D):
+ * 本月美金收支狀況/本月新臺幣收支狀況 are THIS month's 收入−支出 per
+ * currency, wired to the 銀行餘額 block's cells; the NTD one additionally
+ * adds 午餐超支或回補 so the lunch leftover counts toward the month's own
+ * performance. 7月 2026 titles them 本月美金餘額/本月新臺幣餘額 — the
+ * finders accept both. They replace the old 剩餘 / 美金支付 / 新臺幣支付
+ * rows; the interim 月剩餘 / 透支沖銷 rows are gone from the sheet.
  */
-export const MONTH_USD_NET_LABEL = "月美金餘額";
-export const MONTH_NTD_NET_LABEL = "月新臺幣餘額";
-export const MONTH_REMAINDER_LABEL = "月剩餘";
+export const MONTH_USD_NET_LABEL = "本月美金收支狀況";
+export const MONTH_NTD_NET_LABEL = "本月新臺幣收支狀況";
+/** All titles the month-view rows have carried, newest first — for renamed-anchor lookups. */
+export const MONTH_USD_NET_LABELS = [MONTH_USD_NET_LABEL, "本月美金餘額"] as const;
+export const MONTH_NTD_NET_LABELS = [MONTH_NTD_NET_LABEL, "本月新臺幣餘額"] as const;
 
 /**
- * Per-currency write-offs of the MONTH'S OWN deficit: each fires when its
- * currency's 月…餘額 is negative AND its 總…餘額 stays non-negative, settling
- * the whole shortfall from that bank — =IF(AND(月…餘額<0, 總…餘額>=0),
- * -月…餘額, 0). Each sits directly under its currency's 月…餘額 row; a fully
- * settled month's 月剩餘 closes at 0 and nothing rolls into 上月…透支.
+ * Labels for the 銀行餘額 block — the month's per-currency money flow, for
+ * reality-checking the real USD and NTD bank accounts. All labels live in
+ * column B with their values in column D. The two currencies chain
+ * differently month to month: 本月初新臺幣餘額 points at the previous
+ * month's 本月底新臺幣餘額 (start_month rewires it), while 本月初美金餘額
+ * stays 0 — a USD shortfall carries through the 上月美金透支 expense row
+ * instead of the ledger. 本月底美金餘額 = 初 + 收入 − 支出 + 實際美金總和;
+ * 本月底新臺幣餘額 = 初 + 收入 − 支出 − 轉出新臺幣總和 + 午餐超支或回補;
+ * 保守預計本月底新臺幣餘額 is the same but counts the lunch leftover only
+ * when it is negative (an overspend).
  */
-export const USD_WRITEOFF_LABEL = "美金透支沖銷";
-export const NTD_WRITEOFF_LABEL = "新臺幣透支沖銷";
-
-/**
- * Labels for the 銀行餘額 (bank-balance reconciliation) block — a per-currency
- * running balance that carries over month to month, for reality-checking the
- * real USD and NTD bank accounts. USD and NTD are tracked as independent
- * ledgers: USD expenses (column D) hit only the USD balance, native-NTD
- * expenses hit only the NTD balance. Each currency's ending balance =
- * last month's ending balance + this month's income − this month's spending,
- * so both surplus and overdraft carry forward. All eight live in column B with
- * their values in column D, like the rest of the budget block.
- */
-export const USD_INCOME_LABEL = "美金收入";
-export const USD_SPENDING_LABEL = "美金支出";
-export const PREV_USD_BALANCE_LABEL = "上月美金餘額";
-export const USD_BALANCE_LABEL = "美金餘額";
-export const NTD_INCOME_LABEL = "新臺幣收入";
-export const NTD_SPENDING_LABEL = "新臺幣支出";
-export const PREV_NTD_BALANCE_LABEL = "上月新臺幣餘額";
-export const NTD_BALANCE_LABEL = "新臺幣餘額";
-
-/** Post-migration names of the running bank balances (old tabs keep 美金餘額/新臺幣餘額 — look up with fallback). */
-export const TOTAL_USD_BALANCE_LABEL = "總美金餘額";
-export const TOTAL_NTD_BALANCE_LABEL = "總新臺幣餘額";
+export const USD_INCOME_LABEL = "本月美金收入";
+export const USD_SPENDING_LABEL = "本月美金支出";
+export const USD_START_BALANCE_LABEL = "本月初美金餘額";
+export const USD_END_BALANCE_LABEL = "本月底美金餘額";
+export const NTD_INCOME_LABEL = "本月新臺幣收入";
+export const NTD_SPENDING_LABEL = "本月新臺幣支出";
+export const NTD_START_BALANCE_LABEL = "本月初新臺幣餘額";
+export const NTD_CONSERVATIVE_END_LABEL = "保守預計本月底新臺幣餘額";
+export const NTD_END_BALANCE_LABEL = "本月底新臺幣餘額";
 
 /** The 銀行餘額 block's header row label. */
 export const BANK_BLOCK_LABEL = "銀行餘額";
@@ -96,7 +89,6 @@ export const RECURRING_ITEMS = new Set<string>([
 	"公車儲值",
 	"中餐",
 	"荒野亂鬥月票",
-	"中餐額外",
 	"ChatGPT",
 	"GitHub Action Minutes",
 	"Claude",
@@ -122,7 +114,7 @@ export const MONTH_COLS = {
 	date: 0,
 	/** B — 項目 (also where 上月透支 and the budget-block labels live). */
 	item: 1,
-	/** C — 類別, the per-row tag (訂閱, 吃喝, …). */
+	/** C — 類別, the per-row tag (訂閱, 吃喝, …); doubles as the income list's 幣別 column. */
 	tag: 2,
 	/** D — 美金 (USD). */
 	usd: 3,
@@ -134,7 +126,7 @@ export const MONTH_COLS = {
 	totalLabel: 3,
 	/** E — the 花費總額 =SUM window. */
 	totalValue: 4,
-	/** B — budget-block labels (沛還/薪水/剩餘/美金支付). */
+	/** B — budget-block labels (沛還/薪水/本月…收支狀況/銀行餘額 rows). */
 	budgetLabel: 1,
 	/** D — budget-block values. */
 	budgetValue: 3,
@@ -144,9 +136,10 @@ export const MONTH_COLS = {
  * 乾坤大挪移 — the NTD→USD transfer log, present on monthly tabs from 7月
  * 2026 (start_month copies it forward). Title in column G, a header row
  * below it, data rows, then a 總和 row (label in G, =SUM per column H–M).
- * The 銀行餘額 block wires to the 總和 row: 總美金餘額 +J (USD received),
- * 總新臺幣餘額 −H (NTD sent), 新臺幣支出 +M (匯差+手續費 count as the
- * month's NTD spending). The principal is a transfer, not income/spending.
+ * The 銀行餘額 block wires to the 總和 row: 本月底美金餘額 +J (USD
+ * received), 本月底新臺幣餘額 −H (NTD sent), 本月新臺幣支出 +M (匯差+手續費
+ * count as the month's NTD spending). The principal is a transfer, not
+ * income/spending.
  */
 export const TRANSFER_SECTION_LABEL = "乾坤大挪移";
 export const TRANSFER_TOTAL_LABEL = "總和";
@@ -177,9 +170,9 @@ export const TRANSFER_COLS = {
  * below it a values row (O=編列預算 pointing at the 中餐 expense cell,
  * Q=剩餘 = 編列預算 − 總和); then a 日期/項目/金額 header, data rows, and a
  * 總和 row (label in P, =SUM in Q). The 銀行餘額 block wires to the leftover:
- * 午餐超支或回補 = the 剩餘 cell, and 總新臺幣餘額 = 預計總新臺幣餘額 +
- * 午餐超支或回補 — unspent budget flows back to the bank, an overdraft
- * (negative 剩餘) deducts more.
+ * 午餐超支或回補 = the 剩餘 cell, feeding 本月底新臺幣餘額 (and, only when
+ * negative, 保守預計本月底新臺幣餘額) — unspent budget flows back to the
+ * bank, an overdraft (negative 剩餘) deducts more.
  */
 export const LUNCH_SECTION_LABEL = "午餐預算";
 /** The section's original title (7月 2026 setup) — the finders accept both. */
@@ -262,16 +255,16 @@ export const TRIP_BLOCK_WIDTH = 8;
 
 export const CONVENTIONS_TEXT = `How this personal-finance spreadsheet is organized:
 
-MONTHLY TABS — named "N 月" (e.g. "9 月", with a space). Layout below applies from 7 月 2026 on; 6 月 and earlier lack the 類別 column. Tabs are migrated to the income layout described here the first time set_income touches them; an unmigrated tab still has the old 剩餘 / 美金支付 / 新臺幣支付 rows and hand-entered 收入 cells.
-- Header row 2: 日期 項目 類別 美金 新臺幣 支付幣別. Expense list in columns A-F from row 3 down: A=日期 (a real date shown mm/dd; blank on recurring rows), B=item, C=類別 (per-row tag: 訂閱, 吃喝, 交通, 生活用品, 娛樂, 購物, 其他, 透支), D=美金 (USD), E=新臺幣 (TWD), F=支付幣別 (USD or TWD — which real account PAID the row; a USD-priced expense paid with a TWD card has D filled but F=TWD).
+MONTHLY TABS — named "N 月" (e.g. "9 月", with a space). Layout below applies from 7 月 2026 on; 6 月 and earlier are frozen history on the old layout (no 類別/支付幣別 columns, a hand-entered income list ending at a single 剩餘 row) — read them, but don't write into them.
+- Header row 2: 日期 項目 類別 美金 新臺幣 支付幣別. Expense list in columns A-F from row 3 down: A=日期 (a real date shown mm/dd; blank on recurring rows), B=item, C=類別 (per-row tag: 訂閱, 吃喝, 交通, 生活用品, 娛樂, 購物, 其他, 透支, 學貸), D=美金 (USD), E=新臺幣 (TWD), F=支付幣別 (USD or TWD — which real account PAID the row; a USD-priced expense paid with a TWD card has D filled but F=TWD).
 - USD rows convert with E = D*GOOGLEFINANCE("CURRENCY:USDTWD").
 - The list ends at the "花費總額" row (label in column D, total in E, formula SUM over the window). New expenses must land INSIDE that window — write into an empty row above 花費總額, or insert a row inside the window so the SUM extends. Never append below 花費總額.
-- Rows 3-4 carry last month's UNSETTLED per-currency overdrafts via cross-tab formulas: 上月美金透支 (USD in D, F=USD, E converts at live GOOGLEFINANCE like any USD row — the carried USD debt debits the USD ledger) and 上月新臺幣透支 (TWD in E, F=TWD), each =IF(-(月…餘額+…透支沖銷) > 0, …) against the previous month. Each currency rolls independently — a USD deficit carries even when 月剩餘 is positive overall. start_month rebuilds both anchors. Tabs predating the split (6月 and earlier, or un-backfilled) have a single TWD 上月透支 row anchored at the previous month's 月剩餘 (or 剩餘 on old-layout tabs).
+- Rows 3-4 carry last month's per-currency shortfalls via cross-tab formulas: 上月美金透支 (USD in D, F=USD, E converts at live GOOGLEFINANCE like any USD row) and 上月新臺幣透支 (TWD in E, F=TWD), each =IF(-('prev'!D<row>) > 0, -(…), 0) against the previous month's 本月…收支狀況 cell — a currency's negative month closes by becoming this month's expense; a positive month carries 0. start_month rebuilds both anchors. Tabs predating the split (6月 and earlier) have a single TWD 上月透支 row anchored at the previous month's 剩餘.
 - Categorization is the per-row 類別 tag in column C (see month_summary's per-類別 totals). The old G/H summary block is DEPRECATED — ignore any remnants.
-- Below the list, the income section: a 總預算 header row, then the income list (labels in B, 幣別 USD/TWD in C, amounts in D): 沛還, 薪水, plus ad-hoc income rows (e.g. 多一個月薪水) — manage these with set_income, which upserts by 項目 and keeps the SUMIFs covering every row. The list ends at 月美金餘額 / 月新臺幣餘額 (THIS month's 收入−支出 per currency, from the 銀行餘額 block; from 7月 2026 月新臺幣餘額 additionally adds 午餐超支或回補, so the lunch leftover counts toward the month's own performance and an unsettled NTD deficit carries net of it), interleaved with per-currency write-offs — 美金透支沖銷 directly under 月美金餘額 and 新臺幣透支沖銷 directly under 月新臺幣餘額, each =IF(AND(月…餘額<0, 總…餘額>=0), -月…餘額, 0): a currency's month-deficit is settled from its OWN bank ledger when that balance stays non-negative — then 月剩餘 (= (月美金餘額+美金透支沖銷)*GOOGLEFINANCE USDTWD + 月新臺幣餘額 + 新臺幣透支沖銷 — the month's combined remainder in TWD; a fully settled month closes at 0, so nothing rolls into next month's 上月…透支 rows unless a bank ledger itself goes negative). The old 剩餘, 美金支付 and 新臺幣支付 rows are DEPRECATED and removed by migration.
-- Further down, a 銀行餘額 block reconciles the real USD and NTD bank accounts as two INDEPENDENT running ledgers (labels in column B, values in column D): 美金收入 / 美金支出 / 上月美金餘額 / 總美金餘額, then 新臺幣收入 / 新臺幣支出 / 上月新臺幣餘額 / 總新臺幣餘額 (renamed by migration from 美金餘額/新臺幣餘額 — unmigrated tabs still use the short names). 收入 cells = SUMIF over the income list's 幣別 column; 美金支出 = SUMIF of the expense 支付幣別 for USD summing column D; 新臺幣支出 = SUMIF for TWD summing column E. Both 支出 SUMIFs span the FULL expense window INCLUDING the 上月…透支 carry row(s) — deliberate: Vincent counts the carried overdraft as an outflow that must be covered out of this month's money. Do not "fix" this as double-counting. Each 總…餘額 = 上月…餘額 + 收入 − 支出 (surplus AND overdraft carry). From 7月 2026 the NTD ledger also carries 午餐超支或回補 (the 午餐預算 block's 剩餘) and a 預計總新臺幣餘額 row, with 總新臺幣餘額 = 預計總新臺幣餘額 + 午餐超支或回補. 上月…餘額 point at the previous month's 總…餘額 cell (start_month rewires them); in the earliest month they are seeded by hand.
-- To the right of the expense list, a 乾坤大挪移 block (the NTD→USD transfer log, from 7月 2026 on) spans columns G-M: the title in G, a header row (日期 新臺幣 當下美金 實際美金 匯差 手續費 當筆總額外花費), data rows, then a 總和 row with per-column SUMs. 當下美金 and 匯差 are pinned to the USDTWD rate at entry time (a literal number, not live GOOGLEFINANCE). The 銀行餘額 block wires to the 總和 row: 總美金餘額 adds +J總和 (USD received), 總新臺幣餘額 subtracts -H總和 (NTD sent), and 新臺幣支出 adds +M總和 so 匯差+手續費 count as the month's NTD spending — the principal itself is a transfer, not income or spending. Log transfers with add_transfer; never hand-extend the 總和 formulas.
-- Also to the right, a 午餐預算 block (columns O-Q, from 7月 2026 on; early tabs may still title it 中餐預算 — both anchors work): the recurring 中餐 row in the expense list is the month's lunch BUDGET, and actual lunches are logged in this block instead of the expense list. Title in O; a 編列預算 / 剩餘 (負數會加回去支出) values row two rows below it (編列預算 points at the 中餐 expense cell; 剩餘 = 編列預算 − 總和); then a 日期 項目 金額 header, data rows, and a 總和 row (label in P, =SUM in Q). The leftover feeds the 銀行餘額 block's 午餐超支或回補 row: 總新臺幣餘額 = 預計總新臺幣餘額 + 午餐超支或回補 — unspent budget returns to the bank, an overdraft (negative 剩餘) deducts more — and 月新臺幣餘額 adds the same 午餐超支或回補 so the month's own NTD performance includes it. Log lunches with add_lunch; never hand-extend the 總和 formula and never add_expense a lunch.
+- Below the list, the income section: a 總預算 header row, a 項目/幣別/金額 header row, then the income list (labels in B, 幣別 USD/TWD in C, amounts in D): 沛還, 薪水, plus ad-hoc income rows (e.g. 多一個月薪水) — manage these with set_income, which upserts by 項目 and keeps the rows inside the 本月…收入 SUMIF windows. Further down sit 本月美金收支狀況 / 本月新臺幣收支狀況 (titled 本月美金餘額 / 本月新臺幣餘額 on 7月 — both anchors work): THIS month's 收入−支出 per currency wired to the 銀行餘額 block's cells, the NTD one additionally adding 午餐超支或回補 so the lunch leftover counts toward the month's own performance. The old 剩餘 / 美金支付 / 新臺幣支付 rows and the interim 月剩餘 / 美金透支沖銷 / 新臺幣透支沖銷 rows no longer exist.
+- Further down, the 銀行餘額 block tracks the month's per-currency money flow (labels in column B, values in column D): 本月美金收入 / 本月美金支出 / 本月初美金餘額 / 本月底美金餘額, then 本月新臺幣收入 / 本月新臺幣支出 / 午餐超支或回補 / 本月初新臺幣餘額 / 保守預計本月底新臺幣餘額 / 本月底新臺幣餘額. 收入 cells = SUMIF over the income list's 幣別 column; 本月美金支出 = SUMIF of the expense 支付幣別 for USD summing column D; 本月新臺幣支出 = SUMIF for TWD summing column E, plus the transfer block's M總和. Both 支出 SUMIFs span the FULL expense window INCLUDING the 上月…透支 carry row(s) — deliberate: Vincent counts the carried shortfall as an outflow that must be covered out of this month's money. Do not "fix" this as double-counting. The currencies chain differently: 本月初新臺幣餘額 points at the previous month's 本月底新臺幣餘額 (start_month rewires it), while 本月初美金餘額 stays 0 — the USD shortfall carries only through the 上月美金透支 expense row. 本月底美金餘額 = 本月初 + 收入 − 支出 + J總和 (USD received); 本月底新臺幣餘額 = 本月初 + 收入 − 支出 − H總和 (NTD sent) + 午餐超支或回補; 保守預計本月底新臺幣餘額 is the same but counts 午餐超支或回補 only when it is negative (a lunch overspend).
+- To the right of the expense list, a 乾坤大挪移 block (the NTD→USD transfer log, from 7月 2026 on) spans columns G-M: the title in G, a header row (日期 新臺幣 當下美金 實際美金 匯差 手續費 當筆總額外花費), data rows, then a 總和 row with per-column SUMs. 當下美金 and 匯差 are pinned to the USDTWD rate at entry time (a literal number, not live GOOGLEFINANCE). The 銀行餘額 block wires to the 總和 row: 本月底美金餘額 adds +J總和 (USD received), 本月底新臺幣餘額 subtracts -H總和 (NTD sent), and 本月新臺幣支出 adds +M總和 so 匯差+手續費 count as the month's NTD spending — the principal itself is a transfer, not income or spending. Log transfers with add_transfer; never hand-extend the 總和 formulas.
+- Also to the right, a 午餐預算 block (columns O-Q, from 7月 2026 on; early tabs may still title it 中餐預算 — both anchors work): the recurring 中餐 row in the expense list is the month's lunch BUDGET, and actual lunches are logged in this block instead of the expense list. Title in O; a 編列預算 / 剩餘 (負數會加回去支出) values row two rows below it (編列預算 points at the 中餐 expense cell; 剩餘 = 編列預算 − 總和); then a 日期 項目 金額 header, data rows, and a 總和 row (label in P, =SUM in Q). The leftover feeds the 銀行餘額 block's 午餐超支或回補 row: 本月底新臺幣餘額 gains unspent budget back, an overdraft (negative 剩餘) deducts more — and 本月新臺幣收支狀況 adds the same 午餐超支或回補 so the month's own NTD performance includes it. Log lunches with add_lunch; never hand-extend the 總和 formula and never add_expense a lunch.
 
 TRIP TABS — e.g. "2026/07/25 京都東京".
 - A mosaic of category blocks in four column bands (A-G, I-O, Q-W, Z-AF), stacked vertically within each band.
