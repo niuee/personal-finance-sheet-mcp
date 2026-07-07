@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
+	addMonthsClamped,
 	BUDGET_HEADER_LABEL,
 	CONVENTIONS_TEXT,
+	CREDIT_BLOCK_COLS,
+	CREDIT_BLOCK_WIDTH,
+	CREDIT_CARDS,
+	CREDIT_SECTION_LABEL,
 	currentMonthTab,
 	dateSerial,
 	KNOWN_TAGS,
@@ -224,5 +229,29 @@ describe("conventions", () => {
 		expect(TRIP_HEADER_SHOP).toBe("店鋪");
 		expect(TRIP_TOTAL_LABEL).toBe("分類總花費");
 		expect(TRIP_MAX_BLOCK_ROWS).toBe(30);
+	});
+
+	it("exports the 信用卡帳單對帳區 registry and block geometry", () => {
+		expect(CREDIT_SECTION_LABEL).toBe("信用卡帳單對帳區");
+		expect(CREDIT_CARDS.map((c) => c.name)).toEqual([
+			"國泰 CUBE",
+			"CHASE Amazon",
+			"CHASE Freedom Unlimited",
+			"Apple Card",
+		]);
+		// 國泰 CUBE bills TWD; the US cards bill USD.
+		expect(CREDIT_CARDS.filter((c) => c.billingCurrency === "TWD").map((c) => c.name)).toEqual(["國泰 CUBE"]);
+		// Only CHASE Amazon's 繳款日 pays the statement closed the SAME month.
+		expect(CREDIT_CARDS.filter((c) => c.statementLag === 0).map((c) => c.name)).toEqual(["CHASE Amazon"]);
+		expect(CREDIT_BLOCK_COLS).toEqual([7, 11]); // H and L
+		expect(CREDIT_BLOCK_WIDTH).toBe(3);
+	});
+
+	it("addMonthsClamped bumps a serial by months, clamping the day and wrapping the year", () => {
+		expect(addMonthsClamped(dateSerial(2026, 7, 19), 1)).toBe(dateSerial(2026, 8, 19));
+		expect(addMonthsClamped(dateSerial(2026, 7, 31), 1)).toBe(dateSerial(2026, 8, 31));
+		expect(addMonthsClamped(dateSerial(2026, 8, 31), 1)).toBe(dateSerial(2026, 9, 30));
+		expect(addMonthsClamped(dateSerial(2026, 1, 31), 1)).toBe(dateSerial(2026, 2, 28));
+		expect(addMonthsClamped(dateSerial(2026, 12, 15), 1)).toBe(dateSerial(2027, 1, 15));
 	});
 });

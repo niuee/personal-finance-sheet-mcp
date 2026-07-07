@@ -193,6 +193,52 @@ export const LUNCH_COLS = {
 	amount: 17,
 } as const;
 
+/**
+ * 信用卡帳單對帳區 — per-card statement reconciliation blocks in a 2×2 grid
+ * (columns H–J and L–N) below the 乾坤大挪移 block, from 7月 2026 on. Each
+ * block: card name, 本月結帳日/本月繳款日 dates, 本期帳單總額 (the statement
+ * that CLOSED this month = prev tab's 結帳日後小計 + this tab's 結帳日前小計),
+ * 本月需繳 (per statementLag), then 結帳日前/結帳日後 buckets whose 小計
+ * SUMIFS and row FILTERs key on the expense list's 支付方式 column (G) and
+ * 日期 vs 結帳日. Everything except the two date cells is formula-owned.
+ */
+export interface CreditCard {
+	/** Exact string used in column G, the block title, and the FILTER/SUMIFS conditions. */
+	name: string;
+	/** Which expense column the card's statements bill in: USD → D (美金), TWD → E (新臺幣). */
+	billingCurrency: "USD" | "TWD";
+	/** Which 本期帳單總額 this month's 繳款日 pays: 0 = this tab's (closed this month), 1 = the previous tab's. */
+	statementLag: 0 | 1;
+}
+
+export const CREDIT_CARDS: readonly CreditCard[] = [
+	{ name: "國泰 CUBE", billingCurrency: "TWD", statementLag: 1 },
+	{ name: "CHASE Amazon", billingCurrency: "USD", statementLag: 0 },
+	{ name: "CHASE Freedom Unlimited", billingCurrency: "USD", statementLag: 1 },
+	{ name: "Apple Card", billingCurrency: "USD", statementLag: 1 },
+];
+
+export const CREDIT_SECTION_LABEL = "信用卡帳單對帳區";
+export const CREDIT_CLOSE_LABEL = "本月結帳日";
+export const CREDIT_PAY_LABEL = "本月繳款日";
+export const CREDIT_BILL_TOTAL_LABEL = "本期帳單總額";
+export const CREDIT_DUE_LABEL = "本月需繳";
+export const CREDIT_PRE_LABEL = "結帳日前";
+export const CREDIT_POST_LABEL = "結帳日後";
+export const CREDIT_SUBTOTAL_LABEL = "小計";
+/** 0-indexed start columns of the two block columns in the 2×2 card grid (H and L). */
+export const CREDIT_BLOCK_COLS = [7, 11] as const;
+/** A block is 3 columns wide: labels/日期, 項目, values/金額. */
+export const CREDIT_BLOCK_WIDTH = 3;
+
+/** Serial date + N months, day clamped to the target month's length (7/31 → 8/31 → 9/30). */
+export function addMonthsClamped(serial: number, months: number): number {
+	const d = new Date(serial * 86_400_000 + Date.UTC(1899, 11, 30));
+	const lastDay = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + months + 1, 0)).getUTCDate();
+	const t = Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + months, Math.min(d.getUTCDate(), lastDay));
+	return Math.round((t - Date.UTC(1899, 11, 30)) / 86_400_000);
+}
+
 /** Sheets date serial: days since 1899-12-30. */
 export function dateSerial(year: number, month: number, day: number): number {
 	return Math.round((Date.UTC(year, month - 1, day) - Date.UTC(1899, 11, 30)) / 86_400_000);
