@@ -115,7 +115,8 @@ describe("conventions", () => {
 		expect(LUNCH_TOTAL_LABEL).toBe("總和");
 		expect(LUNCH_DEFAULT_ITEM).toBe("中餐");
 		expect(LUNCH_ADJUST_LABEL).toBe("午餐超支或回補");
-		expect(LUNCH_COLS).toEqual({ date: 15, item: 16, amount: 17 });
+		expect(LUNCH_COLS).toEqual({ date: 15, item: 16, amount: 17, paidMethod: 18 });
+		expect(LUNCH_COLS.paidMethod).toBe(18); // S — 支付方式
 	});
 
 	it("keeps 沛還 and 薪水 as recurring income, ad-hoc rows are not", () => {
@@ -221,7 +222,7 @@ describe("conventions", () => {
 			"編列預算",
 			"信用卡帳單對帳區",
 			"支付方式",
-			"本期帳單總額",
+			"本月需繳款",
 			"本月需繳",
 			"結帳日前",
 		]) {
@@ -241,7 +242,7 @@ describe("conventions", () => {
 		expect(CREDIT_CARDS.map((c) => c.name)).toEqual([
 			"國泰 CUBE",
 			"CHASE Amazon",
-			"CHASE Freedom Unlimited",
+			"CHASE Freedom",
 			"Apple Card",
 		]);
 		// 國泰 CUBE bills TWD; the US cards bill USD.

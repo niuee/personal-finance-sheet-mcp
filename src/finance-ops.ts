@@ -8,7 +8,6 @@ import {
 	addMonthsClamped,
 	BANK_BLOCK_LABEL,
 	BUDGET_HEADER_LABEL,
-	CREDIT_BILL_TOTAL_LABEL,
 	CREDIT_BLOCK_COLS,
 	CREDIT_BLOCK_WIDTH,
 	CREDIT_CARDS,
@@ -173,10 +172,12 @@ export function findTransferSection(values: unknown[][], tab: string): TransferS
 	throw new Error(`No ${TRANSFER_TOTAL_LABEL} row under the ${TRANSFER_SECTION_LABEL} header in ${tab}.`);
 }
 
-// The deep month grid: the lunch section (P–R) grows one row per entry and
+// The deep month grid: the lunch section (P–S) grows one row per entry and
 // pushes the 銀行餘額 block down, and the 信用卡帳單對帳區 (H–N) runs from
 // row 50 to ~117 — a too-shallow read makes startMonth's rewires silently skip.
-export const FULL_GRID_READ = "A1:R160";
+// The width must reach column S (支付方式) or the lunch empty-slot scan and
+// card mirroring would never see it.
+export const FULL_GRID_READ = "A1:S160";
 
 export interface LunchSection {
 	/** 1-indexed row holding the 編列預算 / 剩餘 values. */
@@ -236,7 +237,6 @@ export interface CreditCardBlock {
 	startCol: number;
 	closeDateRow: number;
 	payDateRow: number;
-	billTotalRow: number;
 	dueRow: number;
 	/** Rows of the 結帳日前 / 結帳日後 labels — each holds its bucket's 小計 in the block's value column. */
 	preSubtotalRow: number;
@@ -285,11 +285,10 @@ export function findCreditSection(values: unknown[][], tab: string): CreditCardB
 		};
 		const closeDateRow = labelRow(CREDIT_CLOSE_LABEL, titleRow);
 		const payDateRow = labelRow(CREDIT_PAY_LABEL, closeDateRow);
-		const billTotalRow = labelRow(CREDIT_BILL_TOTAL_LABEL, payDateRow);
-		const dueRow = labelRow(CREDIT_DUE_LABEL, billTotalRow);
+		const dueRow = labelRow(CREDIT_DUE_LABEL, payDateRow);
 		const preSubtotalRow = labelRow(CREDIT_PRE_LABEL, dueRow);
 		const postSubtotalRow = labelRow(CREDIT_POST_LABEL, preSubtotalRow);
-		blocks.push({ card, titleRow, startCol, closeDateRow, payDateRow, billTotalRow, dueRow, preSubtotalRow, postSubtotalRow });
+		blocks.push({ card, titleRow, startCol, closeDateRow, payDateRow, dueRow, preSubtotalRow, postSubtotalRow });
 	}
 	return blocks;
 }
@@ -752,6 +751,8 @@ export interface AddLunchParams {
 	/** M/D, MM/DD, YYYY/M/D, or YYYY-MM-DD; omitted = today in Taipei. */
 	date?: string;
 	month?: number;
+	/** Credit card that paid the lunch (支付方式, column S) — must be a TWD-billed CREDIT_CARDS name; omitted = blank (cash). */
+	card?: string;
 }
 
 export async function addLunch(client: SheetsClient, p: AddLunchParams) {
@@ -759,15 +760,26 @@ export async function addLunch(client: SheetsClient, p: AddLunchParams) {
 	// Parse before any read/write so a bad date fails closed.
 	const dateSerialValue = p.date !== undefined ? parseDateInput(p.date) : todaySerial();
 	const item = (p.item ?? LUNCH_DEFAULT_ITEM).trim() || LUNCH_DEFAULT_ITEM;
+	const card = p.card !== undefined ? CREDIT_CARDS.find((c) => c.name === p.card) : undefined;
+	if (p.card !== undefined && card === undefined) {
+		throw new Error(
+			`Unknown card "${p.card}" — the 支付方式 column recognizes: ${CREDIT_CARDS.map((c) => c.name).join(", ")}.`,
+		);
+	}
+	if (card !== undefined && card.billingCurrency !== "TWD") {
+		throw new Error(
+			`Lunches are NTD amounts and ${card.name} bills in USD — only TWD-billed cards can pay a lunch (currently: ${CREDIT_CARDS.filter((c) => c.billingCurrency === "TWD").map((c) => c.name).join(", ")}).`,
+		);
+	}
 
 	const { values, truncated } = await client.readRange(`${quoteTab(tab)}!${FULL_GRID_READ}`, "FORMULA");
 	assertNotTruncated(truncated, tab, FULL_GRID_READ);
 	const { budgetRow, headerRow, totalRow } = findLunchSection(values, tab);
 
-	// First row between the header and 總和 that is empty across P–R.
+	// First row between the header and 總和 that is empty across P–S.
 	let targetRow: number | null = null;
 	for (let r = headerRow + 1; r < totalRow; r++) {
-		const cells = (values[r - 1] ?? []).slice(LUNCH_COLS.date, LUNCH_COLS.amount + 1);
+		const cells = (values[r - 1] ?? []).slice(LUNCH_COLS.date, LUNCH_COLS.paidMethod + 1);
 		if (!cells.some((c) => c !== "" && c != null)) {
 			targetRow = r;
 			break;
@@ -811,7 +823,7 @@ export async function addLunch(client: SheetsClient, p: AddLunchParams) {
 		{
 			updateCells: {
 				start: { sheetId, rowIndex: targetRow - 1, columnIndex: LUNCH_COLS.item },
-				rows: [{ values: [cellData(item), cellData(p.amount)] }],
+				rows: [{ values: [cellData(item), cellData(p.amount), cellData(p.card ?? null)] }],
 				fields: "userEnteredValue",
 			},
 		},
@@ -840,6 +852,7 @@ export async function addLunch(client: SheetsClient, p: AddLunchParams) {
 		date: serialToIso(dateSerialValue),
 		item,
 		amount: p.amount,
+		card: p.card ?? null,
 		budget,
 		spent: budget !== null && leftover !== null ? round2(budget - leftover) : null,
 		leftover,
@@ -966,6 +979,7 @@ export async function getCategories(client: SheetsClient, month?: number) {
 export async function startMonth(client: SheetsClient, month: number) {
 	const newTab = monthTabName(month);
 	const prevTab = monthTabName(previousMonth(month));
+	const prevPrevTab = monthTabName(previousMonth(previousMonth(month)));
 
 	const tabs = await client.listTabs();
 	if (tabs.some((t) => t.title === newTab)) {
@@ -974,6 +988,7 @@ export async function startMonth(client: SheetsClient, month: number) {
 	if (!tabs.some((t) => t.title === prevTab)) {
 		throw new Error(`Previous month tab "${prevTab}" not found — cannot duplicate it.`);
 	}
+	const prevPrevExists = tabs.some((t) => t.title === prevPrevTab);
 
 	const prevSheetId = await client.getSheetId(prevTab);
 	const dup = await client.batchUpdate([
@@ -1108,7 +1123,7 @@ export async function startMonth(client: SheetsClient, month: number) {
 		});
 	}
 
-	// The lunch log restarts each month: clear the 午餐預算 data rows (P–R).
+	// The lunch log restarts each month: clear the 午餐預算 data rows (P–S).
 	// Cells are cleared, not deleted, so nothing shifts; the 總和 =SUM over the
 	// empty window reads 0 and 剩餘 resets to the full budget. The anchor probe
 	// keeps pre-section tabs silent. A malformed section (e.g. torn by a
@@ -1128,7 +1143,7 @@ export async function startMonth(client: SheetsClient, month: number) {
 							startRowIndex: lunch.headerRow,
 							endRowIndex: lunch.totalRow - 1,
 							startColumnIndex: LUNCH_COLS.date,
-							endColumnIndex: LUNCH_COLS.amount + 1,
+							endColumnIndex: LUNCH_COLS.paidMethod + 1,
 						},
 						cell: {},
 						fields: "userEnteredValue",
@@ -1142,8 +1157,14 @@ export async function startMonth(client: SheetsClient, month: number) {
 	}
 
 	// The 信用卡帳單對帳區 rolls forward: bump each card's 結帳日/繳款日 one
-	// month and rebuild 本期帳單總額 / 本月需繳 against the month just ended.
-	// The buckets' FILTER/小計 formulas are same-tab references and survive
+	// month and rewire 本月需繳款 directly across two months — no more
+	// 本期帳單總額 row in between. CHASE Amazon (lag 0): this tab's 結帳日前
+	// 小計 + the previous tab's 結帳日後小計. The other three (lag 1): the
+	// previous tab's 結帳日前小計 + the tab-before-that's 結帳日後小計; when
+	// that prev-prev tab doesn't exist in the spreadsheet, its term is
+	// omitted entirely (a prev-prev tab that exists but lacks the section
+	// would still contribute an empty cell = 0 — verified acceptable). The
+	// buckets' SUMIFS/mirror formulas are same-tab references and survive
 	// duplication untouched. The new tab is a duplicate, so prev-tab row
 	// numbers equal this grid's. Same fail-soft contract as the lunch clear —
 	// duplicateSheet has already committed, so a torn section surfaces a
@@ -1168,12 +1189,12 @@ export async function startMonth(client: SheetsClient, month: number) {
 					const serial = values[row - 1]?.[valueCol];
 					if (typeof serial === "number") write(row, addMonthsClamped(serial, 1));
 				}
-				write(block.billTotalRow, `=${quoteTab(prevTab)}!${col}${block.postSubtotalRow}+${col}${block.preSubtotalRow}`);
+				const prevPost = `${quoteTab(prevTab)}!${col}${block.postSubtotalRow}`;
 				write(
 					block.dueRow,
 					block.card.statementLag === 0
-						? `=${col}${block.billTotalRow}`
-						: `=${quoteTab(prevTab)}!${col}${block.billTotalRow}`,
+						? `=${col}${block.preSubtotalRow}+${prevPost}`
+						: `=${quoteTab(prevTab)}!${col}${block.preSubtotalRow}${prevPrevExists ? `+${quoteTab(prevPrevTab)}!${col}${block.postSubtotalRow}` : ""}`,
 				);
 				creditRebuilt.push(block.card.name);
 			}

@@ -185,6 +185,7 @@ function lunchGrid(): unknown[][] {
 	put(35, 15, "日期");
 	put(35, 16, "項目");
 	put(35, 17, "金額");
+	put(35, 18, "支付方式");
 	// row 37 (index 36) empty — the first data slot
 	put(37, 16, "總和");
 	put(37, 17, "=sum(R37)");
@@ -299,8 +300,8 @@ describe("findLunchSection", () => {
 /**
  * lunchGrid + a 信用卡帳單對帳區 (anchor H40) with two card blocks:
  * 國泰 CUBE at H41 (values in J, lag 1) and CHASE Amazon at L41 (values in N,
- * lag 0). Rows: title 41, 結帳日 42, 繳款日 43, 本期帳單總額 44, 本月需繳 45,
- * 結帳日前+小計 46, header 47, cushion 48-49, 結帳日後+小計 50, header 51.
+ * lag 0). Rows: title 41, 結帳日 42, 繳款日 43, 本月需繳款 44, 結帳日前+小計 45,
+ * header 46, cushion 47-48, 結帳日後+小計 49, header 50, cushion 51-52.
  */
 function creditGrid(): unknown[][] {
 	const g = lunchGrid();
@@ -314,40 +315,36 @@ function creditGrid(): unknown[][] {
 	put(41, 9, dateSerial(2026, 7, 19));
 	put(42, 7, "本月繳款日");
 	put(42, 9, dateSerial(2026, 7, 6));
-	put(43, 7, "本期帳單總額");
-	put(43, 9, "=0+J46");
-	put(44, 7, "本月需繳");
-	put(44, 9, 21500);
-	put(45, 7, "結帳日前");
-	put(45, 9, '=SUMIFS(E3:E,G3:G,"國泰 CUBE",A3:A,"<="&J42,A3:A,">0")');
-	put(46, 7, "日期");
-	put(46, 8, "項目");
-	put(46, 9, "金額");
-	put(49, 7, "結帳日後");
-	put(49, 9, '=SUMIFS(E3:E,G3:G,"國泰 CUBE",A3:A,">"&J42)');
-	put(50, 7, "日期");
-	put(50, 8, "項目");
-	put(50, 9, "金額");
+	put(43, 7, "本月需繳款");
+	put(43, 9, 21500);
+	put(44, 7, "結帳日前");
+	put(44, 9, '=SUMIFS(E3:E,G3:G,"國泰 CUBE",A3:A,"<="&J43,A3:A,">0")');
+	put(45, 7, "日期");
+	put(45, 8, "項目");
+	put(45, 9, "金額");
+	put(48, 7, "結帳日後");
+	put(48, 9, '=SUMIFS(E3:E,G3:G,"國泰 CUBE",A3:A,">"&J43)');
+	put(49, 7, "日期");
+	put(49, 8, "項目");
+	put(49, 9, "金額");
 	// CHASE Amazon — L/M/N (11/12/13)
 	put(40, 11, "CHASE Amazon");
 	put(41, 11, "本月結帳日");
 	put(41, 13, dateSerial(2026, 7, 3));
 	put(42, 11, "本月繳款日");
 	put(42, 13, dateSerial(2026, 7, 28));
-	put(43, 11, "本期帳單總額");
-	put(43, 13, "=0+N46");
-	put(44, 11, "本月需繳");
-	put(44, 13, "=N44");
-	put(45, 11, "結帳日前");
-	put(45, 13, '=SUMIFS(D3:D,G3:G,"CHASE Amazon",A3:A,"<="&N42,A3:A,">0")');
-	put(46, 11, "日期");
-	put(46, 12, "項目");
-	put(46, 13, "金額");
-	put(49, 11, "結帳日後");
-	put(49, 13, '=SUMIFS(D3:D,G3:G,"CHASE Amazon",A3:A,">"&N42)');
-	put(50, 11, "日期");
-	put(50, 12, "項目");
-	put(50, 13, "金額");
+	put(43, 11, "本月需繳款");
+	put(43, 13, "=N45+'6 月'!N49");
+	put(44, 11, "結帳日前");
+	put(44, 13, '=SUMIFS(D3:D,G3:G,"CHASE Amazon",A3:A,"<="&N43,A3:A,">0")');
+	put(45, 11, "日期");
+	put(45, 12, "項目");
+	put(45, 13, "金額");
+	put(48, 11, "結帳日後");
+	put(48, 13, '=SUMIFS(D3:D,G3:G,"CHASE Amazon",A3:A,">"&N43)');
+	put(49, 11, "日期");
+	put(49, 12, "項目");
+	put(49, 13, "金額");
 	return g;
 }
 
@@ -362,12 +359,11 @@ describe("findCreditSection", () => {
 			titleRow: 41,
 			closeDateRow: 42,
 			payDateRow: 43,
-			billTotalRow: 44,
-			dueRow: 45,
-			preSubtotalRow: 46,
-			postSubtotalRow: 50,
+			dueRow: 44,
+			preSubtotalRow: 45,
+			postSubtotalRow: 49,
 		});
-		expect(blocks[1]).toMatchObject({ titleRow: 41, startCol: 11, postSubtotalRow: 50 });
+		expect(blocks[1]).toMatchObject({ titleRow: 41, startCol: 11, postSubtotalRow: 49 });
 	});
 
 	it("throws when the tab has no 信用卡帳單對帳區", () => {
@@ -376,16 +372,16 @@ describe("findCreditSection", () => {
 
 	it("throws naming the card and the missing label when a block is torn", () => {
 		const g = creditGrid();
-		(g[44] as unknown[])[7] = ""; // CUBE loses its 本月需繳 label
-		expect(() => findCreditSection(g, "9 月")).toThrow(/國泰 CUBE.*本月需繳/);
+		(g[43] as unknown[])[7] = ""; // CUBE loses its 本月需繳款 label
+		expect(() => findCreditSection(g, "9 月")).toThrow(/國泰 CUBE.*本月需繳款/);
 	});
 
 	it("never adopts a label from the next card block stacked below in the same column", () => {
 		const g = creditGrid();
-		(g[49] as unknown[])[7] = ""; // CUBE loses 結帳日後...
-		(g[52] ??= [])[7] = "CHASE Freedom Unlimited"; // ...and Freedom's block starts below
-		(g[53] ??= [])[7] = "本月結帳日";
-		(g[54] ??= [])[7] = "結帳日後"; // a literal match a few rows below Freedom's title — must never be adopted
+		(g[48] as unknown[])[7] = ""; // CUBE loses 結帳日後...
+		(g[51] ??= [])[7] = "CHASE Freedom"; // ...and Freedom's block starts below
+		(g[52] ??= [])[7] = "本月結帳日";
+		(g[53] ??= [])[7] = "結帳日後"; // a literal match a few rows below Freedom's title — must never be adopted
 		expect(() => findCreditSection(g, "9 月")).toThrow(/國泰 CUBE.*結帳日後/);
 	});
 });
@@ -528,7 +524,7 @@ describe("addTransfer", () => {
 function lunchClient(grid: unknown[][], budgetRow: unknown[] = [3900, "", 3547]): SheetsClient {
 	return {
 		readRange: vi.fn(async (range: string) =>
-			range.includes("A1:R160")
+			range.includes("A1:S160")
 				? { range, values: grid, truncated: false }
 				: { range, values: [budgetRow], truncated: false },
 		),
@@ -542,7 +538,7 @@ describe("addLunch", () => {
 		const client = lunchClient(lunchGrid());
 		const result = await addLunch(client, { amount: 143, month: 9, date: "9/2" });
 
-		expect((client.readRange as any).mock.calls[0]).toEqual(["'9 月'!A1:R160", "FORMULA"]);
+		expect((client.readRange as any).mock.calls[0]).toEqual(["'9 月'!A1:S160", "FORMULA"]);
 		const requests = (client.batchUpdate as any).mock.calls[0][0];
 		expect(requests).toHaveLength(3); // date cell, item+amount, 總和 rewrite — no insert needed
 		const dateCell = requests[0].updateCells;
@@ -555,6 +551,7 @@ describe("addLunch", () => {
 		expect(rowCells.rows[0].values.map((v: any) => v.userEnteredValue)).toEqual([
 			{ stringValue: "中餐" }, // Q 項目 defaults
 			{ numberValue: 143 }, // R 金額
+			undefined, // S 支付方式 blank (cash)
 		]);
 		const sum = requests[2].updateCells;
 		expect(sum.start).toEqual({ sheetId: 111, rowIndex: 37, columnIndex: 17 });
@@ -569,6 +566,7 @@ describe("addLunch", () => {
 			date: "2026-09-02",
 			item: "中餐",
 			amount: 143,
+			card: null,
 			budget: 3900,
 			spent: 353, // 編列預算 − 剩餘
 			leftover: 3547,
@@ -628,6 +626,47 @@ describe("addLunch", () => {
 		(client.readRange as any).mockResolvedValue({ range: "x", values: lunchGrid(), truncated: true });
 		await expect(addLunch(client, { amount: 100, month: 9 })).rejects.toThrow("truncated");
 		expect((client.batchUpdate as any).mock.calls).toHaveLength(0);
+	});
+
+	it("writes the card into 支付方式 (S) and echoes it", async () => {
+		const client = fakeClient(lunchGrid());
+		const result = await addLunch(client, { amount: 143, month: 9, date: "9/2", card: "國泰 CUBE" });
+		const requests = (client.batchUpdate as any).mock.calls[0][0];
+		const write = requests.find((r: any) => r.updateCells && r.updateCells.start.columnIndex === 16);
+		expect(write.updateCells.rows[0].values).toEqual([
+			{ userEnteredValue: { stringValue: "中餐" } },
+			{ userEnteredValue: { numberValue: 143 } },
+			{ userEnteredValue: { stringValue: "國泰 CUBE" } },
+		]);
+		expect(result.card).toBe("國泰 CUBE");
+	});
+
+	it("rejects an unknown card before any read or write", async () => {
+		const client = fakeClient(lunchGrid());
+		await expect(addLunch(client, { amount: 100, month: 9, card: "玉山 Ubear" })).rejects.toThrow("國泰 CUBE");
+		expect((client.readRange as any).mock.calls.length).toBe(0);
+	});
+
+	it("rejects a USD-billed card — lunches are NTD", async () => {
+		const client = fakeClient(lunchGrid());
+		await expect(addLunch(client, { amount: 100, month: 9, card: "Apple Card" })).rejects.toThrow("TWD");
+		expect((client.readRange as any).mock.calls.length).toBe(0);
+	});
+
+	it("writes a blank 支付方式 when card is omitted", async () => {
+		const client = fakeClient(lunchGrid());
+		await addLunch(client, { amount: 55, month: 9, date: "9/2" });
+		const requests = (client.batchUpdate as any).mock.calls[0][0];
+		const write = requests.find((r: any) => r.updateCells && r.updateCells.start.columnIndex === 16);
+		expect(write.updateCells.rows[0].values[2]).toEqual({});
+	});
+
+	it("does not treat a row with only 支付方式 filled as an empty slot", async () => {
+		const g = lunchGrid();
+		(g[36] ??= [])[18] = "國泰 CUBE"; // the empty data slot (row 37) has a stray S value
+		const client = fakeClient(g);
+		const result = await addLunch(client, { amount: 55, month: 9, date: "9/2" });
+		expect(result.inserted).toBe(true); // slot skipped → inserts above 總和
 	});
 });
 
@@ -916,7 +955,7 @@ describe("monthSummary", () => {
 		const client = fakeClient(grid);
 		const result = await monthSummary(client, 9);
 
-		expect((client.readRange as any).mock.calls[0]).toEqual(["'9 月'!A1:R160", "UNFORMATTED_VALUE"]);
+		expect((client.readRange as any).mock.calls[0]).toEqual(["'9 月'!A1:S160", "UNFORMATTED_VALUE"]);
 		expect(result).toEqual({
 			tab: "9 月",
 			花費總額: 72127.21,
@@ -1192,13 +1231,13 @@ describe("startMonth", () => {
 
 		const result = await startMonth(client, 10);
 
-		expect((client.readRange as any).mock.calls[0]).toEqual(["'10 月'!A1:R160", "FORMULA"]);
+		expect((client.readRange as any).mock.calls[0]).toEqual(["'10 月'!A1:S160", "FORMULA"]);
 		const requests = (client.batchUpdate as any).mock.calls[1][0];
-		// data rows 37..37 (0-indexed 36..37), columns P–R (15..18) — cells cleared, nothing shifts
+		// data rows 37..37 (0-indexed 36..37), columns P–S (15..19) — cells cleared, nothing shifts
 		const clear = requests.find((r: any) => r.repeatCell && r.repeatCell.range.startColumnIndex === 15);
 		expect(clear).toEqual({
 			repeatCell: {
-				range: { sheetId: 555, startRowIndex: 36, endRowIndex: 37, startColumnIndex: 15, endColumnIndex: 18 },
+				range: { sheetId: 555, startRowIndex: 36, endRowIndex: 37, startColumnIndex: 15, endColumnIndex: 19 },
 				cell: {},
 				fields: "userEnteredValue",
 			},
@@ -1217,7 +1256,7 @@ describe("startMonth", () => {
 		expect(result.lunchWarning).toMatch(/日期|午餐預算/);
 	});
 
-	it("bumps each card's 結帳日/繳款日 one month and rebuilds 本期帳單總額/本月需繳 per statementLag", async () => {
+	it("bumps each card's 結帳日/繳款日 one month and rewires 本月需繳款 across two months per statementLag", async () => {
 		const client = startMonthClient(creditGrid(), ["9 月", "8 月"]);
 
 		const result = await startMonth(client, 10);
@@ -1230,15 +1269,29 @@ describe("startMonth", () => {
 		// 國泰 CUBE (values in J = column 9): dates bumped 7/19→8/19, 7/6→8/6.
 		expect(at(41, 9).updateCells.rows[0].values).toEqual([{ userEnteredValue: { numberValue: dateSerial(2026, 8, 19) } }]);
 		expect(at(42, 9).updateCells.rows[0].values).toEqual([{ userEnteredValue: { numberValue: dateSerial(2026, 8, 6) } }]);
-		// 本期帳單總額 = prev tab's 結帳日後小計 (J50) + this tab's 結帳日前小計 (J46).
-		expect(at(43, 9).updateCells.rows[0].values).toEqual([{ userEnteredValue: { formulaValue: "='9 月'!J50+J46" } }]);
-		// lag 1: 本月需繳 = the PREVIOUS tab's 本期帳單總額.
-		expect(at(44, 9).updateCells.rows[0].values).toEqual([{ userEnteredValue: { formulaValue: "='9 月'!J44" } }]);
-		// CHASE Amazon (values in N = column 13), lag 0: 本月需繳 = this tab's 本期帳單總額.
-		expect(at(43, 13).updateCells.rows[0].values).toEqual([{ userEnteredValue: { formulaValue: "='9 月'!N50+N46" } }]);
-		expect(at(44, 13).updateCells.rows[0].values).toEqual([{ userEnteredValue: { formulaValue: "=N44" } }]);
+		// lag 1: 本月需繳款 = prev tab's 結帳日前小計 (J45) + prev-prev tab's 結帳日後小計 (J49).
+		expect(at(43, 9).updateCells.rows[0].values).toEqual([{ userEnteredValue: { formulaValue: "='9 月'!J45+'8 月'!J49" } }]);
+		// CHASE Amazon (values in N = column 13), lag 0: 本月需繳款 = this tab's 結帳日前小計 (N45) + prev tab's 結帳日後小計 (N49).
+		expect(at(43, 13).updateCells.rows[0].values).toEqual([{ userEnteredValue: { formulaValue: "=N45+'9 月'!N49" } }]);
+		// No 本期帳單總額 row exists anymore — only the two date bumps plus the single due write per card.
+		expect(requests.filter((r: any) => r.updateCells && r.updateCells.start.columnIndex === 9)).toHaveLength(3);
+		expect(requests.filter((r: any) => r.updateCells && r.updateCells.start.columnIndex === 13)).toHaveLength(3);
 		expect(result.creditRebuilt).toEqual(["國泰 CUBE", "CHASE Amazon"]);
 		expect(result.creditWarning).toBeUndefined();
+	});
+
+	it("omits the prev-prev term when that tab doesn't exist in the spreadsheet", async () => {
+		const client = startMonthClient(creditGrid(), ["9 月"]);
+
+		const result = await startMonth(client, 10);
+
+		const requests = (client.batchUpdate as any).mock.calls[1][0];
+		const at = (rowIndex: number, columnIndex: number) =>
+			requests.find(
+				(r: any) => r.updateCells && r.updateCells.start.rowIndex === rowIndex && r.updateCells.start.columnIndex === columnIndex,
+			);
+		expect(at(43, 9).updateCells.rows[0].values).toEqual([{ userEnteredValue: { formulaValue: "='9 月'!J45" } }]);
+		expect(result.creditRebuilt).toEqual(["國泰 CUBE", "CHASE Amazon"]);
 	});
 
 	it("skips the credit rebuild silently on tabs without the section", async () => {
@@ -1250,11 +1303,11 @@ describe("startMonth", () => {
 
 	it("surfaces a torn credit block as a warning instead of failing the month-open", async () => {
 		const g = creditGrid();
-		(g[44] as unknown[])[7] = ""; // CUBE loses 本月需繳
+		(g[43] as unknown[])[7] = ""; // CUBE loses 本月需繳款
 		const client = startMonthClient(g, ["9 月", "8 月"]);
 		const result = await startMonth(client, 10);
 		expect(result.creditRebuilt).toEqual([]);
-		expect(result.creditWarning).toMatch(/國泰 CUBE.*本月需繳/);
+		expect(result.creditWarning).toMatch(/國泰 CUBE.*本月需繳款/);
 	});
 
 	it("rebuilds both carry rows against the previous month's 收支狀況 cells", async () => {
