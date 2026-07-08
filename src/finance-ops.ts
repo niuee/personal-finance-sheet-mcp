@@ -1278,8 +1278,9 @@ export async function setExpenseDate(client: SheetsClient, p: SetExpenseDatePara
 	// Relocate to the date-sorted position, computed as if the row were
 	// absent. moveDimension rewrites references like an insert+delete pair,
 	// so window ranges keep their size and the +D3/+E4 carry add-backs follow
-	// their cells. target == row (its own slot) and target == row + 1
-	// (immediately after itself) both mean "already in place".
+	// their cells. target == row means "already in place"; target == row + 1
+	// cannot occur (expensePositionFor skips ignoreRow) but is guarded as the
+	// equivalent no-op.
 	const target = expensePositionFor(values, windowStart, windowEnd, totalRow, serial, row);
 	let movedToRow: number | null = null;
 	if (target !== row && target !== row + 1) {

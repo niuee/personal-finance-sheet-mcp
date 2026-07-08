@@ -276,6 +276,16 @@ describe("expensePositionFor", () => {
 	it("scans only to the row above 花費總額 when the window reaches past it", () => {
 		expect(expensePositionFor(orderedGrid(), 3, 15, 11, null)).toBe(8);
 	});
+
+	it("degrades gracefully on an unsorted list: after the LAST not-later row, not the max date", () => {
+		const g = orderedGrid();
+		// swap 早餐(101) and 晚餐(103) so dates are out of order
+		const early = g[4];
+		g[4] = g[5];
+		g[5] = early;
+		// 102: 晚餐(103, row 5) doesn't qualify; the LAST row dated <= 102 is 早餐(101) at row 6
+		expect(expensePositionFor(g, 3, 10, 11, 102)).toBe(7);
+	});
 });
 
 describe("findTransferSection", () => {
