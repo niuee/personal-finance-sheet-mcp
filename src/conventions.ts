@@ -395,6 +395,7 @@ TRIP TABS — e.g. "2026/07/25 京都東京".
 - Each block: a header row (日期, 店鋪, 品項, 支付方式, 日幣原價, 臺幣…, 臺幣進位), the category name on the row below it, data rows, and usually a 分類總花費 total row.
 - Known categories: 模型, 書, 餐(當下吃的), 機票住宿, 雜支, 衣服/鞋子, 吃的伴手禮, 紀念品小物, 交通, 送禮, 入場券, 電子產品.
 - Entries are JPY-priced (¥ → TWD at ~0.22 plus a rounded-up column) or TWD-direct (機票住宿-style: 日幣原價 empty, 臺幣 holds the NTD amount).
+- Data rows render 日期 as mm/dd hh:mm (a real datetime), 日幣原價 with a ¥ sign, both 臺幣 columns with an NTD sign, and 品項 centered — add_trip_entry stamps these formats onto the row it writes, so cells created by a block-scoped insert or never-formatted empties still render canonically.
 - A budget-vs-actual summary occupies the bottom-right of the grid — it is not a category block.
 - Never insert whole sheet rows in a trip tab: a row insert cuts across all bands and damages neighboring blocks. add_trip_entry writes into empty rows inside a block, or inserts cells scoped to the block's own columns.
 
