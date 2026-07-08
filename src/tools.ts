@@ -296,17 +296,20 @@ export function registerTailoredTools(server: McpServer, client: SheetsClient): 
 
 	server.tool(
 		"add_transfer",
-		"Log a 乾坤大挪移 NTD→USD transfer into a monthly tab (defaults to the current month): writes the entry into the transfer block (columns H-N), pins 當下美金/匯差 to the USDTWD spot rate at entry time, and keeps the 總和 sums covering every row. The 銀行餘額 ledgers pick it up automatically: +實際美金 into 本月底美金餘額, −新臺幣 from 本月底新臺幣餘額, and 匯差+手續費 into 本月新臺幣支出 as this month's NTD spending. Use this instead of update_range for transfers.",
+		"Log a 乾坤大挪移 currency transfer. Default currency:'usd' targets a monthly tab (default: current month): writes into the transfer block (columns H-N), pins 當下美金/匯差 to the USDTWD spot rate at entry time, and keeps the 總和 sums covering every row; the 銀行餘額 ledgers pick it up automatically (+實際美金 into 本月底美金餘額, −新臺幣 from 本月底新臺幣餘額, 匯差+手續費 into 本月新臺幣支出). currency:'jpy' targets a TRIP tab (tab required, e.g. 2026/07/25 京都東京): writes into that tab's 乾坤大挪移 section (columns A-G) pinned to the JPYTWD rate, and wires the NTD side per entry into the month the date falls in (−新臺幣 from 本月底/保守預計新臺幣餘額, 匯差+手續費 into 本月新臺幣支出); the JPY received is trip cash and joins no bank ledger. Use this instead of update_range for transfers.",
 		{
+			currency: z.enum(["usd", "jpy"]).optional().describe("Transfer destination currency (default usd)"),
+			tab: z.string().min(1).optional().describe("Trip tab name, exactly as it appears — required for currency:'jpy'"),
 			ntd: z.number().positive().describe("NTD debited from the bank (新臺幣)"),
-			usd: z.number().positive().describe("USD that actually arrived (實際美金)"),
+			usd: z.number().positive().optional().describe("USD that actually arrived (實際美金) — usd transfers only"),
+			jpy: z.number().positive().optional().describe("JPY that actually arrived (實際日幣) — jpy transfers only"),
 			fee: z.number().min(0).describe("手續費 in NTD"),
 			date: z
 				.string()
 				.min(1)
 				.optional()
 				.describe("Transfer date: M/D, MM/DD, or YYYY-MM-DD (defaults to today in Taipei)"),
-			month: monthParam.optional().describe("Target month 1-12 (default: current month)"),
+			month: monthParam.optional().describe("Target month 1-12 (default: current month) — usd transfers only"),
 		},
 		async (p) => {
 			try {

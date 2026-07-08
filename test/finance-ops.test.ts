@@ -30,6 +30,7 @@ import {
 	setExpenseDate,
 	setIncome,
 	startMonth,
+	TRANSFER_SECTIONS,
 } from "../src/finance-ops";
 import { currentMonthTab, dateSerial, MONTH_COLS, todaySerial } from "../src/conventions";
 import type { SheetsClient } from "../src/sheets-client";
@@ -310,6 +311,34 @@ describe("findTransferSection", () => {
 	});
 });
 
+/** A trip-tab grid whose JPY transfer section sits at A69 (title), A70 (header), A71 (one empty data row), A72 (總和). */
+function jpyTransferGrid(): unknown[][] {
+	const g: unknown[][] = [];
+	for (let r = 0; r < 75; r++) g.push([]);
+	g[68] = ["乾坤大挪移"];
+	g[69] = ["日期", "新臺幣", "當下日幣", "實際日幣", "匯差", "手續費", "當筆總額外花費"];
+	g[71] = ["總和", "=sum(B71)", "=sum(C71)", "=sum(D71)", "=sum(E71)", "=sum(F71)", "=sum(G71)"];
+	return g;
+}
+
+describe("findTransferSection (jpy config)", () => {
+	it("finds the trip-tab section anchored in column A", () => {
+		const s = findTransferSection(jpyTransferGrid(), "2026/07/25 京都東京", TRANSFER_SECTIONS.jpy);
+		expect(s).toEqual({ headerRow: 70, totalRow: 72 });
+	});
+
+	it("throws the trip-tab hint when the section is missing", () => {
+		expect(() => findTransferSection([[]], "2026/07/25 京都東京", TRANSFER_SECTIONS.jpy)).toThrow(
+			/乾坤大挪移.*trip tab/,
+		);
+	});
+
+	it("still finds the month-tab USD section by default", () => {
+		const s = findTransferSection(transferGrid(), "9 月");
+		expect(s).toEqual({ headerRow: 34, totalRow: 36 });
+	});
+});
+
 describe("findLunchSection", () => {
 	it("locates the budget, header and 總和 rows from the anchor", () => {
 		expect(findLunchSection(lunchGrid(), "9 月")).toEqual({ budgetRow: 35, headerRow: 36, totalRow: 38 });
@@ -515,6 +544,31 @@ function transferClient(grid: unknown[][], rate: unknown = 29.85): SheetsClient 
 	} as unknown as SheetsClient;
 }
 
+/** Serves the trip grid for A1:G200 reads, the month grid for A1:S160 reads, and `rate` for single cells. */
+function jpyWiringClient(tripGrid: unknown[][], monthGrid: unknown[][], rate: unknown = 0.208): SheetsClient {
+	return {
+		readRange: vi.fn(async (range: string) =>
+			range.includes("A1:G200")
+				? { range, values: tripGrid, truncated: false }
+				: range.includes("A1:S160")
+					? { range, values: monthGrid, truncated: false }
+					: { range, values: [[rate]], truncated: false },
+		),
+		getSheetId: vi.fn(async () => 111),
+		batchUpdate: vi.fn(async () => ({ replies: [{}] })),
+	} as unknown as SheetsClient;
+}
+
+/** A month grid with the three NTD bank formulas at rows 58/61/62 (labels col B, formulas col D). */
+function bankMonthGrid(): unknown[][] {
+	const g: unknown[][] = [];
+	for (let r = 0; r < 70; r++) g.push([]);
+	g[57] = ["", "本月新臺幣支出", "", '=SUMIF(F3:F34,"TWD",E3:E34)+M42'];
+	g[60] = ["", "保守預計本月底新臺幣餘額", "", "=D60+D57-D58-I42+IF(R42>0, 0, R42)+E4"];
+	g[61] = ["", "本月底新臺幣餘額", "", "=D60+D57-D58-I42+D59+E4"];
+	return g;
+}
+
 describe("addTransfer", () => {
 	it("writes into the first empty row with the rate pinned", async () => {
 		const client = transferClient(transferGrid());
@@ -633,6 +687,182 @@ describe("addTransfer", () => {
 		(client.readRange as any).mockResolvedValue({ range: "x", values: transferGrid(), truncated: true });
 		await expect(addTransfer(client, { ntd: 100, usd: 3, fee: 0, month: 9 })).rejects.toThrow("truncated");
 		expect((client.batchUpdate as any).mock.calls).toHaveLength(0);
+	});
+});
+
+describe("addTransfer (jpy)", () => {
+	const TRIP = "2026/07/25 京都東京";
+
+	it("validates the param combination up front", async () => {
+		const client = transferClient(jpyTransferGrid());
+		await expect(addTransfer(client, { currency: "jpy", ntd: 20000, jpy: 90000, fee: 30 } as any)).rejects.toThrow(
+			/tab/,
+		);
+		await expect(
+			addTransfer(client, { currency: "jpy", tab: TRIP, ntd: 20000, usd: 700, jpy: 90000, fee: 30 } as any),
+		).rejects.toThrow(/usd/);
+		await expect(
+			addTransfer(client, { currency: "jpy", tab: TRIP, ntd: 20000, jpy: 90000, fee: 30, month: 7 } as any),
+		).rejects.toThrow(/month/);
+		await expect(addTransfer(client, { currency: "jpy", tab: TRIP, ntd: 20000, fee: 30 } as any)).rejects.toThrow(
+			/jpy/,
+		);
+		// usd branch untouched: tab/jpy are rejected there
+		await expect(addTransfer(client, { tab: TRIP, ntd: 20000, usd: 700, fee: 30 } as any)).rejects.toThrow(/tab/);
+		expect((client.readRange as any).mock.calls).toHaveLength(0);
+	});
+
+	it("writes into the first empty A–G row with the JPYTWD rate pinned and formats stamped", async () => {
+		const client = jpyWiringClient(jpyTransferGrid(), bankMonthGrid(), 0.208);
+		const result = await addTransfer(client, {
+			currency: "jpy",
+			tab: TRIP,
+			ntd: 20800,
+			jpy: 99000,
+			fee: 150,
+			date: "7/10",
+		});
+
+		expect((client.readRange as any).mock.calls[0]).toEqual([`'${TRIP}'!A1:G200`, "FORMULA"]);
+		// batch 1: scratch GOOGLEFINANCE into C71 (first empty data row), no insert
+		const batch1 = (client.batchUpdate as any).mock.calls[0][0];
+		expect(batch1).toHaveLength(1);
+		expect(batch1[0].updateCells.start).toEqual({ sheetId: 111, rowIndex: 70, columnIndex: 2 });
+		expect(batch1[0].updateCells.rows[0].values[0].userEnteredValue).toEqual({
+			formulaValue: '=GOOGLEFINANCE("CURRENCY:JPYTWD")',
+		});
+		expect((client.readRange as any).mock.calls[1]).toEqual([`'${TRIP}'!C71`, "UNFORMATTED_VALUE"]);
+
+		// batch 2: formats, 日期, entry row, 總和 rewrite
+		const batch2 = (client.batchUpdate as any).mock.calls[1][0];
+		const repeats = batch2.filter((r: any) => r.repeatCell);
+		expect(repeats).toHaveLength(4); // A date, C:D ¥, B NTD, E:G NTD (B and E:G are not contiguous)
+		expect(repeats[0].repeatCell.cell.userEnteredFormat.numberFormat).toEqual({
+			type: "DATE",
+			pattern: "mm/dd",
+		});
+		const updates = batch2.filter((r: any) => r.updateCells);
+		const rowCells = updates.find((u: any) => u.updateCells.start.columnIndex === 1 && u.updateCells.start.rowIndex === 70);
+		expect(rowCells.updateCells.rows[0].values.map((v: any) => v.userEnteredValue)).toEqual([
+			{ numberValue: 20800 }, // B 新臺幣
+			{ formulaValue: "=B71/0.208" }, // C 當下日幣 (pinned)
+			{ numberValue: 99000 }, // D 實際日幣
+			{ formulaValue: "=(C71-D71)*0.208" }, // E 匯差 (pinned)
+			{ numberValue: 150 }, // F 手續費
+			{ formulaValue: "=E71+F71" }, // G 當筆總額外花費
+		]);
+		const sums = updates.find((u: any) => u.updateCells.start.rowIndex === 71 && u.updateCells.start.columnIndex === 1);
+		expect(sums.updateCells.rows[0].values.map((v: any) => v.userEnteredValue.formulaValue)).toEqual([
+			"=SUM(B71:B71)",
+			"=SUM(C71:C71)",
+			"=SUM(D71:D71)",
+			"=SUM(E71:E71)",
+			"=SUM(F71:F71)",
+			"=SUM(G71:G71)",
+		]);
+
+		// 20800 − 99000×0.208 = 208 spread; +150 fee = 358
+		expect(result).toMatchObject({
+			tab: TRIP,
+			row: 71,
+			inserted: false,
+			date: "2026-07-10",
+			ntd: 20800,
+			jpy: 99000,
+			rate: 0.208,
+			spread: 208,
+			fee: 150,
+			extraCost: 358,
+			wiredMonthTab: "7 月",
+		});
+		expect(result.spotJpy).toBeCloseTo(100000, 2);
+	});
+
+	it("inserts A–G-scoped cells (never a whole row) when the section is full", async () => {
+		const grid = jpyTransferGrid();
+		grid[70] = [46266, 20000, "=B71/0.21", 95000, "=(C71-D71)*0.21", 100, "=E71+F71"];
+		const client = jpyWiringClient(grid, bankMonthGrid(), 0.208);
+		const result = await addTransfer(client, { currency: "jpy", tab: TRIP, ntd: 10000, jpy: 47000, fee: 50, date: "7/12" });
+
+		const batch1 = (client.batchUpdate as any).mock.calls[0][0];
+		expect(batch1[0].insertRange).toEqual({
+			range: { sheetId: 111, startRowIndex: 71, endRowIndex: 72, startColumnIndex: 0, endColumnIndex: 7 },
+			shiftDimension: "ROWS",
+		});
+		expect(batch1.some((r: any) => r.insertDimension)).toBe(false);
+		expect(result).toMatchObject({ row: 72, inserted: true, wiredMonthTab: "7 月" });
+		const batch2 = (client.batchUpdate as any).mock.calls[1][0];
+		const sums = batch2.find((u: any) => u.updateCells?.start.rowIndex === 72 && u.updateCells?.start.columnIndex === 1);
+		expect(sums.updateCells.rows[0].values[0].userEnteredValue).toEqual({ formulaValue: "=SUM(B71:B72)" });
+	});
+
+	it("fails and clears the scratch cell when GOOGLEFINANCE is not numeric", async () => {
+		const client = transferClient(jpyTransferGrid(), "#N/A");
+		await expect(addTransfer(client, { currency: "jpy", tab: TRIP, ntd: 100, jpy: 400, fee: 0 })).rejects.toThrow(
+			"JPYTWD",
+		);
+		const calls = (client.batchUpdate as any).mock.calls;
+		expect(calls[1][0][0].updateCells.rows[0].values).toEqual([{}]);
+	});
+
+	it("refuses when the trip tab has no section, with the create-it hint", async () => {
+		const client = transferClient([[]]);
+		await expect(addTransfer(client, { currency: "jpy", tab: TRIP, ntd: 100, jpy: 400, fee: 0 })).rejects.toThrow(
+			/trip tab/,
+		);
+		expect((client.batchUpdate as any).mock.calls).toHaveLength(0);
+	});
+});
+
+describe("addTransfer (jpy) month wiring", () => {
+	const TRIP = "2026/07/25 京都東京";
+
+	it("appends per-entry terms to the three NTD bank formulas of the date's month", async () => {
+		const client = jpyWiringClient(jpyTransferGrid(), bankMonthGrid());
+		const result = await addTransfer(client, { currency: "jpy", tab: TRIP, ntd: 20800, jpy: 99000, fee: 150, date: "7/10" });
+
+		expect(result.wiredMonthTab).toBe("7 月");
+		// wiring read targets the month tab
+		const reads = (client.readRange as any).mock.calls.map((c: any) => c[0]);
+		expect(reads).toContain("'7 月'!A1:S160");
+
+		// last batchUpdate carries the three formula appends
+		const wiring = (client.batchUpdate as any).mock.calls.at(-1)[0];
+		const formulas = wiring.map((u: any) => ({
+			row: u.updateCells.start.rowIndex + 1,
+			f: u.updateCells.rows[0].values[0].userEnteredValue.formulaValue,
+		}));
+		expect(formulas).toEqual([
+			{ row: 58, f: `=SUMIF(F3:F34,"TWD",E3:E34)+M42+'${TRIP}'!G71` },
+			{ row: 61, f: `=D60+D57-D58-I42+IF(R42>0, 0, R42)+E4-'${TRIP}'!B71` },
+			{ row: 62, f: `=D60+D57-D58-I42+D59+E4-'${TRIP}'!B71` },
+		]);
+		expect(wiring.every((u: any) => u.updateCells.start.columnIndex === 3)).toBe(true);
+	});
+
+	it("derives the month from the entry date, not from today", async () => {
+		const client = jpyWiringClient(jpyTransferGrid(), bankMonthGrid());
+		const result = await addTransfer(client, { currency: "jpy", tab: TRIP, ntd: 100, jpy: 470, fee: 0, date: "2026-08-02" });
+		expect(result.wiredMonthTab).toBe("8 月");
+		expect((client.readRange as any).mock.calls.map((c: any) => c[0])).toContain("'8 月'!A1:S160");
+	});
+
+	it("names the already-written trip row when a bank label is missing", async () => {
+		const month = bankMonthGrid();
+		month[60] = []; // 保守預計 gone
+		const client = jpyWiringClient(jpyTransferGrid(), month);
+		await expect(
+			addTransfer(client, { currency: "jpy", tab: TRIP, ntd: 100, jpy: 470, fee: 0, date: "7/10" }),
+		).rejects.toThrow(/A71.*already written|already written.*A71/s);
+	});
+
+	it("refuses to touch a non-formula bank cell", async () => {
+		const month = bankMonthGrid();
+		(month[57] as unknown[])[3] = 12345; // a raw number where a formula should be
+		const client = jpyWiringClient(jpyTransferGrid(), month);
+		await expect(
+			addTransfer(client, { currency: "jpy", tab: TRIP, ntd: 100, jpy: 470, fee: 0, date: "7/10" }),
+		).rejects.toThrow(/本月新臺幣支出/);
 	});
 });
 
