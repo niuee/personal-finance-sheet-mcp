@@ -1756,6 +1756,10 @@ export interface TripEntryParams {
 }
 
 const TRIP_READ = "A1:AL200";
+/** Canonical band cell formats: 日期 as mm/dd hh:mm, prices with their currency sign. */
+const TRIP_DATE_FORMAT = { type: "DATE_TIME", pattern: 'mm"/"dd" "hh":"mm' };
+const TRIP_JPY_FORMAT = { type: "CURRENCY", pattern: "[$¥]#,##0" };
+const TRIP_TWD_FORMAT = { type: "CURRENCY", pattern: "[$NTD ]#,##0.00" };
 /** Plain single-column SUM: a range like =SUM(M10:M12) or a single cell like =SUM(E37). */
 const PLAIN_SUM_RANGE_RE = /^=SUM\(([A-Z]{1,2})(\d+)(?::\1(\d+))?\)$/i;
 /** Data columns per trip block (the band width minus its spacer column). */
@@ -1845,61 +1849,84 @@ export async function addTripEntry(client: SheetsClient, p: TripEntryParams) {
 		}
 	}
 
-	if (insertNeeded || rewrites.length > 0 || validationSrcRow !== null) {
-		const sheetId = await client.getSheetId(p.tab);
-		const requests: object[] = [];
-		if (insertNeeded) {
-			requests.push({
-				insertRange: {
-					range: {
-						sheetId,
-						startRowIndex: row - 1,
-						endRowIndex: row,
-						startColumnIndex: startCol,
-						endColumnIndex: startCol + BAND_COLS,
-					},
-					shiftDimension: "ROWS",
+	const sheetId = await client.getSheetId(p.tab);
+	const requests: object[] = [];
+	if (insertNeeded) {
+		requests.push({
+			insertRange: {
+				range: {
+					sheetId,
+					startRowIndex: row - 1,
+					endRowIndex: row,
+					startColumnIndex: startCol,
+					endColumnIndex: startCol + BAND_COLS,
 				},
-			});
-		}
-		for (const t of rewrites) {
-			const a = Math.min(t.parsed!.a, row);
-			const b = Math.max(t.parsed!.b, row);
-			// A cell insert at `row` shifts the total row itself down by one.
-			const totalRowFinal = insertNeeded ? totalRow! + 1 : totalRow!;
-			requests.push({
-				updateCells: {
-					start: { sheetId, rowIndex: totalRowFinal - 1, columnIndex: t.col },
-					rows: [{ values: [cellData(`=SUM(${t.parsed!.col}${a}:${t.parsed!.col}${b})`)] }],
-					fields: "userEnteredValue",
-				},
-			});
-		}
-		if (validationSrcRow !== null) {
-			// Paste only the data validation (the chip dropdown) — not values or
-			// formatting — from an existing entry onto the target 支付方式 cell.
-			requests.push({
-				copyPaste: {
-					source: {
-						sheetId,
-						startRowIndex: validationSrcRow - 1,
-						endRowIndex: validationSrcRow,
-						startColumnIndex: payCol,
-						endColumnIndex: payCol + 1,
-					},
-					destination: {
-						sheetId,
-						startRowIndex: row - 1,
-						endRowIndex: row,
-						startColumnIndex: payCol,
-						endColumnIndex: payCol + 1,
-					},
-					pasteType: "PASTE_DATA_VALIDATION",
-				},
-			});
-		}
-		await client.batchUpdate(requests);
+				shiftDimension: "ROWS",
+			},
+		});
 	}
+	for (const t of rewrites) {
+		const a = Math.min(t.parsed!.a, row);
+		const b = Math.max(t.parsed!.b, row);
+		// A cell insert at `row` shifts the total row itself down by one.
+		const totalRowFinal = insertNeeded ? totalRow! + 1 : totalRow!;
+		requests.push({
+			updateCells: {
+				start: { sheetId, rowIndex: totalRowFinal - 1, columnIndex: t.col },
+				rows: [{ values: [cellData(`=SUM(${t.parsed!.col}${a}:${t.parsed!.col}${b})`)] }],
+				fields: "userEnteredValue",
+			},
+		});
+	}
+	if (validationSrcRow !== null) {
+		// Paste only the data validation (the chip dropdown) — not values or
+		// formatting — from an existing entry onto the target 支付方式 cell.
+		requests.push({
+			copyPaste: {
+				source: {
+					sheetId,
+					startRowIndex: validationSrcRow - 1,
+					endRowIndex: validationSrcRow,
+					startColumnIndex: payCol,
+					endColumnIndex: payCol + 1,
+				},
+				destination: {
+					sheetId,
+					startRowIndex: row - 1,
+					endRowIndex: row,
+					startColumnIndex: payCol,
+					endColumnIndex: payCol + 1,
+				},
+				pasteType: "PASTE_DATA_VALIDATION",
+			},
+		});
+	}
+	// Stamp the band's canonical formats onto the target row BEFORE the value
+	// write: the cells it lands in may carry no format at all (cells created by
+	// the insertRange above, or empty rows the sheet owner never pre-formatted),
+	// which renders the date without its HH:mm time, prices without their ¥/NTD
+	// sign, and 店鋪/品項 left-aligned instead of centered. USER_ENTERED values
+	// keep an existing cell format, so formats applied here survive the write.
+	const formatCell = (col: number, format: object, fields: string, width = 1) => ({
+		repeatCell: {
+			range: {
+				sheetId,
+				startRowIndex: row - 1,
+				endRowIndex: row,
+				startColumnIndex: col,
+				endColumnIndex: col + width,
+			},
+			cell: { userEnteredFormat: format },
+			fields,
+		},
+	});
+	requests.push(
+		formatCell(startCol, { numberFormat: TRIP_DATE_FORMAT }, "userEnteredFormat.numberFormat"),
+		formatCell(startCol + 1, { horizontalAlignment: "CENTER" }, "userEnteredFormat.horizontalAlignment", 2),
+		formatCell(startCol + 4, { numberFormat: TRIP_JPY_FORMAT }, "userEnteredFormat.numberFormat"),
+		formatCell(startCol + 5, { numberFormat: TRIP_TWD_FORMAT }, "userEnteredFormat.numberFormat", 2),
+	);
+	await client.batchUpdate(requests);
 
 	// Conversion columns: adapt the row above's formulas for JPY entries; TWD entries are direct.
 	const jpyCol = colLetter(startCol + 4);

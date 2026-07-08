@@ -2249,7 +2249,41 @@ function payValidationCopy(srcRow: number, destRow: number, payCol: number) {
 	};
 }
 
+/** The repeatCell requests that stamp the band's canonical formats onto the written row. */
+function tripFormats(row: number, startCol: number) {
+	const cell = (col: number, format: object, fields: string, width = 1) => ({
+		repeatCell: {
+			range: { sheetId: 111, startRowIndex: row - 1, endRowIndex: row, startColumnIndex: col, endColumnIndex: col + width },
+			cell: { userEnteredFormat: format },
+			fields,
+		},
+	});
+	return [
+		cell(startCol, { numberFormat: { type: "DATE_TIME", pattern: 'mm"/"dd" "hh":"mm' } }, "userEnteredFormat.numberFormat"),
+		cell(startCol + 1, { horizontalAlignment: "CENTER" }, "userEnteredFormat.horizontalAlignment", 2),
+		cell(startCol + 4, { numberFormat: { type: "CURRENCY", pattern: "[$¥]#,##0" } }, "userEnteredFormat.numberFormat"),
+		cell(startCol + 5, { numberFormat: { type: "CURRENCY", pattern: "[$NTD ]#,##0.00" } }, "userEnteredFormat.numberFormat", 2),
+	];
+}
+
 describe("addTripEntry (mosaic)", () => {
+	it("stamps the canonical formats (datetime with HH:mm, centered 店鋪/品項, ¥/NTD currency) onto the written row", async () => {
+		const client = tripClient(mosaicGrid());
+
+		await addTripEntry(client, {
+			tab: "京都",
+			category: "模型",
+			date: "10/10 16:03",
+			shop: "Volks",
+			item: "N規小物",
+			paymentMethod: "Suica",
+			jpy: 2200,
+		});
+
+		const requests = (client.batchUpdate as any).mock.calls[0][0];
+		expect(requests.slice(-4)).toEqual(tripFormats(4, 0));
+	});
+
 	it("writes a JPY entry into the first empty row, adapting the previous row's formulas", async () => {
 		const client = tripClient(mosaicGrid());
 
@@ -2264,8 +2298,8 @@ describe("addTripEntry (mosaic)", () => {
 		});
 
 		// row 4 is the first empty band-A row; totals =SUM(E3:E5)/=SUM(G3:G5) already cover it,
-		// so the only batch request is the 支付方式 dropdown copy from the row-3 entry.
-		expect((client.batchUpdate as any).mock.calls[0][0]).toEqual([payValidationCopy(3, 4, 3)]);
+		// so the batch is just the 支付方式 dropdown copy from the row-3 entry plus the row formats.
+		expect((client.batchUpdate as any).mock.calls[0][0]).toEqual([payValidationCopy(3, 4, 3), ...tripFormats(4, 0)]);
 		expect((client.updateRange as any).mock.calls[0]).toEqual([
 			"'京都'!A4:G4",
 			[["10/10", "Volks", "N規小物", "Suica", 2200, "=E4*0.22", "=CEILING(F4)"]],
@@ -2291,8 +2325,8 @@ describe("addTripEntry (mosaic)", () => {
 			jpy: 2200,
 		});
 
-		// No prior entry to source the 支付方式 dropdown from → no batch request, plain write.
-		expect((client.batchUpdate as any).mock.calls.length).toBe(0);
+		// No prior entry to source the 支付方式 dropdown from → the batch is formats only.
+		expect((client.batchUpdate as any).mock.calls[0][0]).toEqual(tripFormats(3, 0));
 		expect((client.updateRange as any).mock.calls[0][0]).toBe("'京都'!A3:G3");
 		expect(result).toMatchObject({ category: "模型", row: 3 });
 	});
@@ -2310,7 +2344,7 @@ describe("addTripEntry (mosaic)", () => {
 			twd: 1500,
 		});
 
-		expect((client.batchUpdate as any).mock.calls[0][0]).toEqual([payValidationCopy(3, 5, 11)]);
+		expect((client.batchUpdate as any).mock.calls[0][0]).toEqual([payValidationCopy(3, 5, 11), ...tripFormats(5, 8)]);
 		expect((client.updateRange as any).mock.calls[0]).toEqual([
 			"'京都'!I5:O5",
 			[["08/01", "", "回程補付", "已算在預算", "", 1500, "=CEILING(N5)"]],
@@ -2349,6 +2383,7 @@ describe("addTripEntry (mosaic)", () => {
 				},
 			},
 			payValidationCopy(3, 4, 3),
+			...tripFormats(4, 0),
 		]);
 		expect((client.updateRange as any).mock.calls[0][0]).toBe("'京都'!A4:G4");
 	});
@@ -2388,6 +2423,7 @@ describe("addTripEntry (mosaic)", () => {
 				},
 			},
 			payValidationCopy(10, 11, 11),
+			...tripFormats(11, 8),
 		]);
 		expect((client.updateRange as any).mock.calls[0]).toEqual([
 			"'京都'!I11:O11",
@@ -2491,6 +2527,7 @@ describe("addTripEntry (mosaic)", () => {
 				},
 			},
 			payValidationCopy(3, 5, 3),
+			...tripFormats(5, 0),
 		]);
 		expect((client.updateRange as any).mock.calls[0]).toEqual([
 			"'京都'!A5:G5",
@@ -2512,7 +2549,7 @@ describe("addTripEntry (mosaic)", () => {
 			jpy: 12000,
 		});
 
-		expect((client.batchUpdate as any).mock.calls[0][0]).toEqual([payValidationCopy(3, 5, 11)]);
+		expect((client.batchUpdate as any).mock.calls[0][0]).toEqual([payValidationCopy(3, 5, 11), ...tripFormats(5, 8)]);
 		expect((client.updateRange as any).mock.calls[0]).toEqual([
 			"'京都'!I5:O5",
 			[["07/27", "", "追加住宿", "信用卡", 12000, "=M5*0.22", "=CEILING(N5)"]],
