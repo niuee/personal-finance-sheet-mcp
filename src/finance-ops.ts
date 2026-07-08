@@ -948,14 +948,21 @@ export async function addExpense(client: SheetsClient, p: AddExpenseParams) {
 }
 
 export interface AddTransferParams {
+	/** Which transfer log to write; default "usd". */
+	currency?: "usd" | "jpy";
+	/** Trip tab name, exactly as it appears — jpy only. */
+	tab?: string;
 	/** NTD debited from the bank (新臺幣). */
 	ntd: number;
-	/** USD that actually arrived (實際美金). */
-	usd: number;
+	/** USD that actually arrived (實際美金) — usd only. */
+	usd?: number;
+	/** JPY that actually arrived (實際日幣) — jpy only. */
+	jpy?: number;
 	/** 手續費 in NTD. */
 	fee: number;
 	/** M/D, MM/DD, YYYY/M/D, or YYYY-MM-DD; omitted = today in Taipei. */
 	date?: string;
+	/** usd only. */
 	month?: number;
 }
 
@@ -963,19 +970,51 @@ function round2(n: number): number {
 	return Math.round(n * 100) / 100;
 }
 
-export async function addTransfer(client: SheetsClient, p: AddTransferParams) {
-	const tab = p.month !== undefined ? monthTabName(p.month) : currentMonthTab();
+/** Shared shape of addTransfer's return; usd/spotUsd and jpy/spotJpy are mutually exclusive per currency branch. */
+export interface AddTransferResult {
+	tab: string;
+	row: number;
+	inserted: boolean;
+	date: string;
+	ntd: number;
+	rate: number;
+	spread: number;
+	fee: number;
+	extraCost: number;
+	usd?: number;
+	spotUsd?: number;
+	jpy?: number;
+	spotJpy?: number;
+}
+
+export async function addTransfer(client: SheetsClient, p: AddTransferParams): Promise<AddTransferResult> {
+	const currency = p.currency ?? "usd";
+	if (currency === "jpy") {
+		if (!p.tab) throw new Error("currency:'jpy' logs into a trip tab — provide tab (e.g. 2026/07/25 京都東京).");
+		if (p.jpy === undefined) throw new Error("currency:'jpy' needs jpy (實際日幣 that actually arrived).");
+		if (p.usd !== undefined) throw new Error("currency:'jpy' takes jpy, not usd.");
+		if (p.month !== undefined) {
+			throw new Error("currency:'jpy' derives the wiring month from date — month is not accepted.");
+		}
+	} else {
+		if (p.usd === undefined) throw new Error("usd (實際美金 that actually arrived) is required.");
+		if (p.jpy !== undefined) throw new Error("jpy is only valid with currency:'jpy'.");
+		if (p.tab !== undefined) throw new Error("tab is only valid with currency:'jpy' — usd transfers target a month tab (use month).");
+	}
+	const cfg = TRANSFER_SECTIONS[currency];
+	const tab = currency === "jpy" ? p.tab! : p.month !== undefined ? monthTabName(p.month) : currentMonthTab();
+	const received = currency === "jpy" ? p.jpy! : p.usd!;
 	// Parse before any read/write so a bad date fails closed.
 	const dateSerialValue = p.date !== undefined ? parseDateInput(p.date) : todaySerial();
 
-	const { values, truncated } = await client.readRange(`${quoteTab(tab)}!${TRANSFER_GRID_READ}`, "FORMULA");
-	assertNotTruncated(truncated, tab, TRANSFER_GRID_READ);
-	const { headerRow, totalRow } = findTransferSection(values, tab);
+	const { values, truncated } = await client.readRange(`${quoteTab(tab)}!${cfg.gridRead}`, "FORMULA");
+	assertNotTruncated(truncated, tab, cfg.gridRead);
+	const { headerRow, totalRow } = findTransferSection(values, tab, cfg);
 
-	// First row between the header and 總和 that is empty across H–N.
+	// First row between the header and 總和 that is empty across the section's columns.
 	let targetRow: number | null = null;
 	for (let r = headerRow + 1; r < totalRow; r++) {
-		const cells = (values[r - 1] ?? []).slice(TRANSFER_COLS.date, TRANSFER_COLS.extra + 1);
+		const cells = (values[r - 1] ?? []).slice(cfg.cols.date, cfg.cols.extra + 1);
 		if (!cells.some((c) => c !== "" && c != null)) {
 			targetRow = r;
 			break;
@@ -990,60 +1029,99 @@ export async function addTransfer(client: SheetsClient, p: AddTransferParams) {
 		// Insert directly above 總和; the ledger's +K/−I/+N references shift with it.
 		targetRow = totalRow;
 		finalTotalRow = totalRow + 1;
-		scratchRequests.push({
-			insertDimension: {
-				range: { sheetId, dimension: "ROWS", startIndex: targetRow - 1, endIndex: targetRow },
-				inheritFromBefore: true,
-			},
-		});
+		scratchRequests.push(
+			currency === "jpy"
+				? {
+						// Trip tabs are a mosaic of column bands — never insert whole rows
+						// (conventions.ts); shift only this section's own columns.
+						insertRange: {
+							range: {
+								sheetId,
+								startRowIndex: targetRow - 1,
+								endRowIndex: targetRow,
+								startColumnIndex: cfg.cols.date,
+								endColumnIndex: cfg.cols.extra + 1,
+							},
+							shiftDimension: "ROWS",
+						},
+					}
+				: {
+						insertDimension: {
+							range: { sheetId, dimension: "ROWS", startIndex: targetRow - 1, endIndex: targetRow },
+							inheritFromBefore: true,
+						},
+					},
+		);
 	}
-	// The entry's own 當下美金 cell doubles as the rate scratch: live GOOGLEFINANCE,
+	// The entry's own 當下美金/當下日幣 cell doubles as the rate scratch: live GOOGLEFINANCE,
 	// read once, then overwritten with the pinned formula.
 	const scratchWrite = {
 		updateCells: {
-			start: { sheetId, rowIndex: targetRow - 1, columnIndex: TRANSFER_COLS.spotUsd },
-			rows: [{ values: [cellData('=GOOGLEFINANCE("CURRENCY:USDTWD")')] }],
+			start: { sheetId, rowIndex: targetRow - 1, columnIndex: cfg.cols.spot },
+			rows: [{ values: [cellData(`=GOOGLEFINANCE("CURRENCY:${cfg.pair}")`)] }],
 			fields: "userEnteredValue",
 		},
 	};
 	scratchRequests.push(scratchWrite);
 	await client.batchUpdate(scratchRequests);
 
-	const scratchCell = `${colLetter(TRANSFER_COLS.spotUsd)}${targetRow}`;
+	const scratchCell = `${colLetter(cfg.cols.spot)}${targetRow}`;
 	const read = await client.readRange(`${quoteTab(tab)}!${scratchCell}`, "UNFORMATTED_VALUE");
 	const rate = read.values[0]?.[0];
 	if (typeof rate !== "number" || !Number.isFinite(rate) || rate <= 0) {
 		await client.batchUpdate([{ updateCells: { ...scratchWrite.updateCells, rows: [{ values: [{}] }] } }]);
 		throw new Error(
-			`GOOGLEFINANCE("CURRENCY:USDTWD") did not return a usable rate (got ${JSON.stringify(rate)}); the scratch cell ${scratchCell} was cleared — try again in a moment.`,
+			`GOOGLEFINANCE("CURRENCY:${cfg.pair}") did not return a usable rate (got ${JSON.stringify(rate)}); the scratch cell ${scratchCell} was cleared — try again in a moment.`,
 		);
 	}
 
 	const r = targetRow;
-	const I = colLetter(TRANSFER_COLS.ntd);
-	const J = colLetter(TRANSFER_COLS.spotUsd);
-	const K = colLetter(TRANSFER_COLS.actualUsd);
-	const L = colLetter(TRANSFER_COLS.spread);
-	const M = colLetter(TRANSFER_COLS.fee);
+	const B = colLetter(cfg.cols.ntd);
+	const C = colLetter(cfg.cols.spot);
+	const D = colLetter(cfg.cols.actual);
+	const E = colLetter(cfg.cols.spread);
+	const F = colLetter(cfg.cols.fee);
 	const rowCells = [
-		cellData(p.ntd), // I 新臺幣
-		cellData(`=${I}${r}/${rate}`), // J 當下美金, rate pinned at entry
-		cellData(p.usd), // K 實際美金
-		cellData(`=(${J}${r}-${K}${r})*${rate}`), // L 匯差 in NTD
-		cellData(p.fee), // M 手續費
-		cellData(`=${L}${r}+${M}${r}`), // N 當筆總額外花費
+		cellData(p.ntd), // 新臺幣
+		cellData(`=${B}${r}/${rate}`), // 當下美金/日幣, rate pinned at entry
+		cellData(received), // 實際美金/日幣
+		cellData(`=(${C}${r}-${D}${r})*${rate}`), // 匯差 in NTD
+		cellData(p.fee), // 手續費
+		cellData(`=${E}${r}+${F}${r}`), // 當筆總額外花費
 	];
 	// Rewrite 總和 over the whole data window: the sheet's original single-cell
-	// =sum(I35) cannot auto-extend, so the op owns the range from now on.
+	// =sum(...) cannot auto-extend, so the op owns the range from now on.
 	const sumCells = [];
-	for (let c = TRANSFER_COLS.ntd; c <= TRANSFER_COLS.extra; c++) {
+	for (let c = cfg.cols.ntd; c <= cfg.cols.extra; c++) {
 		const col = colLetter(c);
 		sumCells.push(cellData(`=SUM(${col}${headerRow + 1}:${col}${finalTotalRow - 1})`));
 	}
+
+	// Cells created by insertRange (or never-formatted empties at the sheet
+	// bottom) carry no format — stamp them before the value writes, jpy only
+	// (mirrors addTripEntry's formatCell, finance-ops.ts:1913-1928).
+	const formatRepeat = (col: number, format: object, width: number) => ({
+		repeatCell: {
+			range: { sheetId, startRowIndex: r - 1, endRowIndex: r, startColumnIndex: col, endColumnIndex: col + width },
+			cell: { userEnteredFormat: format },
+			fields: "userEnteredFormat.numberFormat",
+		},
+	});
+	const jpyFormatRequests =
+		currency !== "jpy"
+			? []
+			: [
+					formatRepeat(cfg.cols.date, { numberFormat: { type: "DATE", pattern: "mm/dd" } }, 1),
+					formatRepeat(cfg.cols.spot, { numberFormat: { type: "CURRENCY", pattern: "[$¥]#,##0" } }, 2), // C:D
+					formatRepeat(cfg.cols.ntd, { numberFormat: { type: "CURRENCY", pattern: "[$NTD ]#,##0" } }, 1), // B
+					formatRepeat(cfg.cols.spread, { numberFormat: { type: "CURRENCY", pattern: "[$NTD ]#,##0" } }, 3), // E:G
+				];
+
 	await client.batchUpdate([
+		...jpyFormatRequests,
 		{
 			updateCells: {
-				start: { sheetId, rowIndex: r - 1, columnIndex: TRANSFER_COLS.date },
+				start: { sheetId, rowIndex: r - 1, columnIndex: cfg.cols.date },
 				rows: [
 					{
 						values: [
@@ -1059,34 +1137,36 @@ export async function addTransfer(client: SheetsClient, p: AddTransferParams) {
 		},
 		{
 			updateCells: {
-				start: { sheetId, rowIndex: r - 1, columnIndex: TRANSFER_COLS.ntd },
+				start: { sheetId, rowIndex: r - 1, columnIndex: cfg.cols.ntd },
 				rows: [{ values: rowCells }],
 				fields: "userEnteredValue",
 			},
 		},
 		{
 			updateCells: {
-				start: { sheetId, rowIndex: finalTotalRow - 1, columnIndex: TRANSFER_COLS.ntd },
+				start: { sheetId, rowIndex: finalTotalRow - 1, columnIndex: cfg.cols.ntd },
 				rows: [{ values: sumCells }],
 				fields: "userEnteredValue",
 			},
 		},
 	]);
 
-	const spread = p.ntd - p.usd * rate; // == (當下美金 − 實際美金) × rate
-	return {
+	const spread = p.ntd - received * rate; // == (當下美金/日幣 − 實際美金/日幣) × rate
+	const base = {
 		tab,
 		row: r,
 		inserted,
 		date: serialToIso(dateSerialValue),
 		ntd: p.ntd,
-		usd: p.usd,
 		rate,
-		spotUsd: round2(p.ntd / rate),
 		spread: round2(spread),
 		fee: p.fee,
 		extraCost: round2(spread + p.fee),
 	};
+	if (currency === "jpy") {
+		return { ...base, jpy: received, spotJpy: round2(p.ntd / rate) };
+	}
+	return { ...base, usd: received, spotUsd: round2(p.ntd / rate) };
 }
 
 export interface AddLunchParams {
