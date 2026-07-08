@@ -156,6 +156,41 @@ export function findExpenseWindow(values: unknown[][], tab: string): ExpenseWind
 	return { totalRow, start: Number(m[1]), end: Number(m[2]) };
 }
 
+const CARRY_ROW_LABELS: readonly string[] = [PREV_USD_OVERDRAFT_LABEL, PREV_NTD_OVERDRAFT_LABEL, OVERDRAFT_LABEL];
+
+/**
+ * The 1-indexed row an expense dated `serial` should OCCUPY to keep the
+ * window date-sorted: after the last row dated <= serial (a same-date tie
+ * appends after), with a dateless row (serial null) after every non-empty
+ * row — the order an ascending UI date sort produces. Never above a
+ * 上月…透支 carry row. Returns at most min(windowEnd, totalRow-1) + 1.
+ * `ignoreRow` masks the row being repositioned (set_expense_date).
+ */
+export function expensePositionFor(
+	values: unknown[][],
+	windowStart: number,
+	windowEnd: number,
+	totalRow: number,
+	serial: number | null,
+	ignoreRow?: number,
+): number {
+	const scanEnd = Math.min(windowEnd, totalRow - 1);
+	let last = windowStart - 1;
+	let carry = windowStart - 1;
+	for (let r = windowStart; r <= scanEnd; r++) {
+		if (r === ignoreRow) continue;
+		const row = values[r - 1] ?? [];
+		if (CARRY_ROW_LABELS.includes(String(row[MONTH_COLS.item] ?? "").trim())) carry = r;
+		if (serial === null) {
+			if (row.some((c) => c !== "" && c != null)) last = r;
+		} else {
+			const d = row[MONTH_COLS.date];
+			if (typeof d === "number" && d <= serial) last = r;
+		}
+	}
+	return Math.max(last, carry) + 1;
+}
+
 /** The 乾坤大挪移 section spans H–N, wider than GRID_READ — read the full width. */
 export const TRANSFER_GRID_READ = "A1:N60";
 
@@ -761,25 +796,32 @@ export async function addExpense(client: SheetsClient, p: AddExpenseParams) {
 
 	const { totalRow, start: windowStart, end: windowEnd } = findExpenseWindow(values, tab);
 
-	// First fully-empty row inside the SUM window (and above the total row).
-	let targetRow: number | null = null;
-	for (let r = windowStart; r <= Math.min(windowEnd, totalRow - 1); r++) {
-		const row = values[r - 1] ?? [];
-		if (!row.some((c) => c !== "" && c != null)) {
-			targetRow = r;
-			break;
-		}
-	}
+	// Date-sorted position: after the last row dated <= the new date; a
+	// dateless row lands after everything — the order an ascending UI date
+	// sort produces. Never above the 上月…透支 carry rows.
+	let targetRow = expensePositionFor(values, windowStart, windowEnd, totalRow, dateSerialValue);
+	const scanEnd = Math.min(windowEnd, totalRow - 1);
 
 	const sheetId = await client.getSheetId(tab);
 	const requests: object[] = [];
-	const inserted = targetRow === null;
-	if (targetRow === null) {
+	const targetIsEmpty = targetRow <= scanEnd && !(values[targetRow - 1] ?? []).some((c) => c !== "" && c != null);
+	const inserted = !targetIsEmpty;
+	let moveToRow: number | null = null;
+	if (inserted) {
 		if (windowEnd <= windowStart) {
 			throw new Error(`The expense window =SUM(${TWD_COL}${windowStart}:${TWD_COL}${windowEnd}) in ${tab} is too small to insert into safely.`);
 		}
-		// Insert at the window's last row: strictly inside the SUM range, so it auto-extends.
-		targetRow = windowEnd;
+		// An insert AT the window's first row would shift the SUM range down
+		// instead of extending it. Dead branch on real tabs (the carry rows
+		// clamp positions past it) — kept as a safety rail.
+		targetRow = Math.max(targetRow, windowStart + 1);
+		if (targetRow > windowEnd) {
+			// Belongs after the window's last row, where an insert would fall
+			// outside every range. Insert at the last row (auto-extends), then
+			// move the new row below the shifted old last row.
+			targetRow = windowEnd;
+			moveToRow = windowEnd + 1;
+		}
 		requests.push({
 			insertDimension: {
 				range: { sheetId, dimension: "ROWS", startIndex: targetRow - 1, endIndex: targetRow },
@@ -829,12 +871,27 @@ export async function addExpense(client: SheetsClient, p: AddExpenseParams) {
 		requests.push(...guard.requests);
 	}
 
+	if (moveToRow !== null) {
+		requests.push({
+			moveDimension: {
+				// Never move a row past a range's end: Sheets executes a move
+				// as delete + reinsert, and a reinsert past the (shrunk) end
+				// falls OUTSIDE — the window ranges would shrink and orphan
+				// the row (verified live). To put the new row last, move the
+				// shifted old last row UP over it instead: both endpoints stay
+				// strictly inside, so the range adjustments cancel.
+				source: { sheetId, dimension: "ROWS", startIndex: targetRow, endIndex: targetRow + 1 },
+				destinationIndex: targetRow - 1,
+			},
+		});
+	}
+
 	// The expense lands inside the 花費總額 SUM window, so the total picks it up
 	// automatically (an insert at the window's edge auto-extends the range).
 	await client.batchUpdate(requests);
 	return {
 		tab,
-		row: targetRow,
+		row: moveToRow ?? targetRow,
 		inserted,
 		item: p.item,
 		amount: p.amount,
@@ -1220,6 +1277,40 @@ export async function setExpenseDate(client: SheetsClient, p: SetExpenseDatePara
 		}
 	}
 
+	// Relocate to the date-sorted position, computed as if the row were
+	// absent. moveDimension rewrites references like an insert+delete pair,
+	// so window ranges keep their size and the +D3/+E4 carry add-backs follow
+	// their cells. target == row means "already in place"; target == row + 1
+	// cannot occur (expensePositionFor skips ignoreRow) but is guarded as the
+	// equivalent no-op.
+	const target = expensePositionFor(values, windowStart, windowEnd, totalRow, serial, row);
+	let movedToRow: number | null = null;
+	if (target !== row && target !== row + 1) {
+		if (target > windowEnd) {
+			// The row must become the LAST list row. A move whose destination
+			// lies past a range's end shrinks the range (delete inside +
+			// reinsert outside — verified live), so move the displaced block
+			// [row+1 .. windowEnd] up over the row instead: both endpoints
+			// stay strictly inside and the range adjustments cancel.
+			requests.push({
+				moveDimension: {
+					source: { sheetId, dimension: "ROWS", startIndex: row, endIndex: windowEnd },
+					destinationIndex: row - 1,
+				},
+			});
+		} else {
+			requests.push({
+				moveDimension: {
+					source: { sheetId, dimension: "ROWS", startIndex: row - 1, endIndex: row },
+					// destinationIndex is in pre-removal coordinates; a down-move
+					// lands one row higher once the old slot closes.
+					destinationIndex: target - 1,
+				},
+			});
+		}
+		movedToRow = target > row ? target - 1 : target;
+	}
+
 	await client.batchUpdate(requests);
 	return {
 		tab,
@@ -1231,6 +1322,7 @@ export async function setExpenseDate(client: SheetsClient, p: SetExpenseDatePara
 		bucket,
 		bucketRowsAdded,
 		bucketWarning,
+		movedToRow,
 	};
 }
 

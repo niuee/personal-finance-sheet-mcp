@@ -11,6 +11,7 @@ import {
 	colIndex,
 	colLetter,
 	expandAnchorRange,
+	expensePositionFor,
 	findCells,
 	FIND_CELLS_CAP,
 	findCreditSection,
@@ -80,7 +81,7 @@ function monthGrid(): unknown[][] {
 	g[4] = ["", "ElevenLabs", "訂閱", 6, '=D5*GOOGLEFINANCE("CURRENCY:USDTWD")'];
 	g[5] = ["", "iCloud", "訂閱", 9.99, '=D6*GOOGLEFINANCE("CURRENCY:USDTWD")'];
 	g[6] = ["", "電話費", "生活用品", "", 1261];
-	g[7] = ["", "近鐵 80000系", "購物", "", "='火車模型'!D4"];
+	g[7] = [dateSerial(2026, 9, 1), "近鐵 80000系", "購物", "", "='火車模型'!D4"];
 	// rows 9-10 (indices 8-9) empty inside the window
 	g[10] = ["", "", "", "花費總額", "=SUM(E3:E10)"];
 	g[12] = ["", "沛還", "", 20500];
@@ -126,7 +127,7 @@ function currentMonthGrid(): unknown[][] {
 	g[2] = ["", "上月美金透支", "透支", "=IF(-('8 月'!D19) > 0, -('8 月'!D19), 0)", '=D3*GOOGLEFINANCE("CURRENCY:USDTWD")', "USD"];
 	g[3] = ["", "上月新臺幣透支", "透支", "", "=IF(-('8 月'!D20) > 0, -('8 月'!D20), 0)", "TWD"];
 	g[4] = ["", "Google Cloud", "訂閱", 11.53, '=D5*GOOGLEFINANCE("CURRENCY:USDTWD")', "USD"];
-	g[5] = ["", "電話費", "生活用品", "", 1261, "TWD"];
+	g[5] = [dateSerial(2026, 7, 1), "電話費", "生活用品", "", 1261, "TWD"];
 	// rows 7-10 empty inside the window
 	g[10] = ["", "", "", "花費總額", "=SUM(E3:E10)"];
 	g[12] = ["", "總預算"];
@@ -237,6 +238,53 @@ describe("window helpers", () => {
 		const g = currentMonthGrid();
 		g[22] = ["", "本月美金收入", "", 600];
 		expect(() => findIncomeSumifWindow(g, "9 月")).toThrow("income window");
+	});
+});
+
+describe("expensePositionFor", () => {
+	/** Window rows 3-10, 花費總額 at 11; carries dated 100, then 101 / 103 / dateless Netflix, empties 8-10. */
+	function orderedGrid(): unknown[][] {
+		const g: unknown[][] = [];
+		g[2] = [100, "上月美金透支", "透支", 5, "", "USD"];
+		g[3] = [100, "上月新臺幣透支", "透支", "", 5, "TWD"];
+		g[4] = [101, "早餐", "吃喝", "", 80, "TWD"];
+		g[5] = [103, "晚餐", "吃喝", "", 250, "TWD"];
+		g[6] = ["", "Netflix", "訂閱", 26.99, "=D7*X", "USD"];
+		g[10] = ["", "", "", "花費總額", "=SUM(E3:E10)"];
+		return g;
+	}
+
+	it("places a dated row after the last not-later date, ties after", () => {
+		expect(expensePositionFor(orderedGrid(), 3, 10, 11, 102)).toBe(6); // between 早餐(101) and 晚餐(103)
+		expect(expensePositionFor(orderedGrid(), 3, 10, 11, 101)).toBe(6); // tie with 早餐 → after it
+		expect(expensePositionFor(orderedGrid(), 3, 10, 11, 104)).toBe(7); // after 晚餐, before dateless Netflix
+	});
+
+	it("places a dateless row after every non-empty row", () => {
+		expect(expensePositionFor(orderedGrid(), 3, 10, 11, null)).toBe(8);
+	});
+
+	it("clamps a backdated row below the carry rows", () => {
+		expect(expensePositionFor(orderedGrid(), 3, 10, 11, 99)).toBe(5);
+	});
+
+	it("masks ignoreRow when repositioning an existing row", () => {
+		// 晚餐 (row 6) redated between the carries and 早餐: without itself the last <= is 早餐 (row 5)
+		expect(expensePositionFor(orderedGrid(), 3, 10, 11, 101, 6)).toBe(6);
+	});
+
+	it("scans only to the row above 花費總額 when the window reaches past it", () => {
+		expect(expensePositionFor(orderedGrid(), 3, 15, 11, null)).toBe(8);
+	});
+
+	it("degrades gracefully on an unsorted list: after the LAST not-later row, not the max date", () => {
+		const g = orderedGrid();
+		// swap 早餐(101) and 晚餐(103) so dates are out of order
+		const early = g[4];
+		g[4] = g[5];
+		g[5] = early;
+		// 102: 晚餐(103, row 5) doesn't qualify; the LAST row dated <= 102 is 早餐(101) at row 6
+		expect(expensePositionFor(g, 3, 10, 11, 102)).toBe(7);
 	});
 });
 
@@ -868,7 +916,7 @@ describe("addExpense", () => {
 		]);
 	});
 
-	it("inserts a row inside the SUM window when no empty row exists", async () => {
+	it("inserts + moves below the last row when the window is full (dateless sorts last)", async () => {
 		const grid = monthGrid();
 		grid[8] = ["", "already", "雜", "", 1];
 		grid[9] = ["", "full", "雜", "", 2];
@@ -877,34 +925,101 @@ describe("addExpense", () => {
 		const result = await addExpense(client, { item: "加購", amount: 100, currency: "TWD", month: 9 });
 
 		const requests = (client.batchUpdate as any).mock.calls[0][0];
-		// window is full, so insert at its last row (10) — the =SUM(E3:E10) auto-extends
-		expect(requests).toEqual([
-			{
-				insertDimension: {
-					range: { sheetId: 111, dimension: "ROWS", startIndex: 9, endIndex: 10 },
-					inheritFromBefore: true,
-				},
+		expect(requests[0]).toEqual({
+			insertDimension: {
+				range: { sheetId: 111, dimension: "ROWS", startIndex: 9, endIndex: 10 },
+				inheritFromBefore: true,
 			},
-			{
-				updateCells: {
-					start: { sheetId: 111, rowIndex: 9, columnIndex: 1 },
-					rows: [
-						{
-							values: [
-								{ userEnteredValue: { stringValue: "加購" } },
-								{},
-								{},
-								{ userEnteredValue: { numberValue: 100 } },
-								{ userEnteredValue: { stringValue: "TWD" } },
-								{},
-							],
-						},
-					],
-					fields: "userEnteredValue",
-				},
+		});
+		expect(requests[1]).toEqual({
+			updateCells: {
+				start: { sheetId: 111, rowIndex: 9, columnIndex: 1 },
+				rows: [
+					{
+						values: [
+							{ userEnteredValue: { stringValue: "加購" } },
+							{},
+							{},
+							{ userEnteredValue: { numberValue: 100 } },
+							{ userEnteredValue: { stringValue: "TWD" } },
+							{},
+						],
+					},
+				],
+				fields: "userEnteredValue",
 			},
-		]);
-		expect(result).toMatchObject({ row: 10, inserted: true });
+		});
+		// move the shifted old last row up over the new row — a destination
+		// past the range end would shrink the ranges
+		expect(requests.at(-1)).toEqual({
+			moveDimension: {
+				source: { sheetId: 111, dimension: "ROWS", startIndex: 10, endIndex: 11 },
+				destinationIndex: 9,
+			},
+		});
+		expect(result).toMatchObject({ row: 11, inserted: true });
+	});
+
+	it("inserts a backdated expense at its date-sorted position", async () => {
+		const g = currentMonthGrid();
+		g[6] = [dateSerial(2026, 7, 10), "晚餐", "吃喝", "", 300, "TWD"]; // row 7 dated 7/10
+		const client = fakeClient(g);
+
+		const result = await addExpense(client, { item: "早餐", amount: 80, currency: "TWD", month: 9, date: "7/3" });
+
+		const requests = (client.batchUpdate as any).mock.calls[0][0];
+		// after 電話費 (7/1, row 6), before 晚餐 (7/10, row 7)
+		expect(requests[0]).toEqual({
+			insertDimension: {
+				range: { sheetId: 111, dimension: "ROWS", startIndex: 6, endIndex: 7 },
+				inheritFromBefore: true,
+			},
+		});
+		expect(requests[1].updateCells.start).toEqual({ sheetId: 111, rowIndex: 6, columnIndex: 1 });
+		expect(requests.some((r: any) => r.moveDimension)).toBe(false);
+		expect(result).toMatchObject({ row: 7, inserted: true });
+	});
+
+	it("moves a latest-dated expense below the shifted last row when the window is full", async () => {
+		const g = monthGrid();
+		g[8] = [dateSerial(2026, 9, 3), "已有", "吃喝", "", 120, "TWD"];
+		g[9] = [dateSerial(2026, 9, 5), "最後", "吃喝", "", 90, "TWD"];
+		const client = fakeClient(g);
+
+		const result = await addExpense(client, { item: "宵夜", amount: 60, currency: "TWD", month: 9, date: "9/6" });
+
+		const requests = (client.batchUpdate as any).mock.calls[0][0];
+		expect(requests[0].insertDimension.range).toEqual({ sheetId: 111, dimension: "ROWS", startIndex: 9, endIndex: 10 });
+		expect(requests.at(-1)).toEqual({
+			moveDimension: {
+				source: { sheetId: 111, dimension: "ROWS", startIndex: 10, endIndex: 11 },
+				destinationIndex: 9,
+			},
+		});
+		expect(result).toMatchObject({ row: 11, inserted: true });
+	});
+
+	it("never inserts above the 上月透支 carry rows for a backdated expense", async () => {
+		const client = fakeClient(currentMonthGrid());
+
+		const result = await addExpense(client, { item: "補記", amount: 10, currency: "TWD", month: 9, date: "6/15" });
+
+		const requests = (client.batchUpdate as any).mock.calls[0][0];
+		// nothing dated <= 6/15 — clamped to right below the carry rows (3-4)
+		expect(requests[0].insertDimension.range).toEqual({ sheetId: 111, dimension: "ROWS", startIndex: 4, endIndex: 5 });
+		expect(result).toMatchObject({ row: 5, inserted: true });
+	});
+
+	it("reuses an empty row when it sits exactly at the sorted position", async () => {
+		const g = currentMonthGrid(); // 電話費 dated 7/1 at row 6; rows 7-10 empty
+		const client = fakeClient(g);
+
+		const result = await addExpense(client, { item: "晚餐", amount: 250, currency: "TWD", month: 9, date: "7/5" });
+
+		const requests = (client.batchUpdate as any).mock.calls[0][0];
+		expect(requests.some((r: any) => r.insertDimension)).toBe(false);
+		expect(requests[0].updateCells.start).toEqual({ sheetId: 111, rowIndex: 6, columnIndex: 1 });
+		expect(result).toMatchObject({ row: 7, inserted: false });
 	});
 
 	it("writes an explicit paid_with that differs from the pricing currency", async () => {
@@ -995,7 +1110,7 @@ describe("addExpense", () => {
 		expect((client.batchUpdate as any).mock.calls.length).toBe(0);
 	});
 
-	it("inserts inside the SUM window even when it ends above the total row", async () => {
+	it("inserts inside the SUM window even when it ends above the total row, then moves below the last row (dateless sorts last)", async () => {
 		const g = monthGrid();
 		g[10] = ["", "", "", "花費總額", "=SUM(E3:E8)"];
 		const client = fakeClient(g);
@@ -1003,6 +1118,8 @@ describe("addExpense", () => {
 		const result = await addExpense(client, { item: "gap", amount: 9, currency: "TWD", month: 9 });
 
 		const requests = (client.batchUpdate as any).mock.calls[0][0];
+		// window (rows 3-8) is entirely full — including 近鐵 dated 9/1 at row 8 —
+		// so insert at row 8 to auto-extend the SUM, then move below the shifted 近鐵.
 		expect(requests[0].insertDimension.range).toEqual({
 			sheetId: 111,
 			dimension: "ROWS",
@@ -1010,7 +1127,13 @@ describe("addExpense", () => {
 			endIndex: 8,
 		});
 		expect(requests[1].updateCells.start).toEqual({ sheetId: 111, rowIndex: 7, columnIndex: 1 });
-		expect(result).toMatchObject({ row: 8, inserted: true });
+		expect(requests.at(-1)).toEqual({
+			moveDimension: {
+				source: { sheetId: 111, dimension: "ROWS", startIndex: 8, endIndex: 9 },
+				destinationIndex: 7,
+			},
+		});
+		expect(result).toMatchObject({ row: 9, inserted: true });
 	});
 
 	it("rejects a TWD-priced expense paid in USD before reading or writing anything", async () => {
@@ -1393,7 +1516,18 @@ describe("setExpenseDate", () => {
 		const requests = (client.batchUpdate as any).mock.calls[0][0];
 		const insert = requests.find((r: any) => r.insertDimension);
 		expect(insert).toBeDefined();
-		expect(result).toMatchObject({ card: "國泰 CUBE", bucket: "結帳日前", bucketRowsAdded: 1 });
+		// Composed in one batch: the bucket-guard insert lands before the
+		// trailing moveDimension that relocates the now-dated row — both
+		// rows above it (既有1 dated 7/12, 既有2 dated 7/12) postdate 7/10,
+		// so Netflix (row 7) sorts in right after the carry rows.
+		expect(requests.at(-1)).toEqual({
+			moveDimension: {
+				source: { sheetId: 111, dimension: "ROWS", startIndex: 6, endIndex: 7 },
+				destinationIndex: 4,
+			},
+		});
+		expect(requests.indexOf(insert)).toBeLessThan(requests.length - 1);
+		expect(result).toMatchObject({ card: "國泰 CUBE", bucket: "結帳日前", bucketRowsAdded: 1, movedToRow: 5 });
 	});
 
 	it("excludes the row being re-dated from its own bucket scan (no double count)", async () => {
@@ -1449,6 +1583,70 @@ describe("setExpenseDate", () => {
 		);
 		expect((client.readRange as any).mock.calls).toHaveLength(0);
 		expect((client.batchUpdate as any).mock.calls).toHaveLength(0);
+	});
+
+	it("moves the row down to its date-sorted position after dating it", async () => {
+		const g = dateGrid();
+		g[7] = [dateSerial(2026, 7, 3), "後面", "吃喝", "", 120, "TWD", ""]; // row 8 dated 7/3
+		const client = fakeClient(g);
+
+		const result = await setExpenseDate(client, { item: "Netflix", date: "7/10", month: 9 });
+
+		const requests = (client.batchUpdate as any).mock.calls[0][0];
+		expect(requests.at(-1)).toEqual({
+			moveDimension: {
+				source: { sheetId: 111, dimension: "ROWS", startIndex: 6, endIndex: 7 },
+				destinationIndex: 8, // before original row 9; lands at row 8 after its slot closes
+			},
+		});
+		expect(result).toMatchObject({ row: 7, movedToRow: 8 });
+	});
+
+	it("moves the row up when the new date predates every dated row", async () => {
+		const g = dateGrid();
+		(g[5] as unknown[])[0] = dateSerial(2026, 7, 8); // 電話費 now dated 7/8
+		const client = fakeClient(g);
+
+		const result = await setExpenseDate(client, { item: "Netflix", date: "7/2", month: 9 });
+
+		const requests = (client.batchUpdate as any).mock.calls[0][0];
+		expect(requests.at(-1)).toEqual({
+			moveDimension: {
+				source: { sheetId: 111, dimension: "ROWS", startIndex: 6, endIndex: 7 },
+				destinationIndex: 4, // right below the carry rows
+			},
+		});
+		expect(result).toMatchObject({ movedToRow: 5 });
+	});
+
+	it("does not move a row already in its sorted position", async () => {
+		const client = fakeClient(dateGrid());
+		const result = await setExpenseDate(client, { item: "Netflix", date: "7/10", month: 9 });
+
+		const requests = (client.batchUpdate as any).mock.calls[0][0];
+		expect(requests.some((r: any) => r.moveDimension)).toBe(false);
+		expect(result.movedToRow).toBeNull();
+	});
+
+	it("moves the displaced block up when the dated row must become the last list row", async () => {
+		const g = dateGrid();
+		g[7] = [dateSerial(2026, 7, 2), "甲", "吃喝", "", 10, "TWD", ""]; // row 8
+		g[8] = [dateSerial(2026, 7, 3), "乙", "吃喝", "", 11, "TWD", ""]; // row 9
+		g[9] = [dateSerial(2026, 7, 4), "丙", "吃喝", "", 12, "TWD", ""]; // row 10 — window full
+		const client = fakeClient(g);
+
+		const result = await setExpenseDate(client, { item: "Netflix", date: "7/10", month: 9 });
+
+		const requests = (client.batchUpdate as any).mock.calls[0][0];
+		// target = 11 (past every dated row) > windowEnd 10 — a direct move
+		// there would shrink the window ranges, so rows 8-10 move up instead
+		expect(requests.at(-1)).toEqual({
+			moveDimension: {
+				source: { sheetId: 111, dimension: "ROWS", startIndex: 7, endIndex: 10 },
+				destinationIndex: 6,
+			},
+		});
+		expect(result).toMatchObject({ row: 7, movedToRow: 10 });
 	});
 });
 
