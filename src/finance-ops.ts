@@ -68,7 +68,6 @@ import {
 	TOTAL_ROW_LABEL,
 	TRANSFER_COLS,
 	TRANSFER_JPY_COLS,
-	TRANSFER_JPY_HEADERS,
 	TRANSFER_SECTION_LABEL,
 	TRANSFER_TOTAL_LABEL,
 	TRIP_HEADER_DATE,
@@ -1002,8 +1001,8 @@ async function wireJpyTransferIntoMonth(
 ): Promise<void> {
 	const { values, truncated } = await client.readRange(`${quoteTab(monthTab)}!${FULL_GRID_READ}`, "FORMULA");
 	assertNotTruncated(truncated, monthTab, FULL_GRID_READ);
-	const ntdRef = `'${tripTab}'!${colLetter(TRANSFER_JPY_COLS.ntd)}${entryRow}`;
-	const extraRef = `'${tripTab}'!${colLetter(TRANSFER_JPY_COLS.extra)}${entryRow}`;
+	const ntdRef = `${quoteTab(tripTab)}!${colLetter(TRANSFER_JPY_COLS.ntd)}${entryRow}`;
+	const extraRef = `${quoteTab(tripTab)}!${colLetter(TRANSFER_JPY_COLS.extra)}${entryRow}`;
 	const targets: Array<{ label: string; term: string }> = [
 		{ label: NTD_SPENDING_LABEL, term: `+${extraRef}` },
 		{ label: NTD_CONSERVATIVE_END_LABEL, term: `-${ntdRef}` },
@@ -1216,7 +1215,7 @@ export async function addTransfer(client: SheetsClient, p: AddTransferParams): P
 			await wireJpyTransferIntoMonth(client, monthTab, tab, r);
 		} catch (e) {
 			throw new Error(
-				`The transfer row ${tab}!${colLetter(cfg.cols.date)}${r} was already written, but wiring it into ${monthTab} failed: ${e instanceof Error ? e.message : String(e)} — fix the two bank formulas by hand (−新臺幣 into 本月底/保守預計, +當筆總額外花費 into 本月新臺幣支出) or delete the row and retry.`,
+				`The transfer row ${tab}!${colLetter(cfg.cols.date)}${r} was already written, but wiring it into ${monthTab} failed: ${e instanceof Error ? e.message : String(e)} — fix the three bank formulas by hand (−新臺幣 into 本月底/保守預計, +當筆總額外花費 into 本月新臺幣支出) or delete the row and retry.`,
 			);
 		}
 		return { ...base, jpy: received, spotJpy: round2(p.ntd / rate), wiredMonthTab: monthTab };
