@@ -1505,7 +1505,18 @@ describe("setExpenseDate", () => {
 		const requests = (client.batchUpdate as any).mock.calls[0][0];
 		const insert = requests.find((r: any) => r.insertDimension);
 		expect(insert).toBeDefined();
-		expect(result).toMatchObject({ card: "國泰 CUBE", bucket: "結帳日前", bucketRowsAdded: 1 });
+		// Composed in one batch: the bucket-guard insert lands before the
+		// trailing moveDimension that relocates the now-dated row — both
+		// rows above it (既有1 dated 7/12, 既有2 dated 7/12) postdate 7/10,
+		// so Netflix (row 7) sorts in right after the carry rows.
+		expect(requests.at(-1)).toEqual({
+			moveDimension: {
+				source: { sheetId: 111, dimension: "ROWS", startIndex: 6, endIndex: 7 },
+				destinationIndex: 4,
+			},
+		});
+		expect(requests.indexOf(insert)).toBeLessThan(requests.length - 1);
+		expect(result).toMatchObject({ card: "國泰 CUBE", bucket: "結帳日前", bucketRowsAdded: 1, movedToRow: 5 });
 	});
 
 	it("excludes the row being re-dated from its own bucket scan (no double count)", async () => {
@@ -1561,6 +1572,49 @@ describe("setExpenseDate", () => {
 		);
 		expect((client.readRange as any).mock.calls).toHaveLength(0);
 		expect((client.batchUpdate as any).mock.calls).toHaveLength(0);
+	});
+
+	it("moves the row down to its date-sorted position after dating it", async () => {
+		const g = dateGrid();
+		g[7] = [dateSerial(2026, 7, 3), "後面", "吃喝", "", 120, "TWD", ""]; // row 8 dated 7/3
+		const client = fakeClient(g);
+
+		const result = await setExpenseDate(client, { item: "Netflix", date: "7/10", month: 9 });
+
+		const requests = (client.batchUpdate as any).mock.calls[0][0];
+		expect(requests.at(-1)).toEqual({
+			moveDimension: {
+				source: { sheetId: 111, dimension: "ROWS", startIndex: 6, endIndex: 7 },
+				destinationIndex: 8, // before original row 9; lands at row 8 after its slot closes
+			},
+		});
+		expect(result).toMatchObject({ row: 7, movedToRow: 8 });
+	});
+
+	it("moves the row up when the new date predates every dated row", async () => {
+		const g = dateGrid();
+		(g[5] as unknown[])[0] = dateSerial(2026, 7, 8); // 電話費 now dated 7/8
+		const client = fakeClient(g);
+
+		const result = await setExpenseDate(client, { item: "Netflix", date: "7/2", month: 9 });
+
+		const requests = (client.batchUpdate as any).mock.calls[0][0];
+		expect(requests.at(-1)).toEqual({
+			moveDimension: {
+				source: { sheetId: 111, dimension: "ROWS", startIndex: 6, endIndex: 7 },
+				destinationIndex: 4, // right below the carry rows
+			},
+		});
+		expect(result).toMatchObject({ movedToRow: 5 });
+	});
+
+	it("does not move a row already in its sorted position", async () => {
+		const client = fakeClient(dateGrid());
+		const result = await setExpenseDate(client, { item: "Netflix", date: "7/10", month: 9 });
+
+		const requests = (client.batchUpdate as any).mock.calls[0][0];
+		expect(requests.some((r: any) => r.moveDimension)).toBe(false);
+		expect(result.movedToRow).toBeNull();
 	});
 });
 

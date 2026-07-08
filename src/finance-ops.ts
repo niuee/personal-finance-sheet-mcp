@@ -1275,6 +1275,25 @@ export async function setExpenseDate(client: SheetsClient, p: SetExpenseDatePara
 		}
 	}
 
+	// Relocate to the date-sorted position, computed as if the row were
+	// absent. moveDimension rewrites references like an insert+delete pair,
+	// so window ranges keep their size and the +D3/+E4 carry add-backs follow
+	// their cells. target == row (its own slot) and target == row + 1
+	// (immediately after itself) both mean "already in place".
+	const target = expensePositionFor(values, windowStart, windowEnd, totalRow, serial, row);
+	let movedToRow: number | null = null;
+	if (target !== row && target !== row + 1) {
+		requests.push({
+			moveDimension: {
+				source: { sheetId, dimension: "ROWS", startIndex: row - 1, endIndex: row },
+				// Pre-removal coordinates; a down-move lands one row higher
+				// once the old slot closes.
+				destinationIndex: target - 1,
+			},
+		});
+		movedToRow = target > row ? target - 1 : target;
+	}
+
 	await client.batchUpdate(requests);
 	return {
 		tab,
@@ -1286,6 +1305,7 @@ export async function setExpenseDate(client: SheetsClient, p: SetExpenseDatePara
 		bucket,
 		bucketRowsAdded,
 		bucketWarning,
+		movedToRow,
 	};
 }
 
