@@ -796,25 +796,32 @@ export async function addExpense(client: SheetsClient, p: AddExpenseParams) {
 
 	const { totalRow, start: windowStart, end: windowEnd } = findExpenseWindow(values, tab);
 
-	// First fully-empty row inside the SUM window (and above the total row).
-	let targetRow: number | null = null;
-	for (let r = windowStart; r <= Math.min(windowEnd, totalRow - 1); r++) {
-		const row = values[r - 1] ?? [];
-		if (!row.some((c) => c !== "" && c != null)) {
-			targetRow = r;
-			break;
-		}
-	}
+	// Date-sorted position: after the last row dated <= the new date; a
+	// dateless row lands after everything — the order an ascending UI date
+	// sort produces. Never above the 上月…透支 carry rows.
+	let targetRow = expensePositionFor(values, windowStart, windowEnd, totalRow, dateSerialValue);
+	const scanEnd = Math.min(windowEnd, totalRow - 1);
 
 	const sheetId = await client.getSheetId(tab);
 	const requests: object[] = [];
-	const inserted = targetRow === null;
-	if (targetRow === null) {
+	const targetIsEmpty = targetRow <= scanEnd && !(values[targetRow - 1] ?? []).some((c) => c !== "" && c != null);
+	const inserted = !targetIsEmpty;
+	let moveToRow: number | null = null;
+	if (inserted) {
 		if (windowEnd <= windowStart) {
 			throw new Error(`The expense window =SUM(${TWD_COL}${windowStart}:${TWD_COL}${windowEnd}) in ${tab} is too small to insert into safely.`);
 		}
-		// Insert at the window's last row: strictly inside the SUM range, so it auto-extends.
-		targetRow = windowEnd;
+		// An insert AT the window's first row would shift the SUM range down
+		// instead of extending it. Dead branch on real tabs (the carry rows
+		// clamp positions past it) — kept as a safety rail.
+		targetRow = Math.max(targetRow, windowStart + 1);
+		if (targetRow > windowEnd) {
+			// Belongs after the window's last row, where an insert would fall
+			// outside every range. Insert at the last row (auto-extends), then
+			// move the new row below the shifted old last row.
+			targetRow = windowEnd;
+			moveToRow = windowEnd + 1;
+		}
 		requests.push({
 			insertDimension: {
 				range: { sheetId, dimension: "ROWS", startIndex: targetRow - 1, endIndex: targetRow },
@@ -864,12 +871,25 @@ export async function addExpense(client: SheetsClient, p: AddExpenseParams) {
 		requests.push(...guard.requests);
 	}
 
+	if (moveToRow !== null) {
+		requests.push({
+			moveDimension: {
+				source: { sheetId, dimension: "ROWS", startIndex: targetRow - 1, endIndex: targetRow },
+				// Pre-removal coordinates: the new row sits at 0-based
+				// windowEnd-1, the old last row at windowEnd, so "after the old
+				// last row" is 0-based windowEnd+1 == moveToRow. The row lands
+				// at 1-based moveToRow once its old slot closes.
+				destinationIndex: moveToRow,
+			},
+		});
+	}
+
 	// The expense lands inside the 花費總額 SUM window, so the total picks it up
 	// automatically (an insert at the window's edge auto-extends the range).
 	await client.batchUpdate(requests);
 	return {
 		tab,
-		row: targetRow,
+		row: moveToRow ?? targetRow,
 		inserted,
 		item: p.item,
 		amount: p.amount,
