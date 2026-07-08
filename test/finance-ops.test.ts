@@ -544,6 +544,31 @@ function transferClient(grid: unknown[][], rate: unknown = 29.85): SheetsClient 
 	} as unknown as SheetsClient;
 }
 
+/** Serves the trip grid for A1:G200 reads, the month grid for A1:S160 reads, and `rate` for single cells. */
+function jpyWiringClient(tripGrid: unknown[][], monthGrid: unknown[][], rate: unknown = 0.208): SheetsClient {
+	return {
+		readRange: vi.fn(async (range: string) =>
+			range.includes("A1:G200")
+				? { range, values: tripGrid, truncated: false }
+				: range.includes("A1:S160")
+					? { range, values: monthGrid, truncated: false }
+					: { range, values: [[rate]], truncated: false },
+		),
+		getSheetId: vi.fn(async () => 111),
+		batchUpdate: vi.fn(async () => ({ replies: [{}] })),
+	} as unknown as SheetsClient;
+}
+
+/** A month grid with the three NTD bank formulas at rows 58/61/62 (labels col B, formulas col D). */
+function bankMonthGrid(): unknown[][] {
+	const g: unknown[][] = [];
+	for (let r = 0; r < 70; r++) g.push([]);
+	g[57] = ["", "本月新臺幣支出", "", '=SUMIF(F3:F34,"TWD",E3:E34)+M42'];
+	g[60] = ["", "保守預計本月底新臺幣餘額", "", "=D60+D57-D58-I42+IF(R42>0, 0, R42)+E4"];
+	g[61] = ["", "本月底新臺幣餘額", "", "=D60+D57-D58-I42+D59+E4"];
+	return g;
+}
+
 describe("addTransfer", () => {
 	it("writes into the first empty row with the rate pinned", async () => {
 		const client = transferClient(transferGrid());
@@ -688,7 +713,7 @@ describe("addTransfer (jpy)", () => {
 	});
 
 	it("writes into the first empty A–G row with the JPYTWD rate pinned and formats stamped", async () => {
-		const client = transferClient(jpyTransferGrid(), 0.208);
+		const client = jpyWiringClient(jpyTransferGrid(), bankMonthGrid(), 0.208);
 		const result = await addTransfer(client, {
 			currency: "jpy",
 			tab: TRIP,
@@ -748,6 +773,7 @@ describe("addTransfer (jpy)", () => {
 			spread: 208,
 			fee: 150,
 			extraCost: 358,
+			wiredMonthTab: "7 月",
 		});
 		expect(result.spotJpy).toBeCloseTo(100000, 2);
 	});
@@ -755,7 +781,7 @@ describe("addTransfer (jpy)", () => {
 	it("inserts A–G-scoped cells (never a whole row) when the section is full", async () => {
 		const grid = jpyTransferGrid();
 		grid[70] = [46266, 20000, "=B71/0.21", 95000, "=(C71-D71)*0.21", 100, "=E71+F71"];
-		const client = transferClient(grid, 0.208);
+		const client = jpyWiringClient(grid, bankMonthGrid(), 0.208);
 		const result = await addTransfer(client, { currency: "jpy", tab: TRIP, ntd: 10000, jpy: 47000, fee: 50, date: "7/12" });
 
 		const batch1 = (client.batchUpdate as any).mock.calls[0][0];
@@ -764,7 +790,7 @@ describe("addTransfer (jpy)", () => {
 			shiftDimension: "ROWS",
 		});
 		expect(batch1.some((r: any) => r.insertDimension)).toBe(false);
-		expect(result).toMatchObject({ row: 72, inserted: true });
+		expect(result).toMatchObject({ row: 72, inserted: true, wiredMonthTab: "7 月" });
 		const batch2 = (client.batchUpdate as any).mock.calls[1][0];
 		const sums = batch2.find((u: any) => u.updateCells?.start.rowIndex === 72 && u.updateCells?.start.columnIndex === 1);
 		expect(sums.updateCells.rows[0].values[0].userEnteredValue).toEqual({ formulaValue: "=SUM(B71:B72)" });
@@ -785,6 +811,58 @@ describe("addTransfer (jpy)", () => {
 			/trip tab/,
 		);
 		expect((client.batchUpdate as any).mock.calls).toHaveLength(0);
+	});
+});
+
+describe("addTransfer (jpy) month wiring", () => {
+	const TRIP = "2026/07/25 京都東京";
+
+	it("appends per-entry terms to the three NTD bank formulas of the date's month", async () => {
+		const client = jpyWiringClient(jpyTransferGrid(), bankMonthGrid());
+		const result = await addTransfer(client, { currency: "jpy", tab: TRIP, ntd: 20800, jpy: 99000, fee: 150, date: "7/10" });
+
+		expect(result.wiredMonthTab).toBe("7 月");
+		// wiring read targets the month tab
+		const reads = (client.readRange as any).mock.calls.map((c: any) => c[0]);
+		expect(reads).toContain("'7 月'!A1:S160");
+
+		// last batchUpdate carries the three formula appends
+		const wiring = (client.batchUpdate as any).mock.calls.at(-1)[0];
+		const formulas = wiring.map((u: any) => ({
+			row: u.updateCells.start.rowIndex + 1,
+			f: u.updateCells.rows[0].values[0].userEnteredValue.formulaValue,
+		}));
+		expect(formulas).toEqual([
+			{ row: 58, f: `=SUMIF(F3:F34,"TWD",E3:E34)+M42+'${TRIP}'!G71` },
+			{ row: 61, f: `=D60+D57-D58-I42+IF(R42>0, 0, R42)+E4-'${TRIP}'!B71` },
+			{ row: 62, f: `=D60+D57-D58-I42+D59+E4-'${TRIP}'!B71` },
+		]);
+		expect(wiring.every((u: any) => u.updateCells.start.columnIndex === 3)).toBe(true);
+	});
+
+	it("derives the month from the entry date, not from today", async () => {
+		const client = jpyWiringClient(jpyTransferGrid(), bankMonthGrid());
+		const result = await addTransfer(client, { currency: "jpy", tab: TRIP, ntd: 100, jpy: 470, fee: 0, date: "2026-08-02" });
+		expect(result.wiredMonthTab).toBe("8 月");
+		expect((client.readRange as any).mock.calls.map((c: any) => c[0])).toContain("'8 月'!A1:S160");
+	});
+
+	it("names the already-written trip row when a bank label is missing", async () => {
+		const month = bankMonthGrid();
+		month[60] = []; // 保守預計 gone
+		const client = jpyWiringClient(jpyTransferGrid(), month);
+		await expect(
+			addTransfer(client, { currency: "jpy", tab: TRIP, ntd: 100, jpy: 470, fee: 0, date: "7/10" }),
+		).rejects.toThrow(/A71.*already written|already written.*A71/s);
+	});
+
+	it("refuses to touch a non-formula bank cell", async () => {
+		const month = bankMonthGrid();
+		(month[57] as unknown[])[3] = 12345; // a raw number where a formula should be
+		const client = jpyWiringClient(jpyTransferGrid(), month);
+		await expect(
+			addTransfer(client, { currency: "jpy", tab: TRIP, ntd: 100, jpy: 470, fee: 0, date: "7/10" }),
+		).rejects.toThrow(/本月新臺幣支出/);
 	});
 });
 

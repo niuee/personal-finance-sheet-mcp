@@ -985,6 +985,52 @@ export interface AddTransferResult {
 	spotUsd?: number;
 	jpy?: number;
 	spotJpy?: number;
+	wiredMonthTab?: string;
+}
+
+/**
+ * Append one JPY transfer's NTD-side terms into the month tab the entry is
+ * dated in: −新臺幣 into 本月底新臺幣餘額 AND 保守預計本月底新臺幣餘額 (both
+ * subtract the USD section's principal on the live sheet), +當筆總額外花費
+ * into 本月新臺幣支出. Append-only: the existing formula is kept verbatim.
+ */
+async function wireJpyTransferIntoMonth(
+	client: SheetsClient,
+	monthTab: string,
+	tripTab: string,
+	entryRow: number,
+): Promise<void> {
+	const { values, truncated } = await client.readRange(`${quoteTab(monthTab)}!${FULL_GRID_READ}`, "FORMULA");
+	assertNotTruncated(truncated, monthTab, FULL_GRID_READ);
+	const ntdRef = `'${tripTab}'!${colLetter(TRANSFER_JPY_COLS.ntd)}${entryRow}`;
+	const extraRef = `'${tripTab}'!${colLetter(TRANSFER_JPY_COLS.extra)}${entryRow}`;
+	const targets: Array<{ label: string; term: string }> = [
+		{ label: NTD_SPENDING_LABEL, term: `+${extraRef}` },
+		{ label: NTD_CONSERVATIVE_END_LABEL, term: `-${ntdRef}` },
+		{ label: NTD_END_BALANCE_LABEL, term: `-${ntdRef}` },
+	];
+	const requests: object[] = [];
+	const sheetId = await client.getSheetId(monthTab);
+	for (const t of targets) {
+		const row = findRowByValue(values, MONTH_COLS.budgetLabel, t.label);
+		if (row === null) {
+			throw new Error(`No ${t.label} row in ${monthTab} (column ${colLetter(MONTH_COLS.budgetLabel)}).`);
+		}
+		const formula = String(values[row - 1]?.[MONTH_COLS.budgetValue] ?? "");
+		if (!formula.startsWith("=")) {
+			throw new Error(
+				`${monthTab}'s ${t.label} value cell is not a formula (${JSON.stringify(formula)}) — refusing to overwrite it.`,
+			);
+		}
+		requests.push({
+			updateCells: {
+				start: { sheetId, rowIndex: row - 1, columnIndex: MONTH_COLS.budgetValue },
+				rows: [{ values: [cellData(`${formula}${t.term}`)] }],
+				fields: "userEnteredValue",
+			},
+		});
+	}
+	await client.batchUpdate(requests);
 }
 
 export async function addTransfer(client: SheetsClient, p: AddTransferParams): Promise<AddTransferResult> {
@@ -1164,7 +1210,16 @@ export async function addTransfer(client: SheetsClient, p: AddTransferParams): P
 		extraCost: round2(spread + p.fee),
 	};
 	if (currency === "jpy") {
-		return { ...base, jpy: received, spotJpy: round2(p.ntd / rate) };
+		const monthNum = Number(serialToIso(dateSerialValue).slice(5, 7));
+		const monthTab = monthTabName(monthNum);
+		try {
+			await wireJpyTransferIntoMonth(client, monthTab, tab, r);
+		} catch (e) {
+			throw new Error(
+				`The transfer row ${tab}!${colLetter(cfg.cols.date)}${r} was already written, but wiring it into ${monthTab} failed: ${e instanceof Error ? e.message : String(e)} — fix the two bank formulas by hand (−新臺幣 into 本月底/保守預計, +當筆總額外花費 into 本月新臺幣支出) or delete the row and retry.`,
+			);
+		}
+		return { ...base, jpy: received, spotJpy: round2(p.ntd / rate), wiredMonthTab: monthTab };
 	}
 	return { ...base, usd: received, spotUsd: round2(p.ntd / rate) };
 }
