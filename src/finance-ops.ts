@@ -156,6 +156,41 @@ export function findExpenseWindow(values: unknown[][], tab: string): ExpenseWind
 	return { totalRow, start: Number(m[1]), end: Number(m[2]) };
 }
 
+const CARRY_ROW_LABELS: readonly string[] = [PREV_USD_OVERDRAFT_LABEL, PREV_NTD_OVERDRAFT_LABEL, OVERDRAFT_LABEL];
+
+/**
+ * The 1-indexed row an expense dated `serial` should OCCUPY to keep the
+ * window date-sorted: after the last row dated <= serial (a same-date tie
+ * appends after), with a dateless row (serial null) after every non-empty
+ * row — the order an ascending UI date sort produces. Never above a
+ * 上月…透支 carry row. Returns at most min(windowEnd, totalRow-1) + 1.
+ * `ignoreRow` masks the row being repositioned (set_expense_date).
+ */
+export function expensePositionFor(
+	values: unknown[][],
+	windowStart: number,
+	windowEnd: number,
+	totalRow: number,
+	serial: number | null,
+	ignoreRow?: number,
+): number {
+	const scanEnd = Math.min(windowEnd, totalRow - 1);
+	let last = windowStart - 1;
+	let carry = windowStart - 1;
+	for (let r = windowStart; r <= scanEnd; r++) {
+		if (r === ignoreRow) continue;
+		const row = values[r - 1] ?? [];
+		if (CARRY_ROW_LABELS.includes(String(row[MONTH_COLS.item] ?? "").trim())) carry = r;
+		if (serial === null) {
+			if (row.some((c) => c !== "" && c != null)) last = r;
+		} else {
+			const d = row[MONTH_COLS.date];
+			if (typeof d === "number" && d <= serial) last = r;
+		}
+	}
+	return Math.max(last, carry) + 1;
+}
+
 /** The 乾坤大挪移 section spans H–N, wider than GRID_READ — read the full width. */
 export const TRANSFER_GRID_READ = "A1:N60";
 

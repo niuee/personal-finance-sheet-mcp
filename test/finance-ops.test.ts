@@ -11,6 +11,7 @@ import {
 	colIndex,
 	colLetter,
 	expandAnchorRange,
+	expensePositionFor,
 	findCells,
 	FIND_CELLS_CAP,
 	findCreditSection,
@@ -237,6 +238,43 @@ describe("window helpers", () => {
 		const g = currentMonthGrid();
 		g[22] = ["", "本月美金收入", "", 600];
 		expect(() => findIncomeSumifWindow(g, "9 月")).toThrow("income window");
+	});
+});
+
+describe("expensePositionFor", () => {
+	/** Window rows 3-10, 花費總額 at 11; carries dated 100, then 101 / 103 / dateless Netflix, empties 8-10. */
+	function orderedGrid(): unknown[][] {
+		const g: unknown[][] = [];
+		g[2] = [100, "上月美金透支", "透支", 5, "", "USD"];
+		g[3] = [100, "上月新臺幣透支", "透支", "", 5, "TWD"];
+		g[4] = [101, "早餐", "吃喝", "", 80, "TWD"];
+		g[5] = [103, "晚餐", "吃喝", "", 250, "TWD"];
+		g[6] = ["", "Netflix", "訂閱", 26.99, "=D7*X", "USD"];
+		g[10] = ["", "", "", "花費總額", "=SUM(E3:E10)"];
+		return g;
+	}
+
+	it("places a dated row after the last not-later date, ties after", () => {
+		expect(expensePositionFor(orderedGrid(), 3, 10, 11, 102)).toBe(6); // between 早餐(101) and 晚餐(103)
+		expect(expensePositionFor(orderedGrid(), 3, 10, 11, 101)).toBe(6); // tie with 早餐 → after it
+		expect(expensePositionFor(orderedGrid(), 3, 10, 11, 104)).toBe(7); // after 晚餐, before dateless Netflix
+	});
+
+	it("places a dateless row after every non-empty row", () => {
+		expect(expensePositionFor(orderedGrid(), 3, 10, 11, null)).toBe(8);
+	});
+
+	it("clamps a backdated row below the carry rows", () => {
+		expect(expensePositionFor(orderedGrid(), 3, 10, 11, 99)).toBe(5);
+	});
+
+	it("masks ignoreRow when repositioning an existing row", () => {
+		// 晚餐 (row 6) redated between the carries and 早餐: without itself the last <= is 早餐 (row 5)
+		expect(expensePositionFor(orderedGrid(), 3, 10, 11, 101, 6)).toBe(6);
+	});
+
+	it("scans only to the row above 花費總額 when the window reaches past it", () => {
+		expect(expensePositionFor(orderedGrid(), 3, 15, 11, null)).toBe(8);
 	});
 });
 
