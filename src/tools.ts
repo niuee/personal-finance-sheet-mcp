@@ -270,7 +270,7 @@ export function registerTailoredTools(server: McpServer, client: SheetsClient): 
 
 	server.tool(
 		"add_trip_entry",
-		"Log a purchase into a trip tab (e.g. 2026/07/25 京都東京). Finds the category block anywhere in the tab's mosaic layout (模型, 書, 餐(當下吃的), 機票住宿, 雜支, 衣服/鞋子, 吃的伴手禮, 紀念品小物, 交通, 送禮, 入場券, 電子產品, ...), writes into the block's first empty row — inserting block-scoped cells if it is full — keeps the 分類總花費 totals covering the new entry, and stamps the row with the band's canonical formats (日期 as mm/dd hh:mm, ¥ / NTD currency signs, centered 品項). Provide EXACTLY ONE of jpy (¥-priced purchase) or twd (NTD-direct row, 機票住宿-style).",
+		"Log a purchase into a trip tab (e.g. 2026/07/25 京都東京). Finds the category block anywhere in the tab's mosaic layout (模型, 書, 餐(當下吃的), 機票住宿, 雜支, 衣服/鞋子, 吃的伴手禮, 紀念品小物, 交通, 送禮, 入場券, 電子產品, ...), writes into the block's first empty row — inserting block-scoped cells if it is full — keeps the 分類總花費 totals covering the new entry, and stamps the row with the band's canonical formats (日期 as mm/dd hh:mm, ¥ / NTD currency signs, centered 店鋪/品項). Provide EXACTLY ONE of jpy (¥-priced purchase) or twd (NTD-direct row, 機票住宿-style).",
 		{
 			tab: z.string().min(1).describe("Trip tab name, exactly as it appears"),
 			category: z.string().min(1).describe("Block title, e.g. 模型 or 電子產品"),

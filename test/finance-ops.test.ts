@@ -2260,14 +2260,14 @@ function tripFormats(row: number, startCol: number) {
 	});
 	return [
 		cell(startCol, { numberFormat: { type: "DATE_TIME", pattern: 'mm"/"dd" "hh":"mm' } }, "userEnteredFormat.numberFormat"),
-		cell(startCol + 2, { horizontalAlignment: "CENTER" }, "userEnteredFormat.horizontalAlignment"),
+		cell(startCol + 1, { horizontalAlignment: "CENTER" }, "userEnteredFormat.horizontalAlignment", 2),
 		cell(startCol + 4, { numberFormat: { type: "CURRENCY", pattern: "[$¥]#,##0" } }, "userEnteredFormat.numberFormat"),
 		cell(startCol + 5, { numberFormat: { type: "CURRENCY", pattern: "[$NTD ]#,##0.00" } }, "userEnteredFormat.numberFormat", 2),
 	];
 }
 
 describe("addTripEntry (mosaic)", () => {
-	it("stamps the canonical formats (datetime with HH:mm, centered 品項, ¥/NTD currency) onto the written row", async () => {
+	it("stamps the canonical formats (datetime with HH:mm, centered 店鋪/品項, ¥/NTD currency) onto the written row", async () => {
 		const client = tripClient(mosaicGrid());
 
 		await addTripEntry(client, {

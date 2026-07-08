@@ -1905,7 +1905,7 @@ export async function addTripEntry(client: SheetsClient, p: TripEntryParams) {
 	// write: the cells it lands in may carry no format at all (cells created by
 	// the insertRange above, or empty rows the sheet owner never pre-formatted),
 	// which renders the date without its HH:mm time, prices without their ¥/NTD
-	// sign, and the 品項 left-aligned instead of centered. USER_ENTERED values
+	// sign, and 店鋪/品項 left-aligned instead of centered. USER_ENTERED values
 	// keep an existing cell format, so formats applied here survive the write.
 	const formatCell = (col: number, format: object, fields: string, width = 1) => ({
 		repeatCell: {
@@ -1922,7 +1922,7 @@ export async function addTripEntry(client: SheetsClient, p: TripEntryParams) {
 	});
 	requests.push(
 		formatCell(startCol, { numberFormat: TRIP_DATE_FORMAT }, "userEnteredFormat.numberFormat"),
-		formatCell(startCol + 2, { horizontalAlignment: "CENTER" }, "userEnteredFormat.horizontalAlignment"),
+		formatCell(startCol + 1, { horizontalAlignment: "CENTER" }, "userEnteredFormat.horizontalAlignment", 2),
 		formatCell(startCol + 4, { numberFormat: TRIP_JPY_FORMAT }, "userEnteredFormat.numberFormat"),
 		formatCell(startCol + 5, { numberFormat: TRIP_TWD_FORMAT }, "userEnteredFormat.numberFormat", 2),
 	);
