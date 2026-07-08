@@ -27,7 +27,9 @@ by anchor, never by fixed row), columns **A–G**:
 - A{title}: `乾坤大挪移` title
 - Header row: A=日期, B=新臺幣, C=當下日幣, D=實際日幣, E=匯差,
   F=手續費, G=當筆總額外花費
-- Data rows below, kept date-sorted like the USD section
+- Data rows below, filled first-empty-row like the USD section (the
+  USD branch does not date-sort transfer rows; the JPY branch mirrors
+  that — transfers are rare and near-chronological)
 - 總和 row: label in A, `=SUM(B{first}:B{last})`-style totals in B–G,
   rewritten by the tool on every entry
 
@@ -101,8 +103,8 @@ The jpy branch of `addTransfer`:
 3. Target row = first fully-empty A–G row between header and 總和;
    when full, **insert cells scoped to A–G** above the 總和 row (never
    a whole sheet row — trip-tab rule).
-4. Write the entry date-sorted (same date-aware placement contract as
-   PR #22), pin the rate, stamp the section's canonical formats.
+4. Write the entry (first empty row, matching the USD branch), pin the
+   rate, stamp the section's canonical formats.
 5. Rewrite the 總和 sums in B–G to cover every data row.
 
 ## Month wiring (per entry)
