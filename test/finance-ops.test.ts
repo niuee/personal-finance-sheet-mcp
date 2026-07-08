@@ -949,11 +949,12 @@ describe("addExpense", () => {
 				fields: "userEnteredValue",
 			},
 		});
-		// pre-removal coordinates: one past the shifted old last row
+		// move the shifted old last row up over the new row — a destination
+		// past the range end would shrink the ranges
 		expect(requests.at(-1)).toEqual({
 			moveDimension: {
-				source: { sheetId: 111, dimension: "ROWS", startIndex: 9, endIndex: 10 },
-				destinationIndex: 11,
+				source: { sheetId: 111, dimension: "ROWS", startIndex: 10, endIndex: 11 },
+				destinationIndex: 9,
 			},
 		});
 		expect(result).toMatchObject({ row: 11, inserted: true });
@@ -991,8 +992,8 @@ describe("addExpense", () => {
 		expect(requests[0].insertDimension.range).toEqual({ sheetId: 111, dimension: "ROWS", startIndex: 9, endIndex: 10 });
 		expect(requests.at(-1)).toEqual({
 			moveDimension: {
-				source: { sheetId: 111, dimension: "ROWS", startIndex: 9, endIndex: 10 },
-				destinationIndex: 11,
+				source: { sheetId: 111, dimension: "ROWS", startIndex: 10, endIndex: 11 },
+				destinationIndex: 9,
 			},
 		});
 		expect(result).toMatchObject({ row: 11, inserted: true });
@@ -1128,8 +1129,8 @@ describe("addExpense", () => {
 		expect(requests[1].updateCells.start).toEqual({ sheetId: 111, rowIndex: 7, columnIndex: 1 });
 		expect(requests.at(-1)).toEqual({
 			moveDimension: {
-				source: { sheetId: 111, dimension: "ROWS", startIndex: 7, endIndex: 8 },
-				destinationIndex: 9,
+				source: { sheetId: 111, dimension: "ROWS", startIndex: 8, endIndex: 9 },
+				destinationIndex: 7,
 			},
 		});
 		expect(result).toMatchObject({ row: 9, inserted: true });
@@ -1625,6 +1626,27 @@ describe("setExpenseDate", () => {
 		const requests = (client.batchUpdate as any).mock.calls[0][0];
 		expect(requests.some((r: any) => r.moveDimension)).toBe(false);
 		expect(result.movedToRow).toBeNull();
+	});
+
+	it("moves the displaced block up when the dated row must become the last list row", async () => {
+		const g = dateGrid();
+		g[7] = [dateSerial(2026, 7, 2), "甲", "吃喝", "", 10, "TWD", ""]; // row 8
+		g[8] = [dateSerial(2026, 7, 3), "乙", "吃喝", "", 11, "TWD", ""]; // row 9
+		g[9] = [dateSerial(2026, 7, 4), "丙", "吃喝", "", 12, "TWD", ""]; // row 10 — window full
+		const client = fakeClient(g);
+
+		const result = await setExpenseDate(client, { item: "Netflix", date: "7/10", month: 9 });
+
+		const requests = (client.batchUpdate as any).mock.calls[0][0];
+		// target = 11 (past every dated row) > windowEnd 10 — a direct move
+		// there would shrink the window ranges, so rows 8-10 move up instead
+		expect(requests.at(-1)).toEqual({
+			moveDimension: {
+				source: { sheetId: 111, dimension: "ROWS", startIndex: 7, endIndex: 10 },
+				destinationIndex: 6,
+			},
+		});
+		expect(result).toMatchObject({ row: 7, movedToRow: 10 });
 	});
 });
 

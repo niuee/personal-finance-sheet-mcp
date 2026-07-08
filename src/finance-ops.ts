@@ -874,12 +874,14 @@ export async function addExpense(client: SheetsClient, p: AddExpenseParams) {
 	if (moveToRow !== null) {
 		requests.push({
 			moveDimension: {
-				source: { sheetId, dimension: "ROWS", startIndex: targetRow - 1, endIndex: targetRow },
-				// Pre-removal coordinates: the new row sits at 0-based
-				// windowEnd-1, the old last row at windowEnd, so "after the old
-				// last row" is 0-based windowEnd+1 == moveToRow. The row lands
-				// at 1-based moveToRow once its old slot closes.
-				destinationIndex: moveToRow,
+				// Never move a row past a range's end: Sheets executes a move
+				// as delete + reinsert, and a reinsert past the (shrunk) end
+				// falls OUTSIDE — the window ranges would shrink and orphan
+				// the row (verified live). To put the new row last, move the
+				// shifted old last row UP over it instead: both endpoints stay
+				// strictly inside, so the range adjustments cancel.
+				source: { sheetId, dimension: "ROWS", startIndex: targetRow, endIndex: targetRow + 1 },
+				destinationIndex: targetRow - 1,
 			},
 		});
 	}
@@ -1284,14 +1286,28 @@ export async function setExpenseDate(client: SheetsClient, p: SetExpenseDatePara
 	const target = expensePositionFor(values, windowStart, windowEnd, totalRow, serial, row);
 	let movedToRow: number | null = null;
 	if (target !== row && target !== row + 1) {
-		requests.push({
-			moveDimension: {
-				source: { sheetId, dimension: "ROWS", startIndex: row - 1, endIndex: row },
-				// Pre-removal coordinates; a down-move lands one row higher
-				// once the old slot closes.
-				destinationIndex: target - 1,
-			},
-		});
+		if (target > windowEnd) {
+			// The row must become the LAST list row. A move whose destination
+			// lies past a range's end shrinks the range (delete inside +
+			// reinsert outside — verified live), so move the displaced block
+			// [row+1 .. windowEnd] up over the row instead: both endpoints
+			// stay strictly inside and the range adjustments cancel.
+			requests.push({
+				moveDimension: {
+					source: { sheetId, dimension: "ROWS", startIndex: row, endIndex: windowEnd },
+					destinationIndex: row - 1,
+				},
+			});
+		} else {
+			requests.push({
+				moveDimension: {
+					source: { sheetId, dimension: "ROWS", startIndex: row - 1, endIndex: row },
+					// destinationIndex is in pre-removal coordinates; a down-move
+					// lands one row higher once the old slot closes.
+					destinationIndex: target - 1,
+				},
+			});
+		}
 		movedToRow = target > row ? target - 1 : target;
 	}
 

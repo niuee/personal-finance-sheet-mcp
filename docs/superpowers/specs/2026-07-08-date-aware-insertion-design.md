@@ -35,7 +35,13 @@ Replace the current "first fully-empty row, else insert at window end" with:
    change). Otherwise `insertDimension` at `targetRow` — strictly inside the
    SUM window, so the SUM, both 支出 SUMIFs, the 現金支出 SUMIFS, and the
    編列預算 INDEX/MATCH all auto-extend, exactly as the current window-end
-   insert does.
+   insert does. When `targetRow` is the window's last row, the new row must
+   become the LAST list row. Sheets executes `moveDimension` as delete +
+   reinsert, and a destination past a range's end shrinks the range instead
+   of re-extending it (verified live against a real sheet) — so a trailing
+   `moveDimension` moves the shifted old last row UP over the new row
+   instead of moving the new row down past it: both endpoints stay strictly
+   inside the window and the range adjustments cancel.
 4. Row write, 支付幣別/支付方式 validation, and the credit-bucket guard are
    unchanged — the guard keys on values, not positions.
 
@@ -58,8 +64,15 @@ add-backs follow their cells. Request order in the one `batchUpdate`: date
 write first, bucket-guard inserts second (they touch rows below the window
 only), `moveDimension` last, with source/destination computed from the
 original grid (the guard's bucket-area inserts cannot shift window rows).
-Mind the API semantics: `destinationIndex` is expressed in pre-move
-coordinates.
+
+Sheets executes `moveDimension` as delete + reinsert, and a destination past
+a range's end shrinks the range instead of re-extending it (verified live
+against a real sheet). A plain single-row move (`destinationIndex` in
+pre-move coordinates) is safe as long as the destination stays inside the
+window. When the row must become the LAST list row (its target lands past
+`windowEnd`), a direct move there is unsafe — instead move the displaced
+block `[row+1 .. windowEnd]` UP over the row: both endpoints stay strictly
+inside the window, so the range adjustments cancel.
 
 The relocation target uses the same rule as add_expense (after the last row
 dated `<=` the new date, ties-after, clamped below the carry rows), computed
