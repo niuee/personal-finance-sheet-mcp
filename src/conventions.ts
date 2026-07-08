@@ -219,6 +219,41 @@ export const TRANSFER_COLS = {
 } as const;
 
 /**
+ * 乾坤大挪移（日幣）— the NTD→JPY transfer log on TRIP tabs (from the
+ * 2026/07/25 京都東京 trip on), columns A–G below all trip content. Same
+ * anatomy as the USD section; the JPY received is trip cash and has no
+ * bank ledger — only the NTD side wires into the monthly 銀行餘額 block,
+ * per entry (see addTransfer).
+ */
+export const TRANSFER_JPY_COLS = {
+	/** A — 日期; also the column of the section title and the 總和 label. */
+	date: 0,
+	/** B — 新臺幣 debited from the bank. */
+	ntd: 1,
+	/** C — 當下日幣 = 新臺幣 / spot rate, pinned at entry time. */
+	spot: 2,
+	/** D — 實際日幣: the JPY that actually arrived. */
+	actual: 3,
+	/** E — 匯差 in NTD = (當下日幣 − 實際日幣) × the pinned rate. */
+	spread: 4,
+	/** F — 手續費 in NTD. */
+	fee: 5,
+	/** G — 當筆總額外花費 = 匯差 + 手續費. */
+	extra: 6,
+} as const;
+
+/** Header row of the JPY section, left to right from TRANSFER_JPY_COLS.date. */
+export const TRANSFER_JPY_HEADERS = [
+	"日期",
+	"新臺幣",
+	"當下日幣",
+	"實際日幣",
+	"匯差",
+	"手續費",
+	"當筆總額外花費",
+] as const;
+
+/**
  * 午餐預算 (originally titled 中餐預算) — the lunch-budget log (columns P–R), present on monthly tabs from
  * 7月 2026 (start_month copies it forward and clears its data rows). The
  * recurring 中餐 row in the expense list IS the month's lunch budget; actual

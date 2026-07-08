@@ -67,6 +67,8 @@ import {
 	todaySerial,
 	TOTAL_ROW_LABEL,
 	TRANSFER_COLS,
+	TRANSFER_JPY_COLS,
+	TRANSFER_JPY_HEADERS,
 	TRANSFER_SECTION_LABEL,
 	TRANSFER_TOTAL_LABEL,
 	TRIP_HEADER_DATE,
@@ -193,6 +195,41 @@ export function expensePositionFor(
 
 /** The 乾坤大挪移 section spans H–N, wider than GRID_READ — read the full width. */
 export const TRANSFER_GRID_READ = "A1:N60";
+/** The trip tab's JPY section lives in A–G below all trip content (~row 72 today) — generous headroom. */
+export const TRANSFER_JPY_GRID_READ = "A1:G200";
+
+/** Per-currency shape of a 乾坤大挪移 section: where it lives and how its rate is pinned. */
+export interface TransferSectionConfig {
+	cols: { date: number; ntd: number; spot: number; actual: number; spread: number; fee: number; extra: number };
+	gridRead: string;
+	/** GOOGLEFINANCE currency pair, e.g. "USDTWD". */
+	pair: "USDTWD" | "JPYTWD";
+	/** Appended to the missing-section error. */
+	missingHint: string;
+}
+
+export const TRANSFER_SECTIONS: { usd: TransferSectionConfig; jpy: TransferSectionConfig } = {
+	usd: {
+		cols: {
+			date: TRANSFER_COLS.date,
+			ntd: TRANSFER_COLS.ntd,
+			spot: TRANSFER_COLS.spotUsd,
+			actual: TRANSFER_COLS.actualUsd,
+			spread: TRANSFER_COLS.spread,
+			fee: TRANSFER_COLS.fee,
+			extra: TRANSFER_COLS.extra,
+		},
+		gridRead: TRANSFER_GRID_READ,
+		pair: "USDTWD",
+		missingHint: "the transfer log exists from 7月 2026 on.",
+	},
+	jpy: {
+		cols: TRANSFER_JPY_COLS,
+		gridRead: TRANSFER_JPY_GRID_READ,
+		pair: "JPYTWD",
+		missingHint: "the NTD→JPY log lives on the trip tab — create the section (title/header/總和, columns A–G, below all trip content) before logging.",
+	},
+};
 
 export interface TransferSection {
 	/** 1-indexed row of the 日期/新臺幣/… header. */
@@ -201,13 +238,17 @@ export interface TransferSection {
 	totalRow: number;
 }
 
-/** Locate the 乾坤大挪移 block (FORMULA-render grid of TRANSFER_GRID_READ). Throws when absent or malformed. */
-export function findTransferSection(values: unknown[][], tab: string): TransferSection {
-	const dateCol = TRANSFER_COLS.date;
+/** Locate a 乾坤大挪移 block (FORMULA-render grid of cfg.gridRead). Throws when absent or malformed. */
+export function findTransferSection(
+	values: unknown[][],
+	tab: string,
+	cfg: TransferSectionConfig = TRANSFER_SECTIONS.usd,
+): TransferSection {
+	const dateCol = cfg.cols.date;
 	const anchorRow = findRowByValue(values, dateCol, TRANSFER_SECTION_LABEL);
 	if (anchorRow === null) {
 		throw new Error(
-			`No ${TRANSFER_SECTION_LABEL} section in ${tab} (searched column ${colLetter(dateCol)} of ${TRANSFER_GRID_READ}) — the transfer log exists from 7月 2026 on.`,
+			`No ${TRANSFER_SECTION_LABEL} section in ${tab} (searched column ${colLetter(dateCol)} of ${cfg.gridRead}) — ${cfg.missingHint}`,
 		);
 	}
 	const headerRow = anchorRow + 1;

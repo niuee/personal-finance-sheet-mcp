@@ -30,6 +30,7 @@ import {
 	setExpenseDate,
 	setIncome,
 	startMonth,
+	TRANSFER_SECTIONS,
 } from "../src/finance-ops";
 import { currentMonthTab, dateSerial, MONTH_COLS, todaySerial } from "../src/conventions";
 import type { SheetsClient } from "../src/sheets-client";
@@ -307,6 +308,34 @@ describe("findTransferSection", () => {
 		const g = transferGrid();
 		g[35] = [];
 		expect(() => findTransferSection(g, "9 月")).toThrow("總和");
+	});
+});
+
+/** A trip-tab grid whose JPY transfer section sits at A69 (title), A70 (header), A71 (one empty data row), A72 (總和). */
+function jpyTransferGrid(): unknown[][] {
+	const g: unknown[][] = [];
+	for (let r = 0; r < 75; r++) g.push([]);
+	g[68] = ["乾坤大挪移"];
+	g[69] = ["日期", "新臺幣", "當下日幣", "實際日幣", "匯差", "手續費", "當筆總額外花費"];
+	g[71] = ["總和", "=sum(B71)", "=sum(C71)", "=sum(D71)", "=sum(E71)", "=sum(F71)", "=sum(G71)"];
+	return g;
+}
+
+describe("findTransferSection (jpy config)", () => {
+	it("finds the trip-tab section anchored in column A", () => {
+		const s = findTransferSection(jpyTransferGrid(), "2026/07/25 京都東京", TRANSFER_SECTIONS.jpy);
+		expect(s).toEqual({ headerRow: 70, totalRow: 72 });
+	});
+
+	it("throws the trip-tab hint when the section is missing", () => {
+		expect(() => findTransferSection([[]], "2026/07/25 京都東京", TRANSFER_SECTIONS.jpy)).toThrow(
+			/乾坤大挪移.*trip tab/,
+		);
+	});
+
+	it("still finds the month-tab USD section by default", () => {
+		const s = findTransferSection(transferGrid(), "9 月");
+		expect(s).toEqual({ headerRow: 34, totalRow: 36 });
 	});
 });
 
