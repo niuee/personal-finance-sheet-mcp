@@ -833,7 +833,7 @@ describe("addTransfer (jpy) month wiring", () => {
 			f: u.updateCells.rows[0].values[0].userEnteredValue.formulaValue,
 		}));
 		expect(formulas).toEqual([
-			{ row: 58, f: `=SUMIF(F3:F34,"TWD",E3:E34)+M42+'${TRIP}'!G71` },
+			{ row: 58, f: `=SUMIF(F3:F34,"TWD",E3:E34)+M42+'${TRIP}'!F71` },
 			{ row: 61, f: `=D60+D57-D58-I42+IF(R42>0, 0, R42)+E4-'${TRIP}'!B71` },
 			{ row: 62, f: `=D60+D57-D58-I42+D59+E4-'${TRIP}'!B71` },
 		]);

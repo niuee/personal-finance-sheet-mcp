@@ -990,8 +990,11 @@ export interface AddTransferResult {
 /**
  * Append one JPY transfer's NTD-side terms into the month tab the entry is
  * dated in: −新臺幣 into 本月底新臺幣餘額 AND 保守預計本月底新臺幣餘額 (both
- * subtract the USD section's principal on the live sheet), +當筆總額外花費
- * into 本月新臺幣支出. Append-only: the existing formula is kept verbatim.
+ * subtract the USD section's principal on the live sheet), +手續費 into
+ * 本月新臺幣支出 — the fee is charged externally, on top of the NTD sent;
+ * the 匯差 is already inside that principal, so counting it in 支出 would
+ * double it (per Vincent). Append-only: the existing formula is kept
+ * verbatim.
  */
 async function wireJpyTransferIntoMonth(
 	client: SheetsClient,
@@ -1002,9 +1005,9 @@ async function wireJpyTransferIntoMonth(
 	const { values, truncated } = await client.readRange(`${quoteTab(monthTab)}!${FULL_GRID_READ}`, "FORMULA");
 	assertNotTruncated(truncated, monthTab, FULL_GRID_READ);
 	const ntdRef = `${quoteTab(tripTab)}!${colLetter(TRANSFER_JPY_COLS.ntd)}${entryRow}`;
-	const extraRef = `${quoteTab(tripTab)}!${colLetter(TRANSFER_JPY_COLS.extra)}${entryRow}`;
+	const feeRef = `${quoteTab(tripTab)}!${colLetter(TRANSFER_JPY_COLS.fee)}${entryRow}`;
 	const targets: Array<{ label: string; term: string }> = [
-		{ label: NTD_SPENDING_LABEL, term: `+${extraRef}` },
+		{ label: NTD_SPENDING_LABEL, term: `+${feeRef}` },
 		{ label: NTD_CONSERVATIVE_END_LABEL, term: `-${ntdRef}` },
 		{ label: NTD_END_BALANCE_LABEL, term: `-${ntdRef}` },
 	];
@@ -1215,7 +1218,7 @@ export async function addTransfer(client: SheetsClient, p: AddTransferParams): P
 			await wireJpyTransferIntoMonth(client, monthTab, tab, r);
 		} catch (e) {
 			throw new Error(
-				`The transfer row ${tab}!${colLetter(cfg.cols.date)}${r} was already written, but wiring it into ${monthTab} failed: ${e instanceof Error ? e.message : String(e)} — fix the three bank formulas by hand (−新臺幣 into 本月底/保守預計, +當筆總額外花費 into 本月新臺幣支出) or delete the row and retry.`,
+				`The transfer row ${tab}!${colLetter(cfg.cols.date)}${r} was already written, but wiring it into ${monthTab} failed: ${e instanceof Error ? e.message : String(e)} — fix the three bank formulas by hand (−新臺幣 into 本月底/保守預計, +手續費 into 本月新臺幣支出) or delete the row and retry.`,
 			);
 		}
 		return { ...base, jpy: received, spotJpy: round2(p.ntd / rate), wiredMonthTab: monthTab };
