@@ -110,17 +110,24 @@ The jpy branch of `addTransfer`:
 ## Month wiring (per entry)
 
 After the row is written, resolve the month tab from the transfer date
-(e.g. `7 月`) and append two terms to its 銀行餘額 formulas:
+(e.g. `7 月`) and append terms to its 銀行餘額 formulas:
 
 - 本月底新臺幣餘額: `-'2026/07/25 京都東京'!B{row}`
-- 本月新臺幣支出: `+'2026/07/25 京都東京'!G{row}`
+- 保守預計本月底新臺幣餘額: `-'2026/07/25 京都東京'!B{row}`
+- 本月新臺幣支出: `+'2026/07/25 京都東京'!F{row}`
 
-The exact target set must **mirror whatever NTD-side formulas the USD
-總和 feeds on the live sheet** — verified during implementation by
-reading which cells reference the USD section (including whether
-保守預計本月底新臺幣餘額 carries a term). Cross-sheet references
-auto-adjust when rows shift on the trip tab, so per-entry refs stay
-pinned.
+**Correction (2026-07-09, per Vincent):** 本月新臺幣支出 gets the
+手續費 (F) only, NOT 當筆總額外花費 (G) as originally drafted — the
+匯差 is already inside the NTD principal that leaves via the −B terms,
+so counting it in 支出 would double it; only the externally charged fee
+is a separate outflow. This mirrors the live USD wiring (+M總和,
+手續費), which was intentional, not the drift the draft assumed. G
+(當筆總額外花費) remains on the sheet as an informational column.
+
+The exact target set mirrors the NTD-side formulas the USD 總和 feeds
+on the live sheet (保守預計本月底新臺幣餘額 does carry a −principal
+term — live-verified). Cross-sheet references auto-adjust when rows
+shift on the trip tab, so per-entry refs stay pinned.
 
 Safety: the tool locates each formula row by its label anchor, verifies
 the cell already contains a formula, and appends the term — it never
