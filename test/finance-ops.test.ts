@@ -2479,6 +2479,17 @@ function payValidationCopy(srcRow: number, destRow: number, payCol: number) {
 	};
 }
 
+/** The repeatCell that resets an inserted row's inherited cell fill back to default. */
+function tripClearFill(row: number, startCol: number) {
+	return {
+		repeatCell: {
+			range: { sheetId: 111, startRowIndex: row - 1, endRowIndex: row, startColumnIndex: startCol, endColumnIndex: startCol + 7 },
+			cell: {},
+			fields: "userEnteredFormat.backgroundColor,userEnteredFormat.backgroundColorStyle",
+		},
+	};
+}
+
 /** The repeatCell requests that stamp the band's canonical formats onto the written row. */
 function tripFormats(row: number, startCol: number) {
 	const cell = (col: number, format: object, fields: string, width = 1) => ({
@@ -2654,6 +2665,7 @@ describe("addTripEntry (mosaic)", () => {
 			},
 			payValidationCopy(10, 11, 11),
 			...tripFormats(11, 8),
+			tripClearFill(11, 8),
 		]);
 		expect((client.updateRange as any).mock.calls[0]).toEqual([
 			"'京都'!I11:O11",
@@ -2758,6 +2770,7 @@ describe("addTripEntry (mosaic)", () => {
 			},
 			payValidationCopy(3, 5, 3),
 			...tripFormats(5, 0),
+			tripClearFill(5, 0),
 		]);
 		expect((client.updateRange as any).mock.calls[0]).toEqual([
 			"'京都'!A5:G5",

@@ -2104,6 +2104,27 @@ export async function addTripEntry(client: SheetsClient, p: TripEntryParams) {
 		formatCell(startCol + 4, { numberFormat: TRIP_JPY_FORMAT }, "userEnteredFormat.numberFormat"),
 		formatCell(startCol + 5, { numberFormat: TRIP_TWD_FORMAT }, "userEnteredFormat.numberFormat", 2),
 	);
+	// A band-scoped insertRange copies the neighbouring row's userEnteredFormat —
+	// including its cell fill — onto the fresh cells, so a full block's new entry
+	// would inherit an unwanted background (empty-row writes touch no format and
+	// need no reset). Clear the whole band's fill back to default: an empty cell
+	// with a backgroundColor field mask deletes the property rather than guessing
+	// a colour. Runs after the numberFormat/alignment stamps (disjoint fields).
+	if (insertNeeded) {
+		requests.push({
+			repeatCell: {
+				range: {
+					sheetId,
+					startRowIndex: row - 1,
+					endRowIndex: row,
+					startColumnIndex: startCol,
+					endColumnIndex: startCol + BAND_COLS,
+				},
+				cell: {},
+				fields: "userEnteredFormat.backgroundColor,userEnteredFormat.backgroundColorStyle",
+			},
+		});
+	}
 	await client.batchUpdate(requests);
 
 	// Conversion columns: adapt the row above's formulas for JPY entries; TWD entries are direct.
