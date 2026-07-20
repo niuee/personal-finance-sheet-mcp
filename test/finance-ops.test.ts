@@ -434,6 +434,27 @@ function creditGrid(): unknown[][] {
 	return g;
 }
 
+/** The repeatCells the bucket guard emits to stamp a spill area's 日期/金額 formats (0-indexed rows, end exclusive). */
+function bucketFormatStamps(startRow0: number, endRow0: number, startCol: number, amountPattern: string) {
+	const stamp = (col: number, numberFormat: object) => ({
+		repeatCell: {
+			range: {
+				sheetId: 111,
+				startRowIndex: startRow0,
+				endRowIndex: endRow0,
+				startColumnIndex: col,
+				endColumnIndex: col + 1,
+			},
+			cell: { userEnteredFormat: { numberFormat } },
+			fields: "userEnteredFormat.numberFormat",
+		},
+	});
+	return [
+		stamp(startCol, { type: "DATE", pattern: "mm/dd" }),
+		stamp(startCol + 2, { type: "CURRENCY", pattern: amountPattern }),
+	];
+}
+
 /** creditGrid + the 帳戶實際數字對應 block in B/D rows 34-43, below the 銀行餘額 block. */
 function realBalanceGrid(): unknown[][] {
 	const g = creditGrid();
@@ -1452,6 +1473,8 @@ describe("addExpense", () => {
 			});
 			const requests = (client.batchUpdate as any).mock.calls[0][0];
 			expect(requests.some((r: any) => r.insertDimension)).toBe(false);
+			// even a no-growth write stamps the spill area's formats (rows 47-48)
+			expect(requests).toEqual(expect.arrayContaining(bucketFormatStamps(46, 48, 7, "[$NTD ]#,##0.00")));
 			expect(result).toMatchObject({ bucket: "結帳日前", bucketRowsAdded: 0 });
 			expect(result.bucketWarning).toBeUndefined();
 		});
@@ -1475,6 +1498,9 @@ describe("addExpense", () => {
 				range: { sheetId: 111, dimension: "ROWS", startIndex: 48, endIndex: 49 },
 				inheritFromBefore: true,
 			});
+			// the stamps cover the grown spill area (rows 47-49) — the inserted
+			// row inherits from the blank cushion row and would render raw
+			expect(requests).toEqual(expect.arrayContaining(bucketFormatStamps(46, 49, 7, "[$NTD ]#,##0.00")));
 			expect(result).toMatchObject({ bucket: "結帳日前", bucketRowsAdded: 1 });
 		});
 
@@ -1502,6 +1528,8 @@ describe("addExpense", () => {
 				range: { sheetId: 111, dimension: "ROWS", startIndex: 49, endIndex: 50 },
 				inheritFromBefore: true,
 			});
+			// format stamps shift with the section, same as the insert
+			expect(requests).toEqual(expect.arrayContaining(bucketFormatStamps(47, 50, 7, "[$NTD ]#,##0.00")));
 			expect(result).toMatchObject({ bucketRowsAdded: 1 });
 		});
 
@@ -1545,6 +1573,8 @@ describe("addExpense", () => {
 				range: { sheetId: 111, dimension: "ROWS", startIndex: 54, endIndex: 55 },
 				inheritFromBefore: true,
 			});
+			// the stamps target the 結帳日後 bucket's own spill area
+			expect(requests).toEqual(expect.arrayContaining(bucketFormatStamps(52, 55, 7, "[$NTD ]#,##0.00")));
 			expect(result).toMatchObject({ bucket: "結帳日後", bucketRowsAdded: 1 });
 		});
 
@@ -1579,6 +1609,8 @@ describe("addExpense", () => {
 			});
 			const requests = (client.batchUpdate as any).mock.calls[0][0];
 			expect(requests.some((r: any) => r.insertDimension)).toBe(false);
+			// USD-billed card → the 金額 column stamps the $ pattern, in the L-N block
+			expect(requests).toEqual(expect.arrayContaining(bucketFormatStamps(46, 48, 11, '"$"#,##0.00')));
 			expect(result).toMatchObject({ bucket: "結帳日前", bucketRowsAdded: 0 });
 		});
 
@@ -1593,6 +1625,7 @@ describe("addExpense", () => {
 			});
 			const requests = (client.batchUpdate as any).mock.calls[0][0];
 			expect(requests.some((r: any) => r.insertDimension)).toBe(false);
+			expect(requests.some((r: any) => r.repeatCell)).toBe(false);
 			expect(result.bucket).toBeNull();
 			expect(result.bucketRowsAdded).toBe(0);
 			expect(result.bucketWarning).toBeUndefined();
