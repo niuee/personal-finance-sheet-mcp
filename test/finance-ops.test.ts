@@ -656,12 +656,13 @@ describe("addTransfer", () => {
 		const result = await addTransfer(client, { ntd: 15000, usd: 500, fee: 15, month: 9, date: "9/9" });
 
 		const batch1 = (client.batchUpdate as any).mock.calls[0][0];
-		expect(batch1[0].insertDimension.range).toEqual({
-			sheetId: 111,
-			dimension: "ROWS",
-			startIndex: 35,
-			endIndex: 36,
+		// H–N only — a whole-row insert would tear the 銀行餘額 stack (B–D)
+		// and lunch log (P–S) beside the section
+		expect(batch1[0].insertRange).toEqual({
+			range: { sheetId: 111, startRowIndex: 35, endRowIndex: 36, startColumnIndex: 7, endColumnIndex: 14 },
+			shiftDimension: "ROWS",
 		});
+		expect(batch1.some((r: any) => r.insertDimension)).toBe(false);
 		expect(batch1[1].updateCells.start).toEqual({ sheetId: 111, rowIndex: 35, columnIndex: 9 });
 		expect((client.readRange as any).mock.calls[1]).toEqual(["'9 月'!J36", "UNFORMATTED_VALUE"]);
 
@@ -953,9 +954,11 @@ describe("addLunch", () => {
 
 		const requests = (client.batchUpdate as any).mock.calls[0][0];
 		expect(requests).toHaveLength(4);
-		expect(requests[0].insertDimension).toEqual({
-			range: { sheetId: 111, dimension: "ROWS", startIndex: 37, endIndex: 38 },
-			inheritFromBefore: true,
+		// P–S only — a whole-row insert would tear the 對帳區 (H–N) and the
+		// 銀行餘額 stack (B–D) beside the log
+		expect(requests[0].insertRange).toEqual({
+			range: { sheetId: 111, startRowIndex: 37, endRowIndex: 38, startColumnIndex: 15, endColumnIndex: 19 },
+			shiftDimension: "ROWS",
 		});
 		expect(requests[1].updateCells.start).toEqual({ sheetId: 111, rowIndex: 37, columnIndex: 15 });
 		expect(requests[3].updateCells.start).toEqual({ sheetId: 111, rowIndex: 38, columnIndex: 17 });
@@ -1058,15 +1061,15 @@ describe("addLunch", () => {
 			const result = await addLunch(client, { amount: 120, month: 9, date: "7/10", card: "國泰 CUBE" });
 			expect(result.inserted).toBe(false);
 			const requests = (client.batchUpdate as any).mock.calls[0][0];
-			const insert = requests.find((r: any) => r.insertDimension);
-			expect(insert.insertDimension).toEqual({
-				range: { sheetId: 111, dimension: "ROWS", startIndex: 48, endIndex: 49 },
-				inheritFromBefore: true,
+			const insert = requests.find((r: any) => r.insertRange);
+			expect(insert.insertRange).toEqual({
+				range: { sheetId: 111, startRowIndex: 48, endRowIndex: 49, startColumnIndex: 7, endColumnIndex: 14 },
+				shiftDimension: "ROWS",
 			});
 			expect(result).toMatchObject({ bucket: "結帳日前", bucketRowsAdded: 1 });
 		});
 
-		it("shifts the card bucket insert by the lunch section's own row insert", async () => {
+		it("does NOT shift the card bucket insert for the lunch section's own insert — it is band-scoped to P–S", async () => {
 			const g = creditGrid();
 			g[4] = [dateSerial(2026, 7, 10), "既有1", "訂閱", "", 100, "TWD", "國泰 Cube"];
 			g[5] = [dateSerial(2026, 7, 10), "既有2", "訂閱", "", 100, "TWD", "國泰 Cube"];
@@ -1077,11 +1080,16 @@ describe("addLunch", () => {
 			const result = await addLunch(client, { amount: 120, month: 9, date: "7/10", card: "國泰 CUBE" });
 			expect(result.inserted).toBe(true);
 			const requests = (client.batchUpdate as any).mock.calls[0][0];
-			const bucketInsert = requests.find((r: any) => r.insertDimension && r.insertDimension.range.startIndex === 49);
-			expect(bucketInsert.insertDimension).toEqual({
-				range: { sheetId: 111, dimension: "ROWS", startIndex: 49, endIndex: 50 },
-				inheritFromBefore: true,
+			const lunchInsert = requests.find((r: any) => r.insertRange && r.insertRange.range.startColumnIndex === 15);
+			expect(lunchInsert).toBeDefined();
+			// the P–S lunch insert leaves H–N untouched, so the bucket insert
+			// lands at the same row as it would with a free lunch slot
+			const bucketInsert = requests.find((r: any) => r.insertRange && r.insertRange.range.startColumnIndex === 7);
+			expect(bucketInsert.insertRange).toEqual({
+				range: { sheetId: 111, startRowIndex: 48, endRowIndex: 49, startColumnIndex: 7, endColumnIndex: 14 },
+				shiftDimension: "ROWS",
 			});
+			expect(requests.some((r: any) => r.insertDimension)).toBe(false);
 			expect(result).toMatchObject({ bucketRowsAdded: 1 });
 		});
 
@@ -1446,7 +1454,7 @@ describe("addExpense", () => {
 		expect(write.updateCells.rows[0].values[4]).toEqual({ userEnteredValue: { stringValue: "TWD" } });
 		expect(write.updateCells.rows[0].values[5]).toEqual({ userEnteredValue: { stringValue: "現金" } });
 		// dated 現金 rows have no 對帳區 bucket — no guard, no warning
-		expect(requests.some((r: any) => r.insertDimension)).toBe(false);
+		expect(requests.some((r: any) => r.insertDimension || r.insertRange)).toBe(false);
 		expect(result.bucket).toBeNull();
 		expect(result.bucketWarning).toBeUndefined();
 	});
@@ -1472,7 +1480,7 @@ describe("addExpense", () => {
 				card: "國泰 CUBE",
 			});
 			const requests = (client.batchUpdate as any).mock.calls[0][0];
-			expect(requests.some((r: any) => r.insertDimension)).toBe(false);
+			expect(requests.some((r: any) => r.insertDimension || r.insertRange)).toBe(false);
 			// even a no-growth write stamps the spill area's formats (rows 47-48)
 			expect(requests).toEqual(expect.arrayContaining(bucketFormatStamps(46, 48, 7, "[$NTD ]#,##0.00")));
 			expect(result).toMatchObject({ bucket: "結帳日前", bucketRowsAdded: 0 });
@@ -1493,10 +1501,12 @@ describe("addExpense", () => {
 				card: "國泰 CUBE",
 			});
 			const requests = (client.batchUpdate as any).mock.calls[0][0];
-			const insert = requests.find((r: any) => r.insertDimension);
-			expect(insert.insertDimension).toEqual({
-				range: { sheetId: 111, dimension: "ROWS", startIndex: 48, endIndex: 49 },
-				inheritFromBefore: true,
+			const insert = requests.find((r: any) => r.insertRange);
+			// H–N only — the 銀行餘額 stack (B–D) and lunch log (P–S) beside
+			// the grid must not move
+			expect(insert.insertRange).toEqual({
+				range: { sheetId: 111, startRowIndex: 48, endRowIndex: 49, startColumnIndex: 7, endColumnIndex: 14 },
+				shiftDimension: "ROWS",
 			});
 			// the stamps cover the grown spill area (rows 47-49) — the inserted
 			// row inherits from the blank cushion row and would render raw
@@ -1523,10 +1533,12 @@ describe("addExpense", () => {
 			});
 			expect(result.inserted).toBe(true);
 			const requests = (client.batchUpdate as any).mock.calls[0][0];
-			const bucketInsert = requests.find((r: any) => r.insertDimension && r.insertDimension.range.startIndex === 49);
-			expect(bucketInsert.insertDimension).toEqual({
-				range: { sheetId: 111, dimension: "ROWS", startIndex: 49, endIndex: 50 },
-				inheritFromBefore: true,
+			// the expense window's own insert IS a whole-row insert and shifts
+			// the credit section down one — the bucket insert follows it
+			const bucketInsert = requests.find((r: any) => r.insertRange);
+			expect(bucketInsert.insertRange).toEqual({
+				range: { sheetId: 111, startRowIndex: 49, endRowIndex: 50, startColumnIndex: 7, endColumnIndex: 14 },
+				shiftDimension: "ROWS",
 			});
 			// format stamps shift with the section, same as the insert
 			expect(requests).toEqual(expect.arrayContaining(bucketFormatStamps(47, 50, 7, "[$NTD ]#,##0.00")));
@@ -1550,7 +1562,7 @@ describe("addExpense", () => {
 				card: "國泰 CUBE",
 			});
 			const requests = (client.batchUpdate as any).mock.calls[0][0];
-			expect(requests.some((r: any) => r.insertDimension)).toBe(true);
+			expect(requests.some((r: any) => r.insertRange)).toBe(true);
 			expect(result).toMatchObject({ bucketRowsAdded: 1 });
 		});
 
@@ -1568,10 +1580,10 @@ describe("addExpense", () => {
 				card: "國泰 CUBE",
 			});
 			const requests = (client.batchUpdate as any).mock.calls[0][0];
-			const insert = requests.find((r: any) => r.insertDimension);
-			expect(insert.insertDimension).toEqual({
-				range: { sheetId: 111, dimension: "ROWS", startIndex: 54, endIndex: 55 },
-				inheritFromBefore: true,
+			const insert = requests.find((r: any) => r.insertRange);
+			expect(insert.insertRange).toEqual({
+				range: { sheetId: 111, startRowIndex: 54, endRowIndex: 55, startColumnIndex: 7, endColumnIndex: 14 },
+				shiftDimension: "ROWS",
 			});
 			// the stamps target the 結帳日後 bucket's own spill area
 			expect(requests).toEqual(expect.arrayContaining(bucketFormatStamps(52, 55, 7, "[$NTD ]#,##0.00")));
@@ -1608,7 +1620,7 @@ describe("addExpense", () => {
 				card: "CHASE Amazon",
 			});
 			const requests = (client.batchUpdate as any).mock.calls[0][0];
-			expect(requests.some((r: any) => r.insertDimension)).toBe(false);
+			expect(requests.some((r: any) => r.insertDimension || r.insertRange)).toBe(false);
 			// USD-billed card → the 金額 column stamps the $ pattern, in the L-N block
 			expect(requests).toEqual(expect.arrayContaining(bucketFormatStamps(46, 48, 11, '"$"#,##0.00')));
 			expect(result).toMatchObject({ bucket: "結帳日前", bucketRowsAdded: 0 });
@@ -1624,7 +1636,7 @@ describe("addExpense", () => {
 				card: "國泰 CUBE",
 			});
 			const requests = (client.batchUpdate as any).mock.calls[0][0];
-			expect(requests.some((r: any) => r.insertDimension)).toBe(false);
+			expect(requests.some((r: any) => r.insertDimension || r.insertRange)).toBe(false);
 			expect(requests.some((r: any) => r.repeatCell)).toBe(false);
 			expect(result.bucket).toBeNull();
 			expect(result.bucketRowsAdded).toBe(0);
@@ -1777,7 +1789,7 @@ describe("setExpenseDate", () => {
 		const result = await setExpenseDate(client, { item: "Netflix", date: "7/10", month: 9 });
 
 		const requests = (client.batchUpdate as any).mock.calls[0][0];
-		const insert = requests.find((r: any) => r.insertDimension);
+		const insert = requests.find((r: any) => r.insertRange);
 		expect(insert).toBeDefined();
 		// Composed in one batch: the bucket-guard insert lands before the
 		// trailing moveDimension that relocates the now-dated row — both
@@ -1802,7 +1814,7 @@ describe("setExpenseDate", () => {
 		const result = await setExpenseDate(client, { item: "Netflix", date: "7/15", month: 9 });
 
 		const requests = (client.batchUpdate as any).mock.calls[0][0];
-		expect(requests.some((r: any) => r.insertDimension)).toBe(false);
+		expect(requests.some((r: any) => r.insertDimension || r.insertRange)).toBe(false);
 		expect(result).toMatchObject({ bucket: "結帳日前", bucketRowsAdded: 0 });
 	});
 
@@ -1814,7 +1826,7 @@ describe("setExpenseDate", () => {
 		const result = await setExpenseDate(client, { item: "Netflix", date: "7/10", month: 9 });
 
 		const requests = (client.batchUpdate as any).mock.calls[0][0];
-		expect(requests.some((r: any) => r.insertDimension)).toBe(false);
+		expect(requests.some((r: any) => r.insertDimension || r.insertRange)).toBe(false);
 		expect(result.bucketWarning).toMatch(/玉山 Ubear/);
 		expect(result.bucket).toBeNull();
 	});
@@ -3182,9 +3194,11 @@ describe("setIncome", () => {
 		// used — a row there would silently not count as income.
 		expect(requests).toEqual([
 			{
-				insertDimension: {
-					range: { sheetId: 111, dimension: "ROWS", startIndex: 16, endIndex: 17 },
-					inheritFromBefore: true,
+				// B–D only — a whole-row insert would tear the 乾坤大挪移/對帳區
+				// grids (H–N) and lunch log (P–S) beside the income list
+				insertRange: {
+					range: { sheetId: 111, startRowIndex: 16, endRowIndex: 17, startColumnIndex: 1, endColumnIndex: 4 },
+					shiftDimension: "ROWS",
 				},
 			},
 			{

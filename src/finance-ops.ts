@@ -264,8 +264,8 @@ export function findTransferSection(
 	throw new Error(`No ${TRANSFER_TOTAL_LABEL} row under the ${TRANSFER_SECTION_LABEL} header in ${tab}.`);
 }
 
-// The deep month grid: the lunch section (P–S) grows one row per entry and
-// pushes the 銀行餘額 block down, and the 信用卡帳單對帳區 (H–N) runs from
+// The deep month grid: the lunch section (P–S) grows one row per entry
+// (band-scoped, its own columns only), and the 信用卡帳單對帳區 (H–N) runs from
 // row 50 to ~117 — a too-shallow read makes startMonth's rewires silently skip.
 // The width must reach column S (支付方式) or the lunch empty-slot scan and
 // card mirroring would never see it.
@@ -419,13 +419,43 @@ function norm(v: unknown): string {
 		.toLowerCase();
 }
 
+/**
+ * A band-scoped "insert cells, shift down" over the 0-indexed column span
+ * [startCol, endCol), starting at 1-indexed `row`. Monthly tabs are a mosaic
+ * of side-by-side blocks (銀行餘額 stack in B–D, 乾坤大挪移 + 對帳區 in H–N,
+ * lunch log in P–S) — a whole-row insertDimension inside one section tears
+ * whatever block straddles the insert row in the OTHER columns: its title
+ * stays put while its body shifts down. Shifting only the section's own
+ * columns leaves the neighbours alone; references into the shifted cells
+ * (same-tab and cross-tab) adjust exactly as they would for a row insert,
+ * and the fresh cells copy the neighbouring row's format like
+ * inheritFromBefore did.
+ */
+function bandInsert(sheetId: number, row: number, count: number, startCol: number, endCol: number): object {
+	return {
+		insertRange: {
+			range: {
+				sheetId,
+				startRowIndex: row - 1,
+				endRowIndex: row - 1 + count,
+				startColumnIndex: startCol,
+				endColumnIndex: endCol,
+			},
+			shiftDimension: "ROWS",
+		},
+	};
+}
+
+/** One past the 對帳區's last column (N): the section's growth inserts span [CREDIT_BLOCK_COLS[0], this). */
+const CREDIT_BAND_END = CREDIT_BLOCK_COLS[CREDIT_BLOCK_COLS.length - 1]! + CREDIT_BLOCK_WIDTH;
+
 /** Canonical bucket spill formats: 日期 as mm/dd, 金額 in the card's billing currency. */
 const BUCKET_DATE_FORMAT = { type: "DATE", pattern: "mm/dd" };
 const BUCKET_TWD_FORMAT = { type: "CURRENCY", pattern: "[$NTD ]#,##0.00" };
 const BUCKET_USD_FORMAT = { type: "CURRENCY", pattern: '"$"#,##0.00' };
 
 export interface BucketGuardResult {
-	/** Requests to append to the caller's batch: an insertDimension when the bucket must grow, plus the repeatCells that stamp the spill area's number formats (empty when the guard was skipped). */
+	/** Requests to append to the caller's batch: a band-scoped insertRange (the section's own columns only) when the bucket must grow, plus the repeatCells that stamp the spill area's number formats (empty when the guard was skipped). */
 	requests: object[];
 	/** Which bucket the entry lands in; null when the guard was skipped. */
 	bucket: "結帳日前" | "結帳日後" | null;
@@ -442,9 +472,11 @@ export interface BucketGuardResult {
  * canonically even on cells that never carried a format. Fail-soft — NEVER
  * throws: any anomaly (missing
  * or torn section, unknown card, non-numeric 結帳日) degrades to a no-op
- * result with `warning`, and the caller's write proceeds regardless. Whole-row
- * inserts also widen the horizontally adjacent card's same bucket — harmless;
- * references adjust.
+ * result with `warning`, and the caller's write proceeds regardless. The
+ * growth insert is band-scoped to the section's own columns (H–N), so the
+ * blocks beside the grid (銀行餘額 stack in B–D, lunch log in P–S) never
+ * move; it still widens the horizontally adjacent card's same bucket —
+ * harmless; references adjust.
  *
  * `excludeRow` (1-indexed) skips a row in the expense-row counting loop —
  * pass the row being re-dated so its stale (pre-update) date isn't counted
@@ -520,17 +552,7 @@ export function creditBucketGuard(
 	const rowsAdded = Math.max(deficit, 0);
 	const requests: object[] = [];
 	if (rowsAdded > 0) {
-		requests.push({
-			insertDimension: {
-				range: {
-					sheetId,
-					dimension: "ROWS",
-					startIndex: subtotalRow + rowOffset - 1,
-					endIndex: subtotalRow + rowOffset - 1 + rowsAdded,
-				},
-				inheritFromBefore: true,
-			},
-		});
+		requests.push(bandInsert(sheetId, subtotalRow + rowOffset, rowsAdded, CREDIT_BLOCK_COLS[0], CREDIT_BAND_END));
 	}
 	// The mirror renders raw serials/numbers wherever it spills onto a
 	// never-formatted cell: the growth insert above 小計 inherits from the
@@ -731,12 +753,10 @@ export async function setIncome(client: SheetsClient, p: SetIncomeParams) {
 				);
 			}
 			targetRow = sumifWin.end;
-			requests.push({
-				insertDimension: {
-					range: { sheetId, dimension: "ROWS", startIndex: targetRow - 1, endIndex: targetRow },
-					inheritFromBefore: true,
-				},
-			});
+			// Band-scoped to the list's own columns (B–D): a whole-row insert
+			// would tear the 乾坤大挪移/對帳區 grids (H–N) and the lunch log
+			// (P–S) sitting beside the income list at these rows.
+			requests.push(bandInsert(sheetId, targetRow, 1, MONTH_COLS.item, MONTH_COLS.budgetValue + 1));
 		}
 		requests.push({
 			updateCells: {
@@ -1103,31 +1123,13 @@ export async function addTransfer(client: SheetsClient, p: AddTransferParams): P
 	const scratchRequests: object[] = [];
 	if (targetRow === null) {
 		// Insert directly above 總和; the ledger's +K/−I/+N references shift with it.
+		// Band-scoped for both hosts: trip tabs are a mosaic of column bands, and
+		// on a monthly tab a whole-row insert would tear the 銀行餘額 stack (B–D)
+		// and lunch log (P–S) that sit beside the H–N section (the 對帳區 below
+		// it shares the band and shifts along, references adjusting).
 		targetRow = totalRow;
 		finalTotalRow = totalRow + 1;
-		scratchRequests.push(
-			currency === "jpy"
-				? {
-						// Trip tabs are a mosaic of column bands — never insert whole rows
-						// (conventions.ts); shift only this section's own columns.
-						insertRange: {
-							range: {
-								sheetId,
-								startRowIndex: targetRow - 1,
-								endRowIndex: targetRow,
-								startColumnIndex: cfg.cols.date,
-								endColumnIndex: cfg.cols.extra + 1,
-							},
-							shiftDimension: "ROWS",
-						},
-					}
-				: {
-						insertDimension: {
-							range: { sheetId, dimension: "ROWS", startIndex: targetRow - 1, endIndex: targetRow },
-							inheritFromBefore: true,
-						},
-					},
-		);
+		scratchRequests.push(bandInsert(sheetId, targetRow, 1, cfg.cols.date, cfg.cols.extra + 1));
 	}
 	// The entry's own 當下美金/當下日幣 cell doubles as the rate scratch: live GOOGLEFINANCE,
 	// read once, then overwritten with the pinned formula.
@@ -1306,14 +1308,11 @@ export async function addLunch(client: SheetsClient, p: AddLunchParams) {
 	if (targetRow === null) {
 		// Insert directly above 總和; the ledger's 午餐超支或回補 =R reference
 		// tracks the 剩餘 cell (above the insert) and needs no rewiring.
+		// Band-scoped to P–S: a whole-row insert would tear the 對帳區 (H–N)
+		// and the 銀行餘額 stack (B–D) sitting beside the log.
 		targetRow = totalRow;
 		finalTotalRow = totalRow + 1;
-		requests.push({
-			insertDimension: {
-				range: { sheetId, dimension: "ROWS", startIndex: targetRow - 1, endIndex: targetRow },
-				inheritFromBefore: true,
-			},
-		});
+		requests.push(bandInsert(sheetId, targetRow, 1, LUNCH_COLS.date, LUNCH_COLS.paidMethod + 1));
 	}
 	const R = colLetter(LUNCH_COLS.amount);
 	requests.push(
@@ -1353,11 +1352,11 @@ export async function addLunch(client: SheetsClient, p: AddLunchParams) {
 
 	// Lunches always carry a date, so the guard runs whenever a REAL card is
 	// given (現金 lunches have no bucket); its insert (below the lunch section)
-	// is appended last, after the writes above — the lunch insert (if any)
-	// shifts the credit section down, hence the offset.
+	// is appended last, after the writes above. The lunch insert (if any) is
+	// band-scoped to P–S and never moves the credit section — no offset.
 	let guard: BucketGuardResult | undefined;
 	if (card !== undefined) {
-		guard = creditBucketGuard(values, tab, sheetId, card.name, dateSerialValue, inserted ? 1 : 0);
+		guard = creditBucketGuard(values, tab, sheetId, card.name, dateSerialValue, 0);
 		requests.push(...guard.requests);
 	}
 
