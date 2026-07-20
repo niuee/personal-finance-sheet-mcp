@@ -419,8 +419,13 @@ function norm(v: unknown): string {
 		.toLowerCase();
 }
 
+/** Canonical bucket spill formats: 日期 as mm/dd, 金額 in the card's billing currency. */
+const BUCKET_DATE_FORMAT = { type: "DATE", pattern: "mm/dd" };
+const BUCKET_TWD_FORMAT = { type: "CURRENCY", pattern: "[$NTD ]#,##0.00" };
+const BUCKET_USD_FORMAT = { type: "CURRENCY", pattern: '"$"#,##0.00' };
+
 export interface BucketGuardResult {
-	/** insertDimension requests to append to the caller's batch (empty when no growth needed). */
+	/** Requests to append to the caller's batch: an insertDimension when the bucket must grow, plus the repeatCells that stamp the spill area's number formats (empty when the guard was skipped). */
 	requests: object[];
 	/** Which bucket the entry lands in; null when the guard was skipped. */
 	bucket: "結帳日前" | "結帳日後" | null;
@@ -432,7 +437,10 @@ export interface BucketGuardResult {
 
 /**
  * Keep a 對帳區 bucket's mirror spill area big enough for the entry the
- * caller is about to write. Fail-soft — NEVER throws: any anomaly (missing
+ * caller is about to write, and stamp the spill area's number formats (日期
+ * as mm/dd, 金額 in the card's billing currency) so spilled rows render
+ * canonically even on cells that never carried a format. Fail-soft — NEVER
+ * throws: any anomaly (missing
  * or torn section, unknown card, non-numeric 結帳日) degrades to a no-op
  * result with `warning`, and the caller's write proceeds regardless. Whole-row
  * inserts also widen the horizontally adjacent card's same bucket — harmless;
@@ -509,25 +517,45 @@ export function creditBucketGuard(
 
 	const capacity = subtotalRow - labelRow - 2;
 	const deficit = matches - capacity;
-	if (deficit <= 0) return { requests: [], bucket, rowsAdded: 0 };
-
-	return {
-		requests: [
-			{
-				insertDimension: {
-					range: {
-						sheetId,
-						dimension: "ROWS",
-						startIndex: subtotalRow + rowOffset - 1,
-						endIndex: subtotalRow + rowOffset - 1 + deficit,
-					},
-					inheritFromBefore: true,
+	const rowsAdded = Math.max(deficit, 0);
+	const requests: object[] = [];
+	if (rowsAdded > 0) {
+		requests.push({
+			insertDimension: {
+				range: {
+					sheetId,
+					dimension: "ROWS",
+					startIndex: subtotalRow + rowOffset - 1,
+					endIndex: subtotalRow + rowOffset - 1 + rowsAdded,
 				},
+				inheritFromBefore: true,
 			},
-		],
-		bucket,
-		rowsAdded: deficit,
-	};
+		});
+	}
+	// The mirror renders raw serials/numbers wherever it spills onto a
+	// never-formatted cell: the growth insert above 小計 inherits from the
+	// blank cushion row over it, and the spill also reaches pre-existing
+	// unformatted cushion rows with no insert at all. Stamp the bucket's
+	// canonical formats over the WHOLE spill area (post-insert coordinates),
+	// not just new rows, so every guarded write also heals earlier gaps.
+	const stampFormat = (col: number, numberFormat: object) => ({
+		repeatCell: {
+			range: {
+				sheetId,
+				startRowIndex: labelRow + 1 + rowOffset,
+				endRowIndex: subtotalRow - 1 + rowOffset + rowsAdded,
+				startColumnIndex: col,
+				endColumnIndex: col + 1,
+			},
+			cell: { userEnteredFormat: { numberFormat } },
+			fields: "userEnteredFormat.numberFormat",
+		},
+	});
+	requests.push(
+		stampFormat(block.startCol, BUCKET_DATE_FORMAT),
+		stampFormat(block.startCol + 2, block.card.billingCurrency === "TWD" ? BUCKET_TWD_FORMAT : BUCKET_USD_FORMAT),
+	);
+	return { requests, bucket, rowsAdded };
 }
 
 export interface IncomeWindow {
