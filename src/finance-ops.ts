@@ -70,6 +70,9 @@ import {
 	TRANSFER_JPY_COLS,
 	TRANSFER_SECTION_LABEL,
 	TRANSFER_TOTAL_LABEL,
+	TRIP_BUDGET_CATEGORY_HEADER,
+	TRIP_BUDGET_SECTION_LABEL,
+	TRIP_BUDGET_WIDTH,
 	TRIP_HEADER_DATE,
 	TRIP_HEADER_SHOP,
 	TRIP_BLOCK_WIDTH,
@@ -2235,6 +2238,86 @@ export function findTripBlocks(values: unknown[][]): TripBlock[] {
 		}
 	}
 	return blocks;
+}
+
+/** The 目前實際開銷 summary sits right of every category band (~AI46 today) — wider than TRIP_READ, so read the full tab width. */
+export const TRIP_BUDGET_READ = "A1:AZ200";
+
+export interface TripBudgetSection {
+	/** 1-indexed row of the 目前實際開銷 title. */
+	anchorRow: number;
+	/** 1-indexed row of the 分類/金額/預算/預算餘額/餘額 JP header. */
+	headerRow: number;
+	/** 0-indexed column of the title/分類 — the section's first column. */
+	startCol: number;
+}
+
+/** Locate the 目前實際開銷 summary anywhere in the grid: the title cell with the 分類 header directly below it. Throws when absent. */
+export function findTripBudgetSection(values: unknown[][], tab: string): TripBudgetSection {
+	const cell = (r: number, c: number) => String(values[r - 1]?.[c] ?? "").trim();
+	for (let r = 1; r <= values.length; r++) {
+		const rowLen = (values[r - 1] ?? []).length;
+		for (let c = 0; c < rowLen; c++) {
+			if (cell(r, c) !== TRIP_BUDGET_SECTION_LABEL) continue;
+			if (cell(r + 1, c) !== TRIP_BUDGET_CATEGORY_HEADER) continue;
+			return { anchorRow: r, headerRow: r + 1, startCol: c };
+		}
+	}
+	throw new Error(
+		`No ${TRIP_BUDGET_SECTION_LABEL} summary in ${tab} (searched ${TRIP_BUDGET_READ} for the title with a ${TRIP_BUDGET_CATEGORY_HEADER} header directly below it).`,
+	);
+}
+
+export interface TripBudgetCategory {
+	分類: string;
+	/** Actual spend so far, NTD. */
+	金額: number | null;
+	預算: number | null;
+	/** 預算 − 金額 — what's left of the category's budget, NTD. */
+	預算餘額: number | null;
+	/** The remainder converted to JPY. */
+	"餘額 JP": number | null;
+}
+
+/**
+ * Read a trip tab's 目前實際開銷 budget-vs-actual summary: one entry per
+ * budget category with its 金額 (spent) / 預算 / 預算餘額 / 餘額 JP, plus
+ * totals summed here from the category rows (the sheet's own =SUM total and
+ * the hand subtotal below it are layout cells, not categories, and are
+ * excluded). The list ends at the first row whose 分類 cell holds no text.
+ */
+export async function tripBudgetStatus(client: SheetsClient, p: { tab: string }) {
+	const { values, truncated } = await client.readRange(`${quoteTab(p.tab)}!${TRIP_BUDGET_READ}`, "UNFORMATTED_VALUE");
+	assertNotTruncated(truncated, p.tab, TRIP_BUDGET_READ);
+	const sec = findTripBudgetSection(values, p.tab);
+
+	const num = (v: unknown): number | null => (typeof v === "number" ? v : null);
+	const categories: TripBudgetCategory[] = [];
+	for (let r = sec.headerRow + 1; r <= values.length; r++) {
+		const row = values[r - 1] ?? [];
+		// A numeric 分類 cell is the hand subtotal under the list, not a category.
+		const name = row[sec.startCol];
+		if (typeof name !== "string" || name.trim() === "") break;
+		categories.push({
+			分類: name.trim(),
+			金額: num(row[sec.startCol + 1]),
+			預算: num(row[sec.startCol + 2]),
+			預算餘額: num(row[sec.startCol + 3]),
+			"餘額 JP": num(row[sec.startCol + TRIP_BUDGET_WIDTH - 1]),
+		});
+	}
+
+	const total = (pick: (c: TripBudgetCategory) => number | null): number =>
+		round2(categories.reduce((s, c) => s + (pick(c) ?? 0), 0));
+	return {
+		tab: p.tab,
+		categories,
+		totals: {
+			金額: total((c) => c.金額),
+			預算: total((c) => c.預算),
+			預算餘額: total((c) => c.預算餘額),
+		},
+	};
 }
 
 export interface AnnotatedRows {

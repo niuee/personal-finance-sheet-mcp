@@ -23,6 +23,7 @@ import {
 	findRowByValue,
 	findTransferSection,
 	findTripBlocks,
+	findTripBudgetSection,
 	FULL_GRID_READ,
 	getCategories,
 	monthSummary,
@@ -31,6 +32,7 @@ import {
 	setIncome,
 	startMonth,
 	TRANSFER_SECTIONS,
+	tripBudgetStatus,
 } from "../src/finance-ops";
 import { currentMonthTab, dateSerial, MONTH_COLS, todaySerial } from "../src/conventions";
 import type { SheetsClient } from "../src/sheets-client";
@@ -2908,6 +2910,70 @@ describe("findTripBlocks", () => {
 		g[4] = ["", "", "", "", "", "交通", "=SUM(G3:G4)"];
 		const [block] = findTripBlocks(g);
 		expect(block).toEqual({ category: "交通", headerRow: 1, startCol: 0, firstDataRow: 3, endRow: 5 });
+	});
+});
+
+/** The 目前實際開銷 summary as an UNFORMATTED_VALUE grid, offset like the live sheet (title at I5). Row = index+1. */
+function tripBudgetGrid(): unknown[][] {
+	const g: unknown[][] = [];
+	const at = (r: number, c: number, ...vals: unknown[]) => {
+		g[r - 1] ??= [];
+		vals.forEach((v, i) => ((g[r - 1] as unknown[])[c + i] = v));
+	};
+	at(5, 8, "目前實際開銷");
+	at(6, 8, "分類", "金額", "預算", "預算餘額", "餘額 JP");
+	at(7, 8, "鐵道模型", 6861, 14000, 7139, 35970.27);
+	at(8, 8, "衣服", 0, 10000, 10000, 50385.58);
+	at(9, 8, "雜支", 5605, 5605, 0, 0);
+	// The sheet's own =SUM total row (分類 blank) ends the list…
+	at(10, 10, 29605);
+	// …and the hand subtotal two rows below sits in the 分類 column as a NUMBER.
+	at(12, 8, 24000);
+	return g;
+}
+
+describe("tripBudgetStatus", () => {
+	it("locates the section by its title with the 分類 header directly below", () => {
+		expect(findTripBudgetSection(tripBudgetGrid(), "京都")).toEqual({ anchorRow: 5, headerRow: 6, startCol: 8 });
+	});
+
+	it("throws when the tab has no summary (or a title with no header under it)", () => {
+		expect(() => findTripBudgetSection([], "京都")).toThrow("目前實際開銷");
+		const stray: unknown[][] = [["目前實際開銷"], ["not a header"]];
+		expect(() => findTripBudgetSection(stray, "京都")).toThrow("目前實際開銷");
+	});
+
+	it("reports each category's spent/budget/remaining and stops at the total row", async () => {
+		const client = tripClient(tripBudgetGrid());
+
+		const result = await tripBudgetStatus(client, { tab: "京都" });
+
+		expect((client.readRange as any).mock.calls[0]).toEqual(["'京都'!A1:AZ200", "UNFORMATTED_VALUE"]);
+		expect(result.categories).toEqual([
+			{ 分類: "鐵道模型", 金額: 6861, 預算: 14000, 預算餘額: 7139, "餘額 JP": 35970.27 },
+			{ 分類: "衣服", 金額: 0, 預算: 10000, 預算餘額: 10000, "餘額 JP": 50385.58 },
+			{ 分類: "雜支", 金額: 5605, 預算: 5605, 預算餘額: 0, "餘額 JP": 0 },
+		]);
+		// Neither the =SUM total row nor the numeric hand subtotal is a category.
+		expect(result.totals).toEqual({ 金額: 12466, 預算: 29605, 預算餘額: 17139 });
+	});
+
+	it("returns null for cells that did not evaluate to a number", async () => {
+		const g = tripBudgetGrid();
+		(g[6] as unknown[])[12] = "#DIV/0!";
+		const client = tripClient(g);
+
+		const result = await tripBudgetStatus(client, { tab: "京都" });
+
+		expect(result.categories[0]["餘額 JP"]).toBeNull();
+		expect(result.totals.預算餘額).toBe(17139);
+	});
+
+	it("refuses a truncated read — row positions cannot be trusted", async () => {
+		const client = {
+			readRange: vi.fn(async () => ({ range: "x", values: tripBudgetGrid(), truncated: true })),
+		} as unknown as SheetsClient;
+		await expect(tripBudgetStatus(client, { tab: "京都" })).rejects.toThrow("truncated");
 	});
 });
 

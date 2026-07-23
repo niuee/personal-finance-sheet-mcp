@@ -15,6 +15,7 @@ import {
 	setExpenseDate,
 	setIncome,
 	startMonth,
+	tripBudgetStatus,
 } from "./finance-ops";
 import type { SheetsClient } from "./sheets-client";
 
@@ -288,6 +289,21 @@ export function registerTailoredTools(server: McpServer, client: SheetsClient): 
 		async ({ tab, category, date, shop, item, payment_method, jpy, twd }) => {
 			try {
 				return ok(await addTripEntry(client, { tab, category, date, shop, item, paymentMethod: payment_method, jpy, twd }));
+			} catch (e) {
+				return toError(e);
+			}
+		},
+	);
+
+	server.tool(
+		"trip_budget_status",
+		"Read a trip tab's 目前實際開銷 budget-vs-actual summary (the bottom-right block, e.g. AI46:AM60 on 2026/07/25 京都東京): per-分類 金額 (spent so far), 預算, 預算餘額 (what's left), and 餘額 JP (the remainder in JPY), plus totals summed from the category rows. Amounts are unformatted numbers (NTD unless noted). Use this instead of read_range to check how much room is left in each trip budget category.",
+		{
+			tab: z.string().min(1).describe("Trip tab name, exactly as it appears, e.g. 2026/07/25 京都東京"),
+		},
+		async ({ tab }) => {
+			try {
+				return ok(await tripBudgetStatus(client, { tab }));
 			} catch (e) {
 				return toError(e);
 			}

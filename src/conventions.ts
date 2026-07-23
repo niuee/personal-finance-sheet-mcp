@@ -411,6 +411,20 @@ export const TRIP_MAX_BLOCK_ROWS = 30;
 /** Each block is 7 data columns (日期 店鋪 品項 支付方式 日幣原價 臺幣 臺幣進位) + 1 spacer. */
 export const TRIP_BLOCK_WIDTH = 8;
 
+/**
+ * 目前實際開銷 — the budget-vs-actual summary at the bottom-right of a trip
+ * tab's grid (~AI46 on 2026/07/25 京都東京): the title, a
+ * 分類/金額/預算/預算餘額/餘額 JP header row directly below it, then one row
+ * per budget category (金額 = actual spend so far, 預算餘額 = 預算 − 金額,
+ * 餘額 JP = the remainder converted to JPY). The list ends at the first row
+ * whose 分類 cell holds no text — the =SUM total row and the hand subtotal
+ * below it are not categories.
+ */
+export const TRIP_BUDGET_SECTION_LABEL = "目前實際開銷";
+export const TRIP_BUDGET_CATEGORY_HEADER = "分類";
+/** The summary's 5 columns, left to right from the 分類 column. */
+export const TRIP_BUDGET_WIDTH = 5;
+
 export const CONVENTIONS_TEXT = `How this personal-finance spreadsheet is organized:
 
 MONTHLY TABS — named "N 月" (e.g. "9 月", with a space). Layout below applies from 6 月 2026 on (6 月 was rebuilt onto it; the original June tab survives as "6 月 DEP"). 5 月 and 6 月 DEP are frozen history on the old layout (no 類別/支付幣別 columns, a hand-entered income list ending at a single 剩餘 row) — never write into them and never wire formulas at them.
@@ -432,10 +446,10 @@ TRIP TABS — e.g. "2026/07/25 京都東京".
 - Known categories: 模型, 鐵道模型, 書, 餐(當下吃的), 機票住宿, 雜支, 衣服/鞋子, 吃的伴手禮, 紀念品小物, 交通, 送禮, 入場券, 電子產品.
 - Entries are JPY-priced (¥ → TWD at ~0.22 plus a rounded-up column) or TWD-direct (機票住宿-style: 日幣原價 empty, 臺幣 holds the NTD amount).
 - Data rows render 日期 as mm/dd hh:mm (a real datetime), 日幣原價 with a ¥ sign, both 臺幣 columns with an NTD sign, and 店鋪/品項 centered — add_trip_entry stamps these formats onto the row it writes, so cells created by a block-scoped insert or never-formatted empties still render canonically.
-- A budget-vs-actual summary occupies the bottom-right of the grid — it is not a category block.
+- A budget-vs-actual summary titled 目前實際開銷 occupies the bottom-right of the grid (~AI46) — it is not a category block. A 分類/金額/預算/預算餘額/餘額 JP header sits under the title, then one row per budget category: 金額 = actual spend so far, 預算餘額 = what's left of that category's 預算, 餘額 JP = the remainder in JPY. Its 分類 names are budget buckets and need not match the category blocks one-to-one. Read it with trip_budget_status instead of raw reads.
 - Never insert whole sheet rows in a trip tab: a row insert cuts across all bands and damages neighboring blocks. add_trip_entry writes into empty rows inside a block, or inserts cells scoped to the block's own columns.
 - A trip tab may carry its own 乾坤大挪移 block (NTD→JPY, columns A-G below all content) — see the transfer bullet above; add_transfer currency:'jpy' owns it.
 
 OTHER — "火車模型" is a hobby purchase planner; monthly tabs may cross-reference its cells.
 
-Prefer the tailored tools (add_expense, set_income, add_transfer, add_lunch, set_expense_date, adjust_balance, month_summary, start_month, add_trip_entry) over raw range edits. Locate rows with find_cells — never by reading a big range and counting rows. For any append-like update_range write, pass expect_empty: true (it refuses if the target is not empty); every update_range response includes previousValues so a mistaken overwrite can be reverted. For math, read with mode "raw" — default reads return locale-formatted strings like "13,603.67".`;
+Prefer the tailored tools (add_expense, set_income, add_transfer, add_lunch, set_expense_date, adjust_balance, month_summary, start_month, add_trip_entry, trip_budget_status) over raw range edits. Locate rows with find_cells — never by reading a big range and counting rows. For any append-like update_range write, pass expect_empty: true (it refuses if the target is not empty); every update_range response includes previousValues so a mistaken overwrite can be reverted. For math, read with mode "raw" — default reads return locale-formatted strings like "13,603.67".`;
