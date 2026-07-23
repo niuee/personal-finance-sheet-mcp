@@ -14,6 +14,7 @@ A personal [Model Context Protocol](https://modelcontextprotocol.io/introduction
 - **month_summary** — get a month's numbers as clean JSON.
 - **start_month** — open a new month by duplicating the previous month's tab, and rolls the 信用卡帳單對帳區 forward.
 - **add_trip_entry** — log a purchase into a trip tab's mosaic category block, discovering the block by title and choosing between jpy (¥-priced) or twd (NTD-direct) rows.
+- **trip_budget_status** — read a trip tab's 目前實際開銷 budget-vs-actual summary: per-分類 spent / budget / remaining (NTD and JPY) plus totals.
 - **get_sheet_conventions** — read how the spreadsheet is organized.
 - **insert_rows** — insert empty rows at a 1-indexed position.
 - **find_cells** — find cells containing a text and get their exact A1 addresses, across one tab or every tab; the alternative to reading big ranges and counting rows.
