@@ -236,7 +236,13 @@ describe("conventions", () => {
 	it("exports the trip block anchors", () => {
 		expect(TRIP_HEADER_DATE).toBe("日期");
 		expect(TRIP_HEADER_SHOP).toBe("店鋪");
-		expect(TRIP_TOTAL_LABEL).toBe("分類總花費");
+		// The bare suffix: real total labels vary (分類總花費, 機票住宿分類總花費, 食總花費).
+		expect(TRIP_TOTAL_LABEL).toBe("總花費");
+		for (const label of ["分類總花費", "機票住宿分類總花費", "食總花費"]) {
+			expect(label).toContain(TRIP_TOTAL_LABEL);
+		}
+		// The monthly tab's 花費總額 must NOT match — different anchor, different layout.
+		expect("花費總額").not.toContain(TRIP_TOTAL_LABEL);
 		expect(TRIP_MAX_BLOCK_ROWS).toBe(30);
 	});
 

@@ -1991,7 +1991,7 @@ export async function addTripEntry(client: SheetsClient, p: TripEntryParams) {
 	const { startCol, firstDataRow, endRow } = block;
 	const cellStr = (r: number, c: number) => String(values[r - 1]?.[c] ?? "").trim();
 
-	// The block's 分類總花費 row (endRow when terminated by one) and its two total cells.
+	// The block's …總花費 row (endRow when terminated by one) and its two total cells.
 	const endRowBand = Array.from({ length: BAND_COLS }, (_, i) => cellStr(endRow, startCol + i));
 	const totalRow = endRowBand.some(
 		(v) => v.includes(TRIP_TOTAL_LABEL) || (v.startsWith("=") && /sum\(/i.test(v)),
@@ -2196,7 +2196,7 @@ export interface TripBlock {
 	endRow: number;
 }
 
-/** Discover trip category blocks: header row (日期+店鋪), label on the next row, region bounded by 分類總花費 / next header / scan cap. */
+/** Discover trip category blocks: header row (日期+店鋪), label on the next row, region bounded by a …總花費 row / next header / scan cap. */
 export function findTripBlocks(values: unknown[][]): TripBlock[] {
 	const cell = (r: number, c: number) => String(values[r - 1]?.[c] ?? "").trim();
 
@@ -2217,8 +2217,14 @@ export function findTripBlocks(values: unknown[][]): TripBlock[] {
 			if (category === "") continue; // stray header with no label beneath
 
 			const firstDataRow = r + 2;
+			// Scan the whole read window for the block's terminator — a real block
+			// can outgrow any fixed depth (餐(當下吃的) passed 30 data rows
+			// mid-trip and its 食總花費 row fell off a capped scan, wedging the
+			// tool). TRIP_MAX_BLOCK_ROWS only bounds the fallback endRow when no
+			// terminator exists at all, so a headerless tail can't swallow
+			// unrelated content below the block.
 			let endRow = firstDataRow + TRIP_MAX_BLOCK_ROWS;
-			for (let br = firstDataRow; br < firstDataRow + TRIP_MAX_BLOCK_ROWS && br <= values.length; br++) {
+			for (let br = firstDataRow; br <= values.length; br++) {
 				const band = Array.from({ length: BAND_COLS }, (_, i) => cell(br, c + i));
 				if (band.some((v) => v.includes(TRIP_TOTAL_LABEL))) {
 					endRow = br;

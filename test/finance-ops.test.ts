@@ -2826,6 +2826,53 @@ describe("addTripEntry (mosaic)", () => {
 		expect(result).toMatchObject({ category: "交通", row: 5 });
 	});
 
+	it("inserts into a 32-row 食-style block whose 食總花費 total sits beyond the fallback depth", async () => {
+		const client = tripClient(fullFoodBlockGrid());
+
+		const result = await addTripEntry(client, {
+			tab: "京都",
+			category: "餐(當下吃的)",
+			date: "07/27 12:00",
+			shop: "松屋",
+			item: "牛丼",
+			paymentMethod: "Suica",
+			jpy: 680,
+		});
+
+		// Band-scoped Q-W cell insert above the 食總花費 row — never a whole
+		// sheet row, which would cut across the other column bands.
+		expect((client.batchUpdate as any).mock.calls[0][0]).toEqual([
+			{
+				insertRange: {
+					range: { sheetId: 111, startRowIndex: 34, endRowIndex: 35, startColumnIndex: 16, endColumnIndex: 23 },
+					shiftDimension: "ROWS",
+				},
+			},
+			{
+				updateCells: {
+					start: { sheetId: 111, rowIndex: 35, columnIndex: 20 },
+					rows: [{ values: [{ userEnteredValue: { formulaValue: "=SUM(U3:U35)" } }] }],
+					fields: "userEnteredValue",
+				},
+			},
+			{
+				updateCells: {
+					start: { sheetId: 111, rowIndex: 35, columnIndex: 22 },
+					rows: [{ values: [{ userEnteredValue: { formulaValue: "=SUM(W3:W35)" } }] }],
+					fields: "userEnteredValue",
+				},
+			},
+			payValidationCopy(3, 35, 19),
+			...tripFormats(35, 16),
+			tripClearFill(35, 16),
+		]);
+		expect((client.updateRange as any).mock.calls[0]).toEqual([
+			"'京都'!Q35:W35",
+			[["07/27 12:00", "松屋", "牛丼", "Suica", 680, "=U35*0.22", "=CEILING(V35)"]],
+		]);
+		expect(result).toMatchObject({ category: "餐(當下吃的)", row: 35, currency: "JPY" });
+	});
+
 	it("falls back to default conversion formulas when the previous row has plain numbers", async () => {
 		const client = tripClient(mosaicGrid());
 
@@ -2847,6 +2894,26 @@ describe("addTripEntry (mosaic)", () => {
 		expect(result).toMatchObject({ row: 5, currency: "JPY" });
 	});
 });
+
+/**
+ * The real 餐(當下吃的) shape (2026/07/25 京都東京): band Q-W (cols 16-22),
+ * 32 full data rows — more than TRIP_MAX_BLOCK_ROWS — and the 食總花費 total
+ * row at row 35, past the fallback depth. Row = index+1.
+ */
+function fullFoodBlockGrid(): unknown[][] {
+	const g: unknown[][] = [];
+	const at = (r: number, c: number, ...vals: unknown[]) => {
+		g[r - 1] ??= [];
+		vals.forEach((v, i) => ((g[r - 1] as unknown[])[c + i] = v));
+	};
+	at(1, 16, "日期", "店鋪", "品項", "支付方式", "日幣原價", "臺幣 即時匯率", "臺幣進位");
+	at(2, 16, "餐(當下吃的)");
+	for (let r = 3; r <= 34; r++) {
+		at(r, 16, "07/25", "LAWSON", `品項${r}`, "現金", 100, `=U${r}*0.22`, `=CEILING(V${r})`);
+	}
+	at(35, 16, "", "", "", "食總花費", "=SUM(U3:U34)", "", "=SUM(W3:W34)");
+	return g;
+}
 
 /**
  * Mosaic fixture mirroring the real trip tab: band A (cols 0-6) and band B
@@ -2899,6 +2966,21 @@ describe("findTripBlocks", () => {
 		g[2] = ["07/25", "", "紅包", "已算在預算", 25000, 4945.23, 4946];
 		const [block] = findTripBlocks(g);
 		expect(block).toEqual({ category: "雜支", headerRow: 1, startCol: 0, firstDataRow: 3, endRow: 33 });
+	});
+
+	it("finds a category-named …總花費 terminator beyond the fallback depth", () => {
+		const [block] = findTripBlocks(fullFoodBlockGrid());
+		expect(block).toEqual({ category: "餐(當下吃的)", headerRow: 1, startCol: 16, firstDataRow: 3, endRow: 35 });
+	});
+
+	it("bounds a block at a …總花費 label row even when its cells hold no =SUM", () => {
+		const g: unknown[][] = [];
+		g[0] = ["日期", "店鋪", "品項", "支付方式", "日幣原價", "臺幣", "臺幣進位"];
+		g[1] = ["食"];
+		g[2] = ["07/25", "", "牛丼", "現金", 680, 149.6, 150];
+		g[3] = ["", "", "", "食總花費", 149.6, "", 150];
+		const [block] = findTripBlocks(g);
+		expect(block).toEqual({ category: "食", headerRow: 1, startCol: 0, firstDataRow: 3, endRow: 4 });
 	});
 
 	it("bounds a block at an untitled =SUM summary row (交通-style)", () => {
