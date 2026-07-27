@@ -404,9 +404,9 @@ export function previousMonth(month: number): number {
 /** Trip tabs: a block header row starts with these two cells, side by side. */
 export const TRIP_HEADER_DATE = "日期";
 export const TRIP_HEADER_SHOP = "店鋪";
-/** A block's terminator row contains this substring (may be prefixed, e.g. 機票住宿分類總花費). */
-export const TRIP_TOTAL_LABEL = "分類總花費";
-/** Scan cap for blocks with no terminator row. */
+/** A block's terminator row contains this substring (may be prefixed, e.g. 分類總花費, 機票住宿分類總花費, 食總花費). */
+export const TRIP_TOTAL_LABEL = "總花費";
+/** Fallback block depth when NO terminator row exists — not a limit on the terminator scan itself. */
 export const TRIP_MAX_BLOCK_ROWS = 30;
 /** Each block is 7 data columns (日期 店鋪 品項 支付方式 日幣原價 臺幣 臺幣進位) + 1 spacer. */
 export const TRIP_BLOCK_WIDTH = 8;
@@ -442,7 +442,7 @@ MONTHLY TABS — named "N 月" (e.g. "9 月", with a space). Layout below applie
 
 TRIP TABS — e.g. "2026/07/25 京都東京".
 - A mosaic of category blocks in four column bands (A-G, I-O, Q-W, Z-AF), stacked vertically within each band.
-- Each block: a header row (日期, 店鋪, 品項, 支付方式, 日幣原價, 臺幣…, 臺幣進位), the category name on the row below it, data rows, and usually a 分類總花費 total row.
+- Each block: a header row (日期, 店鋪, 品項, 支付方式, 日幣原價, 臺幣…, 臺幣進位), the category name on the row below it, data rows, and usually a …總花費 total row (the label varies: 分類總花費, 機票住宿分類總花費, 食總花費).
 - Known categories: 模型, 鐵道模型, 書, 餐(當下吃的), 機票住宿, 雜支, 衣服/鞋子, 吃的伴手禮, 紀念品小物, 交通, 送禮, 入場券, 電子產品.
 - Entries are JPY-priced (¥ → TWD at ~0.22 plus a rounded-up column) or TWD-direct (機票住宿-style: 日幣原價 empty, 臺幣 holds the NTD amount).
 - Data rows render 日期 as mm/dd hh:mm (a real datetime), 日幣原價 with a ¥ sign, both 臺幣 columns with an NTD sign, and 店鋪/品項 centered — add_trip_entry stamps these formats onto the row it writes, so cells created by a block-scoped insert or never-formatted empties still render canonically.
