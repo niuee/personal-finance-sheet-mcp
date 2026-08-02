@@ -26,6 +26,7 @@ import {
 	currentMonthTab,
 	INCOME_HEADER_LABEL,
 	LUNCH_ADJUST_LABEL,
+	LUNCH_BUDGET_LABEL,
 	LUNCH_COLS,
 	LUNCH_DEFAULT_ITEM,
 	LUNCH_SECTION_LABEL,
@@ -128,9 +129,6 @@ export function colLetter(index0: number): string {
 	}
 	return s;
 }
-
-/** The window that contains every anchor a monthly tab needs. */
-export const GRID_READ = "A1:H60";
 
 const USD_COL = colLetter(MONTH_COLS.usd);
 const TWD_COL = colLetter(MONTH_COLS.twd);
@@ -311,11 +309,25 @@ export function findLunchSection(values: unknown[][], tab: string): LunchSection
 			`No 日期/項目/金額 header row found within 8 rows of the ${LUNCH_SECTION_LABEL} anchor in ${tab}.`,
 		);
 	}
-	// The 編列預算/剩餘 values row always sits directly above the header — a
-	// whole-row insert above the transfer 總和 shifts the values row and the
-	// header down together, so this adjacency holds no matter how many blank
-	// rows opened up between the anchor and the header.
-	const budgetRow = headerRow - 1;
+	// The 編列預算/剩餘 values row: the first non-empty row strictly between
+	// the 編列預算 label row and the header. Neither neighbour is a safe
+	// anchor on its own — a transfer full-section insert opens a blank row
+	// below the LABEL (values stay glued to the header), while a whole sheet
+	// row inserted lower on the tab (e.g. by hand into the income list) opens
+	// one above the HEADER (values stay glued to the label). Tabs missing the
+	// label keep the legacy assumption (directly above the header).
+	let budgetRow = headerRow - 1;
+	for (let r = anchorRow + 1; r < headerRow; r++) {
+		if (String(values[r - 1]?.[dateCol] ?? "").trim() !== LUNCH_BUDGET_LABEL) continue;
+		for (let v = r + 1; v < headerRow; v++) {
+			const cells = (values[v - 1] ?? []).slice(LUNCH_COLS.date, LUNCH_COLS.amount + 1);
+			if (cells.some((c) => c !== "" && c != null)) {
+				budgetRow = v;
+				break;
+			}
+		}
+		break;
+	}
 	for (let r = headerRow + 1; r <= values.length; r++) {
 		if (String(values[r - 1]?.[LUNCH_COLS.item] ?? "").trim() === LUNCH_TOTAL_LABEL) {
 			return { budgetRow, headerRow, totalRow: r };
@@ -694,8 +706,11 @@ export async function setIncome(client: SheetsClient, p: SetIncomeParams) {
 	}
 	const tab = p.month !== undefined ? monthTabName(p.month) : currentMonthTab();
 
-	const { values, truncated } = await client.readRange(`${quoteTab(tab)}!${GRID_READ}`, "FORMULA");
-	assertNotTruncated(truncated, tab, GRID_READ);
+	// FULL_GRID_READ, not a shallow window: the budget block sits below the
+	// expense list, which grows all month — by late month 總預算 lands past
+	// row 60 and a shallow read misses every income anchor.
+	const { values, truncated } = await client.readRange(`${quoteTab(tab)}!${FULL_GRID_READ}`, "FORMULA");
+	assertNotTruncated(truncated, tab, FULL_GRID_READ);
 	const sheetId = await client.getSheetId(tab);
 
 	const win = findIncomeWindow(values);
@@ -738,12 +753,14 @@ export async function setIncome(client: SheetsClient, p: SetIncomeParams) {
 		});
 	} else {
 		action = "inserted";
-		// First fully-empty row inside the SUMIF window (a row outside it would
-		// never count as income); else insert at the window's LAST row —
-		// strictly inside every range spanning the window, so the income
-		// SUMIFs auto-extend.
+		// First row whose income cells (B–D) are all empty inside the SUMIF
+		// window (a row outside it would never count as income) — only the
+		// list's own columns matter; the 乾坤大挪移/對帳區 (H–N) and lunch log
+		// (P–S) sit beside these rows in the full-width read. Else insert at
+		// the window's LAST row — strictly inside every range spanning the
+		// window, so the income SUMIFs auto-extend.
 		for (let r = sumifWin.start; r <= sumifWin.end; r++) {
-			const row = values[r - 1] ?? [];
+			const row = (values[r - 1] ?? []).slice(MONTH_COLS.item, MONTH_COLS.budgetValue + 1);
 			if (!row.some((c) => c !== "" && c != null)) {
 				targetRow = r;
 				break;
