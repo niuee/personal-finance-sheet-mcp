@@ -376,6 +376,15 @@ describe("findLunchSection", () => {
 		g.splice(34, 0, []);
 		expect(findLunchSection(g, "9 月")).toEqual({ budgetRow: 36, headerRow: 37, totalRow: 39 });
 	});
+
+	it("scans past a blank row that a whole-sheet-row insert opened between the values row and the header", () => {
+		const g = lunchGrid();
+		// live July 2026: a row inserted by hand into the income list (same
+		// sheet rows as the lunch block) landed between the values row
+		// (idx 34) and the header (idx 35) — values stay glued to the label.
+		g.splice(35, 0, []);
+		expect(findLunchSection(g, "9 月")).toEqual({ budgetRow: 35, headerRow: 37, totalRow: 39 });
+	});
 });
 
 /**
@@ -3308,7 +3317,7 @@ describe("setIncome", () => {
 
 		const result = await setIncome(client, { item: "薪水", amount: 70000, currency: "TWD", month: 9 });
 
-		expect((client.readRange as any).mock.calls[0]).toEqual(["'9 月'!A1:H60", "FORMULA"]);
+		expect((client.readRange as any).mock.calls[0]).toEqual(["'9 月'!A1:S160", "FORMULA"]);
 		const requests = (client.batchUpdate as any).mock.calls[0][0];
 		expect(requests).toEqual([
 			{
@@ -3367,6 +3376,49 @@ describe("setIncome", () => {
 	it("reuses an empty row inside the income window before inserting", async () => {
 		const g = currentMonthGrid();
 		g[16] = ["", "", "", ""]; // row 17 empty (多一個月薪水 removed)
+		const client = fakeClient(g);
+
+		const result = await setIncome(client, { item: "獎金", amount: 5000, currency: "TWD", month: 9 });
+
+		const requests = (client.batchUpdate as any).mock.calls[0][0];
+		expect(requests).toHaveLength(1);
+		expect(requests[0].updateCells.start).toEqual({ sheetId: 111, rowIndex: 16, columnIndex: 1 });
+		expect(result).toMatchObject({ row: 17, action: "inserted" });
+	});
+
+	it("finds the income list even when the expense window has pushed it past row 60", async () => {
+		// Live July 2026 layout: 57 expense rows put 花費總額 at row 60 and
+		// 總預算 at 62 — the old A1:H60 read window missed every anchor.
+		const g: unknown[][] = [];
+		g[0] = ["7 月花費"];
+		g[1] = ["日期", "項目", "類別", "美金", "新臺幣", "支付幣別", "支付方式"];
+		g[2] = ["", "上月美金透支", "透支", 0, "", "USD"];
+		g[59] = ["", "", "", "花費總額", "=SUM(E3:E59)"];
+		g[61] = ["", "總預算"];
+		g[62] = ["", "項目", "幣別", "金額"];
+		g[63] = ["", "沛還", "USD", 800];
+		g[64] = ["", "薪水", "TWD", 68587];
+		g[65] = ["", "多一個月薪水", "TWD", 68587];
+		g[67] = ["", "本月美金收支狀況", "", "=D71-D72"];
+		g[70] = ["", "本月美金收入", "", '=SUMIF(C63:C66,"USD",D63:D66)'];
+		const client = fakeClient(g);
+
+		const result = await setIncome(client, { item: "發票中獎", amount: 1000, currency: "TWD", month: 7 });
+
+		const requests = (client.batchUpdate as any).mock.calls[0][0];
+		// Rows 64-66 are all occupied → band insert at the SUMIF window's last row (66).
+		expect(requests[0]).toEqual({
+			insertRange: {
+				range: { sheetId: 111, startRowIndex: 65, endRowIndex: 66, startColumnIndex: 1, endColumnIndex: 4 },
+				shiftDimension: "ROWS",
+			},
+		});
+		expect(result).toMatchObject({ tab: "7 月", row: 66, action: "inserted" });
+	});
+
+	it("reuses a row whose income cells are empty even when neighbouring sections occupy it", async () => {
+		const g = currentMonthGrid();
+		g[16] = ["", "", "", "", "", "", "", "乾坤大挪移"]; // B–D empty; H holds the transfer title
 		const client = fakeClient(g);
 
 		const result = await setIncome(client, { item: "獎金", amount: 5000, currency: "TWD", month: 9 });

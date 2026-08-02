@@ -270,6 +270,8 @@ export const LUNCH_SECTION_LABEL = "午餐預算";
 /** The section's original title (7月 2026 setup) — the finders accept both. */
 export const LUNCH_SECTION_LEGACY_LABEL = "中餐預算";
 export const LUNCH_TOTAL_LABEL = "總和";
+/** The label above the values row; its own row + 1 holds the 編列預算/剩餘 values. */
+export const LUNCH_BUDGET_LABEL = "編列預算";
 export const LUNCH_DEFAULT_ITEM = "中餐";
 export const LUNCH_ADJUST_LABEL = "午餐超支或回補";
 
