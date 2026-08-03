@@ -193,8 +193,13 @@ export function expensePositionFor(
 	return Math.max(last, carry) + 1;
 }
 
-/** The 乾坤大挪移 section spans H–N, wider than GRID_READ — read the full width. */
-export const TRANSFER_GRID_READ = "A1:N60";
+// The deep month grid: the lunch section (P–S) grows one row per entry
+// (band-scoped, its own columns only), and the 信用卡帳單對帳區 (H–N) runs from
+// row 50 to ~117 — a too-shallow read makes startMonth's rewires silently skip.
+// The width must reach column S (支付方式) or the lunch empty-slot scan and
+// card mirroring would never see it.
+export const FULL_GRID_READ = "A1:S160";
+
 /** The trip tab's JPY section lives in A–G below all trip content (~row 72 today) — generous headroom. */
 export const TRANSFER_JPY_GRID_READ = "A1:G200";
 
@@ -219,7 +224,10 @@ export const TRANSFER_SECTIONS: { usd: TransferSectionConfig; jpy: TransferSecti
 			fee: TRANSFER_COLS.fee,
 			extra: TRANSFER_COLS.extra,
 		},
-		gridRead: TRANSFER_GRID_READ,
+		// The full month grid, not a shallow H–N window: a usd transfer write
+		// also audits the 信用卡帳單對帳區 below the transfer block, and the
+		// audit needs every card block plus the expense/lunch columns in view.
+		gridRead: FULL_GRID_READ,
 		pair: "USDTWD",
 		missingHint: "the transfer log exists from 7月 2026 on.",
 	},
@@ -264,13 +272,6 @@ export function findTransferSection(
 	}
 	throw new Error(`No ${TRANSFER_TOTAL_LABEL} row under the ${TRANSFER_SECTION_LABEL} header in ${tab}.`);
 }
-
-// The deep month grid: the lunch section (P–S) grows one row per entry
-// (band-scoped, its own columns only), and the 信用卡帳單對帳區 (H–N) runs from
-// row 50 to ~117 — a too-shallow read makes startMonth's rewires silently skip.
-// The width must reach column S (支付方式) or the lunch empty-slot scan and
-// card mirroring would never see it.
-export const FULL_GRID_READ = "A1:S160";
 
 export interface LunchSection {
 	/** 1-indexed row holding the 編列預算 / 剩餘 values. */
@@ -469,35 +470,216 @@ const BUCKET_DATE_FORMAT = { type: "DATE", pattern: "mm/dd" };
 const BUCKET_TWD_FORMAT = { type: "CURRENCY", pattern: "[$NTD ]#,##0.00" };
 const BUCKET_USD_FORMAT = { type: "CURRENCY", pattern: '"$"#,##0.00' };
 
-export interface BucketGuardResult {
-	/** Requests to append to the caller's batch: a band-scoped insertRange (the section's own columns only) when the bucket must grow, plus the repeatCells that stamp the spill area's number formats (empty when the guard was skipped). */
-	requests: object[];
-	/** Which bucket the entry lands in; null when the guard was skipped. */
-	bucket: "結帳日前" | "結帳日後" | null;
-	/** Rows that will be inserted above the bucket's 小計. */
+/**
+ * startMonth pads every bucket's spill area to at least this many blank rows.
+ * Hand-entered card rows (typed straight into the UI, like a trip's charges
+ * landing in one week) trigger no tool write and therefore no growth — the
+ * month-open pad is the headroom that absorbs them until the next tool write
+ * audits the section.
+ */
+export const CREDIT_BUCKET_PAD_ROWS = 20;
+
+export interface BucketGrowth {
+	card: string;
+	bucket: "結帳日前" | "結帳日後";
 	rowsAdded: number;
-	/** Why the guard was skipped (section missing/torn, close date not a number); undefined when it ran. */
+}
+
+export interface BucketGuardResult {
+	/** Requests to append to the caller's batch: band-scoped insertRanges (the section's own columns only) for every bucket that must grow, plus the repeatCells that stamp the touched spill areas' number formats (empty when the audit was skipped and nothing needed growing). */
+	requests: object[];
+	/** Which bucket the pending entry lands in; null when there is no pending entry or the audit was skipped. */
+	bucket: "結帳日前" | "結帳日後" | null;
+	/** Rows that will be inserted above the pending entry's bucket's 小計. */
+	rowsAdded: number;
+	/** Every bucket the audit grows, the pending entry's included. */
+	grown: BucketGrowth[];
+	/** Why the audit was skipped or degraded (section missing/torn, unknown card, close date not a number); undefined when it ran clean. */
 	warning?: string;
 }
 
+/** The entry a caller is about to write, counted into its card's bucket on top of the rows already on the grid. */
+interface PendingBucketEntry {
+	cardName: string;
+	dateSerial: number;
+	/**
+	 * 1-indexed row masked from every expense-count loop — the row being
+	 * re-dated (set_expense_date), whose stale pre-update date must not count
+	 * on top of the pending +1 that already accounts for where it's landing.
+	 * Lunch rows are never re-dated, so the lunch loops ignore it.
+	 */
+	excludeRow?: number;
+}
+
 /**
- * Keep a 對帳區 bucket's mirror spill area big enough for the entry the
- * caller is about to write, and stamp the spill area's number formats (日期
- * as mm/dd, 金額 in the card's billing currency) so spilled rows render
- * canonically even on cells that never carried a format. Fail-soft — NEVER
- * throws: any anomaly (missing
- * or torn section, unknown card, non-numeric 結帳日) degrades to a no-op
- * result with `warning`, and the caller's write proceeds regardless. The
- * growth insert is band-scoped to the section's own columns (H–N), so the
- * blocks beside the grid (銀行餘額 stack in B–D, lunch log in P–S) never
- * move; it still widens the horizontally adjacent card's same bucket —
- * harmless; references adjust.
+ * Keep EVERY 對帳區 bucket's mirror spill area big enough for the rows it
+ * must show — the rows already on the grid (including hand-entered ones no
+ * tool ever saw), plus the caller's `pending` entry when there is one — and
+ * stamp the touched spill areas' number formats (日期 as mm/dd, 金額 in the
+ * card's billing currency) so spilled rows render canonically even on cells
+ * that never carried a format. Fail-soft — NEVER throws: any anomaly
+ * (missing or torn section, unknown pending card, non-numeric 結帳日)
+ * degrades to a no-op or partial result with `warning`, and the caller's
+ * write proceeds regardless.
  *
- * `excludeRow` (1-indexed) skips a row in the expense-row counting loop —
- * pass the row being re-dated so its stale (pre-update) date isn't counted
- * on top of the unconditional "pending row" +1 below, which already accounts
- * for where it's landing. Lunch rows are never re-dated, so the lunch loop
- * ignores it.
+ * Growth inserts are band-scoped to the section's own columns (H–N), so the
+ * blocks beside the grid (銀行餘額 stack in B–D, lunch log in P–S) never
+ * move. They are emitted bottom-up (descending 小計 row): an insert shifts
+ * only rows at or below itself, so buckets above keep their original
+ * coordinates until their own turn. An insert above a 小計 row that another
+ * bucket shares (the side-by-side card's aligned bucket) widens that bucket
+ * too — those planned rows count into its capacity rather than growing it a
+ * second time.
+ *
+ * `minCapacity` (startMonth's pad) grows any bucket whose spill area holds
+ * fewer than that many rows, occupied or not.
+ */
+export function auditCreditBuckets(
+	values: unknown[][],
+	tab: string,
+	sheetId: number,
+	rowOffset: number,
+	pending?: PendingBucketEntry,
+	minCapacity = 0,
+): BucketGuardResult {
+	// Pre-section tabs (before 7月 2026) are normal — skip silently, no warning.
+	if (findRowByValue(values, CREDIT_BLOCK_COLS[0], CREDIT_SECTION_LABEL) === null) {
+		return { requests: [], bucket: null, rowsAdded: 0, grown: [] };
+	}
+	let blocks: CreditCardBlock[];
+	try {
+		blocks = findCreditSection(values, tab);
+	} catch (err) {
+		return {
+			requests: [],
+			bucket: null,
+			rowsAdded: 0,
+			grown: [],
+			warning: err instanceof Error ? err.message : String(err),
+		};
+	}
+	const wantName = pending === undefined ? null : norm(pending.cardName);
+	let warning: string | undefined;
+	if (wantName !== null && !blocks.some((b) => norm(b.card.name) === wantName)) {
+		warning = `No ${CREDIT_SECTION_LABEL} block for card "${pending?.cardName}" in ${tab}.`;
+	}
+
+	interface BucketPlan {
+		block: CreditCardBlock;
+		bucket: "結帳日前" | "結帳日後";
+		labelRow: number;
+		subtotalRow: number;
+		/** Rows the bucket's mirror must be able to spill (pending entry included). */
+		required: number;
+		holdsPending: boolean;
+	}
+	const plans: BucketPlan[] = [];
+	for (const block of blocks) {
+		const isPendingCard = wantName !== null && norm(block.card.name) === wantName;
+		const valueCol = block.startCol + CREDIT_BLOCK_WIDTH - 1;
+		const closeSerial = values[block.closeDateRow - 1]?.[valueCol];
+		if (typeof closeSerial !== "number") {
+			// This card's rows cannot be bucketed at all; only the pending
+			// entry's caller needs to hear about it.
+			if (isPendingCard) {
+				warning = `${block.card.name}'s ${CREDIT_CLOSE_LABEL} in ${tab} is not a number — cannot place the entry into a bucket.`;
+			}
+			continue;
+		}
+		const cardName = norm(block.card.name);
+		for (const isPre of [true, false] as const) {
+			// A row dated exactly ON the 結帳日 belongs to the NEXT statement —
+			// the 結帳日前 bucket is strictly < 結帳日, mirroring the sheet's
+			// FILTER/SUMIFS conditions (< / >=).
+			const inBucket = (serial: unknown): boolean =>
+				typeof serial === "number" && (isPre ? serial < closeSerial : serial >= closeSerial);
+			let required = 0;
+			for (let r = 3; r <= values.length; r++) {
+				if (r === pending?.excludeRow) continue;
+				const row = values[r - 1] ?? [];
+				if (norm(row[MONTH_COLS.paidMethod]) === cardName && inBucket(row[MONTH_COLS.date])) required++;
+			}
+			if (block.card.billingCurrency === "TWD") {
+				for (let r = 3; r <= values.length; r++) {
+					const row = values[r - 1] ?? [];
+					if (norm(row[LUNCH_COLS.paidMethod]) === cardName && inBucket(row[LUNCH_COLS.date])) required++;
+				}
+			}
+			// The pending row: not in the grid yet, or its date isn't.
+			const holdsPending = isPendingCard && inBucket(pending?.dateSerial);
+			if (holdsPending) required++;
+			plans.push({
+				block,
+				bucket: isPre ? CREDIT_PRE_LABEL : CREDIT_POST_LABEL,
+				labelRow: isPre ? block.preLabelRow : block.postLabelRow,
+				subtotalRow: isPre ? block.preSubtotalRow : block.postSubtotalRow,
+				required,
+				holdsPending,
+			});
+		}
+	}
+
+	plans.sort((a, b) => b.subtotalRow - a.subtotalRow);
+	const requests: object[] = [];
+	const grown: BucketGrowth[] = [];
+	const planned: Array<{ row: number; count: number }> = [];
+	let pendingBucket: BucketGuardResult["bucket"] = null;
+	let pendingRowsAdded = 0;
+	for (const p of plans) {
+		// Rows an already-planned insert (an aligned bucket's, at or below this
+		// one) opens INSIDE this bucket's span — capacity it gains for free.
+		const widened = planned.reduce(
+			(sum, ins) => (ins.row >= p.labelRow + 2 && ins.row <= p.subtotalRow ? sum + ins.count : sum),
+			0,
+		);
+		const capacity = p.subtotalRow - p.labelRow - 2 + widened;
+		const rowsAdded = Math.max(Math.max(p.required, minCapacity) - capacity, 0);
+		if (rowsAdded > 0) {
+			requests.push(bandInsert(sheetId, p.subtotalRow + rowOffset, rowsAdded, CREDIT_BLOCK_COLS[0], CREDIT_BAND_END));
+			planned.push({ row: p.subtotalRow, count: rowsAdded });
+			grown.push({ card: p.block.card.name, bucket: p.bucket, rowsAdded });
+		}
+		if (p.holdsPending) {
+			pendingBucket = p.bucket;
+			pendingRowsAdded = rowsAdded;
+		}
+		// The mirror renders raw serials/numbers wherever it spills onto a
+		// never-formatted cell: growth inserts inherit from the blank cushion
+		// row above them, and the spill also reaches pre-existing unformatted
+		// cushion rows with no insert at all. Stamp the canonical formats over
+		// the WHOLE spill area (post-insert coordinates, this bucket's own
+		// growth AND the widening it inherited) of every bucket this audit
+		// touches — the pending entry's even when nothing grew, so every
+		// guarded write also heals earlier gaps.
+		if (p.holdsPending || rowsAdded > 0 || widened > 0) {
+			const stampFormat = (col: number, numberFormat: object) => ({
+				repeatCell: {
+					range: {
+						sheetId,
+						startRowIndex: p.labelRow + 1 + rowOffset,
+						endRowIndex: p.subtotalRow - 1 + rowOffset + rowsAdded + widened,
+						startColumnIndex: col,
+						endColumnIndex: col + 1,
+					},
+					cell: { userEnteredFormat: { numberFormat } },
+					fields: "userEnteredFormat.numberFormat",
+				},
+			});
+			requests.push(
+				stampFormat(p.block.startCol, BUCKET_DATE_FORMAT),
+				stampFormat(
+					p.block.startCol + 2,
+					p.block.card.billingCurrency === "TWD" ? BUCKET_TWD_FORMAT : BUCKET_USD_FORMAT,
+				),
+			);
+		}
+	}
+	return { requests, bucket: pendingBucket, rowsAdded: pendingRowsAdded, grown, warning };
+}
+
+/**
+ * The pending-entry face of auditCreditBuckets: audit the whole section with
+ * the entry the caller is about to write counted into its card's bucket.
  */
 export function creditBucketGuard(
 	values: unknown[][],
@@ -508,91 +690,7 @@ export function creditBucketGuard(
 	rowOffset: number,
 	excludeRow?: number,
 ): BucketGuardResult {
-	// Pre-section tabs (before 7月 2026) are normal — skip silently, no warning.
-	if (findRowByValue(values, CREDIT_BLOCK_COLS[0], CREDIT_SECTION_LABEL) === null) {
-		return { requests: [], bucket: null, rowsAdded: 0 };
-	}
-	let blocks: CreditCardBlock[];
-	try {
-		blocks = findCreditSection(values, tab);
-	} catch (err) {
-		return { requests: [], bucket: null, rowsAdded: 0, warning: err instanceof Error ? err.message : String(err) };
-	}
-	const wantName = norm(cardName);
-	const block = blocks.find((b) => norm(b.card.name) === wantName);
-	if (block === undefined) {
-		return {
-			requests: [],
-			bucket: null,
-			rowsAdded: 0,
-			warning: `No ${CREDIT_SECTION_LABEL} block for card "${cardName}" in ${tab}.`,
-		};
-	}
-	const valueCol = block.startCol + CREDIT_BLOCK_WIDTH - 1;
-	const closeSerial = values[block.closeDateRow - 1]?.[valueCol];
-	if (typeof closeSerial !== "number") {
-		return {
-			requests: [],
-			bucket: null,
-			rowsAdded: 0,
-			warning: `${block.card.name}'s ${CREDIT_CLOSE_LABEL} in ${tab} is not a number — cannot place the entry into a bucket.`,
-		};
-	}
-
-	// A row dated exactly ON the 結帳日 belongs to the NEXT statement — the
-	// 結帳日前 bucket is strictly < 結帳日, mirroring the sheet's FILTER/SUMIFS
-	// conditions (< / >=).
-	const isPre = dateSerialValue < closeSerial;
-	const bucket: "結帳日前" | "結帳日後" = isPre ? "結帳日前" : "結帳日後";
-	const labelRow = isPre ? block.preLabelRow : block.postLabelRow;
-	const subtotalRow = isPre ? block.preSubtotalRow : block.postSubtotalRow;
-	const inBucket = (serial: unknown): boolean =>
-		typeof serial === "number" && (isPre ? serial < closeSerial : serial >= closeSerial);
-
-	let matches = 1; // the pending row: not in the grid yet, or its date isn't
-	for (let r = 3; r <= values.length; r++) {
-		if (r === excludeRow) continue;
-		const row = values[r - 1] ?? [];
-		if (norm(row[MONTH_COLS.paidMethod]) === wantName && inBucket(row[MONTH_COLS.date])) matches++;
-	}
-	if (block.card.billingCurrency === "TWD") {
-		for (let r = 3; r <= values.length; r++) {
-			const row = values[r - 1] ?? [];
-			if (norm(row[LUNCH_COLS.paidMethod]) === wantName && inBucket(row[LUNCH_COLS.date])) matches++;
-		}
-	}
-
-	const capacity = subtotalRow - labelRow - 2;
-	const deficit = matches - capacity;
-	const rowsAdded = Math.max(deficit, 0);
-	const requests: object[] = [];
-	if (rowsAdded > 0) {
-		requests.push(bandInsert(sheetId, subtotalRow + rowOffset, rowsAdded, CREDIT_BLOCK_COLS[0], CREDIT_BAND_END));
-	}
-	// The mirror renders raw serials/numbers wherever it spills onto a
-	// never-formatted cell: the growth insert above 小計 inherits from the
-	// blank cushion row over it, and the spill also reaches pre-existing
-	// unformatted cushion rows with no insert at all. Stamp the bucket's
-	// canonical formats over the WHOLE spill area (post-insert coordinates),
-	// not just new rows, so every guarded write also heals earlier gaps.
-	const stampFormat = (col: number, numberFormat: object) => ({
-		repeatCell: {
-			range: {
-				sheetId,
-				startRowIndex: labelRow + 1 + rowOffset,
-				endRowIndex: subtotalRow - 1 + rowOffset + rowsAdded,
-				startColumnIndex: col,
-				endColumnIndex: col + 1,
-			},
-			cell: { userEnteredFormat: { numberFormat } },
-			fields: "userEnteredFormat.numberFormat",
-		},
-	});
-	requests.push(
-		stampFormat(block.startCol, BUCKET_DATE_FORMAT),
-		stampFormat(block.startCol + 2, block.card.billingCurrency === "TWD" ? BUCKET_TWD_FORMAT : BUCKET_USD_FORMAT),
-	);
-	return { requests, bucket, rowsAdded };
+	return auditCreditBuckets(values, tab, sheetId, rowOffset, { cardName, dateSerial: dateSerialValue, excludeRow });
 }
 
 export interface IncomeWindow {
@@ -787,8 +885,24 @@ export async function setIncome(client: SheetsClient, p: SetIncomeParams) {
 		});
 	}
 
+	// Any tool write is a chance to heal 對帳區 buckets that hand-entered card
+	// rows overflowed. The income band insert above (B–D) never shifts the
+	// section's H–N columns, so no row offset.
+	const audit = auditCreditBuckets(values, tab, sheetId, 0);
+	requests.push(...audit.requests);
+
 	await client.batchUpdate(requests);
-	return { tab, row: targetRow, action, item, amount: p.amount, currency: p.currency, previous };
+	return {
+		tab,
+		row: targetRow,
+		action,
+		item,
+		amount: p.amount,
+		currency: p.currency,
+		previous,
+		bucketWarning: audit.warning,
+		bucketsGrown: audit.grown.length > 0 ? audit.grown : undefined,
+	};
 }
 
 export function quoteTab(tab: string): string {
@@ -847,6 +961,9 @@ export async function adjustBalance(client: SheetsClient, p: AdjustBalanceParams
 	const adjustment = round2(p.actual - calculated);
 
 	const sheetId = await client.getSheetId(tab);
+	// Any tool write is a chance to heal 對帳區 buckets that hand-entered card
+	// rows overflowed (labels and serials read the same in this UNFORMATTED render).
+	const audit = auditCreditBuckets(values, tab, sheetId, 0);
 	await client.batchUpdate([
 		{
 			updateCells: {
@@ -855,8 +972,18 @@ export async function adjustBalance(client: SheetsClient, p: AdjustBalanceParams
 				fields: "userEnteredValue",
 			},
 		},
+		...audit.requests,
 	]);
-	return { tab, currency: p.currency, calculated, actual: p.actual, adjustment, previousAdjustment };
+	return {
+		tab,
+		currency: p.currency,
+		calculated,
+		actual: p.actual,
+		adjustment,
+		previousAdjustment,
+		bucketWarning: audit.warning,
+		bucketsGrown: audit.grown.length > 0 ? audit.grown : undefined,
+	};
 }
 
 export interface AddExpenseParams {
@@ -970,14 +1097,17 @@ export async function addExpense(client: SheetsClient, p: AddExpenseParams) {
 		});
 	}
 
-	// A dateless card row is not mirrored into a bucket, so the guard only
-	// runs once both a REAL card and a date are on the row (現金/沛 rows have
-	// no bucket at all).
-	let guard: BucketGuardResult | undefined;
-	if (card !== undefined && dateSerialValue !== null) {
-		guard = creditBucketGuard(values, tab, sheetId, card.name, dateSerialValue, inserted ? 1 : 0);
-		requests.push(...guard.requests);
-	}
+	// A dateless card row is not mirrored into a bucket, so the pending-entry
+	// guard only runs once both a REAL card and a date are on the row (現金/沛
+	// rows have no bucket at all). Every OTHER write still audits the whole
+	// section: hand-entered rows (typed straight into the UI) trigger no
+	// growth themselves, so each tool write is the next chance to heal an
+	// overflowed bucket.
+	const guard =
+		card !== undefined && dateSerialValue !== null
+			? creditBucketGuard(values, tab, sheetId, card.name, dateSerialValue, inserted ? 1 : 0)
+			: auditCreditBuckets(values, tab, sheetId, inserted ? 1 : 0);
+	requests.push(...guard.requests);
 
 	if (moveToRow !== null) {
 		requests.push({
@@ -1008,9 +1138,10 @@ export async function addExpense(client: SheetsClient, p: AddExpenseParams) {
 		date: p.date ?? null,
 		tag: p.tag ?? null,
 		card: p.card ?? null,
-		bucket: guard?.bucket ?? null,
-		bucketRowsAdded: guard?.rowsAdded ?? 0,
-		bucketWarning: guard?.warning,
+		bucket: guard.bucket,
+		bucketRowsAdded: guard.rowsAdded,
+		bucketWarning: guard.warning,
+		bucketsGrown: guard.grown.length > 0 ? guard.grown : undefined,
 	};
 }
 
@@ -1053,6 +1184,9 @@ export interface AddTransferResult {
 	jpy?: number;
 	spotJpy?: number;
 	wiredMonthTab?: string;
+	/** usd only — the month-tab 對帳區 audit's outcome (see auditCreditBuckets). */
+	bucketWarning?: string;
+	bucketsGrown?: BucketGrowth[];
 }
 
 /**
@@ -1100,6 +1234,8 @@ async function wireJpyTransferIntoMonth(
 			},
 		});
 	}
+	// Heal any hand-entered 對帳區 bucket drift while we're writing the tab anyway.
+	requests.push(...auditCreditBuckets(values, monthTab, sheetId, 0).requests);
 	await client.batchUpdate(requests);
 }
 
@@ -1215,6 +1351,13 @@ export async function addTransfer(client: SheetsClient, p: AddTransferParams): P
 					formatRepeat(cfg.cols.spread, { numberFormat: { type: "CURRENCY", pattern: "[$NTD ]#,##0" } }, 3), // E:G
 				];
 
+	// A usd transfer writes a month tab — audit the 對帳區 below the transfer
+	// block while we're here, healing buckets hand-entered card rows overflowed
+	// (jpy targets a trip tab, which has no section; its month-tab wiring runs
+	// its own audit). The full-section insert in the scratch batch above
+	// already shifted the section down one row, hence the offset.
+	const audit = currency === "usd" ? auditCreditBuckets(values, tab, sheetId, inserted ? 1 : 0) : null;
+
 	await client.batchUpdate([
 		...jpyFormatRequests,
 		{
@@ -1247,6 +1390,7 @@ export async function addTransfer(client: SheetsClient, p: AddTransferParams): P
 				fields: "userEnteredValue",
 			},
 		},
+		...(audit?.requests ?? []),
 	]);
 
 	const spread = p.ntd - received * rate; // == (當下美金/日幣 − 實際美金/日幣) × rate
@@ -1273,7 +1417,13 @@ export async function addTransfer(client: SheetsClient, p: AddTransferParams): P
 		}
 		return { ...base, jpy: received, spotJpy: round2(p.ntd / rate), wiredMonthTab: monthTab };
 	}
-	return { ...base, usd: received, spotUsd: round2(p.ntd / rate) };
+	return {
+		...base,
+		usd: received,
+		spotUsd: round2(p.ntd / rate),
+		bucketWarning: audit?.warning,
+		bucketsGrown: audit !== null && audit.grown.length > 0 ? audit.grown : undefined,
+	};
 }
 
 export interface AddLunchParams {
@@ -1370,15 +1520,17 @@ export async function addLunch(client: SheetsClient, p: AddLunchParams) {
 		},
 	);
 
-	// Lunches always carry a date, so the guard runs whenever a REAL card is
-	// given (現金 lunches have no bucket); its insert (below the lunch section)
-	// is appended last, after the writes above. The lunch insert (if any) is
-	// band-scoped to P–S and never moves the credit section — no offset.
-	let guard: BucketGuardResult | undefined;
-	if (card !== undefined) {
-		guard = creditBucketGuard(values, tab, sheetId, card.name, dateSerialValue, 0);
-		requests.push(...guard.requests);
-	}
+	// Lunches always carry a date, so the pending-entry guard runs whenever a
+	// REAL card is given (現金 lunches have no bucket, but the write still
+	// audits the whole section for hand-entered drift); its inserts (below the
+	// lunch section) are appended last, after the writes above. The lunch
+	// insert (if any) is band-scoped to P–S and never moves the credit
+	// section — no offset.
+	const guard =
+		card !== undefined
+			? creditBucketGuard(values, tab, sheetId, card.name, dateSerialValue, 0)
+			: auditCreditBuckets(values, tab, sheetId, 0);
+	requests.push(...guard.requests);
 
 	await client.batchUpdate(requests);
 
@@ -1399,9 +1551,10 @@ export async function addLunch(client: SheetsClient, p: AddLunchParams) {
 		budget,
 		spent: budget !== null && leftover !== null ? round2(budget - leftover) : null,
 		leftover,
-		bucket: guard?.bucket ?? null,
-		bucketRowsAdded: guard?.rowsAdded ?? 0,
-		bucketWarning: guard?.warning,
+		bucket: guard.bucket,
+		bucketRowsAdded: guard.rowsAdded,
+		bucketWarning: guard.warning,
+		bucketsGrown: guard.grown.length > 0 ? guard.grown : undefined,
 	};
 }
 
@@ -1485,22 +1638,20 @@ export async function setExpenseDate(client: SheetsClient, p: SetExpenseDatePara
 	];
 
 	const g = String(values[row - 1]?.[MONTH_COLS.paidMethod] ?? "").trim();
-	let bucket: BucketGuardResult["bucket"] = null;
-	let bucketRowsAdded = 0;
 	let bucketWarning: string | undefined;
-	// 現金/沛 rows have no 對帳區 bucket — dating one is a plain date write.
-	if (g !== "" && !NON_CARD_PAYMENT_METHODS.includes(g)) {
-		const registryCard = CREDIT_CARDS.find((c) => norm(c.name) === norm(g));
-		if (registryCard === undefined) {
-			bucketWarning = `The row's 支付方式 "${g}" is not a known card — bucket room not checked.`;
-		} else {
-			const guard = creditBucketGuard(values, tab, sheetId, registryCard.name, serial, 0, row);
-			requests.push(...guard.requests);
-			bucket = guard.bucket;
-			bucketRowsAdded = guard.rowsAdded;
-			bucketWarning = guard.warning;
-		}
+	// 現金/沛 rows have no 對帳區 bucket — dating one is a plain date write,
+	// but every write still audits the whole section for hand-entered drift.
+	const isCardRow = g !== "" && !NON_CARD_PAYMENT_METHODS.includes(g);
+	const registryCard = isCardRow ? CREDIT_CARDS.find((c) => norm(c.name) === norm(g)) : undefined;
+	if (isCardRow && registryCard === undefined) {
+		bucketWarning = `The row's 支付方式 "${g}" is not a known card — bucket room not checked.`;
 	}
+	const guard =
+		registryCard !== undefined
+			? creditBucketGuard(values, tab, sheetId, registryCard.name, serial, 0, row)
+			: auditCreditBuckets(values, tab, sheetId, 0);
+	requests.push(...guard.requests);
+	bucketWarning ??= guard.warning;
 
 	// Relocate to the date-sorted position, computed as if the row were
 	// absent. moveDimension rewrites references like an insert+delete pair,
@@ -1544,9 +1695,10 @@ export async function setExpenseDate(client: SheetsClient, p: SetExpenseDatePara
 		date: serialToIso(serial),
 		previousDate,
 		card: g || null,
-		bucket,
-		bucketRowsAdded,
+		bucket: guard.bucket,
+		bucketRowsAdded: guard.rowsAdded,
 		bucketWarning,
+		bucketsGrown: guard.grown.length > 0 ? guard.grown : undefined,
 		movedToRow,
 	};
 }
@@ -1919,6 +2071,21 @@ export async function startMonth(client: SheetsClient, month: number) {
 		}
 	}
 
+	// A fresh month opens with every bucket's spill area padded to at least
+	// CREDIT_BUCKET_PAD_ROWS blank rows — the headroom that absorbs
+	// hand-entered card rows, which trigger no tool write and therefore no
+	// write-time growth. Must run AFTER the 本月需繳款 rewires above: those
+	// formulas reference the 小計 cells, and only writes already on the grid
+	// shift in lockstep with the pad's band inserts. Same fail-soft contract
+	// as the rebuild — duplicateSheet has already committed.
+	let creditPadded: BucketGrowth[] | undefined;
+	if (findRowByValue(values, CREDIT_BLOCK_COLS[0], CREDIT_SECTION_LABEL) !== null) {
+		const audit = auditCreditBuckets(values, newTab, sheetId, 0, undefined, CREDIT_BUCKET_PAD_ROWS);
+		requests.push(...audit.requests);
+		creditPadded = audit.grown;
+		creditWarning ??= audit.warning;
+	}
+
 	const kept: string[] = [];
 	const cleared: string[] = [];
 	const rowsToDelete: number[] = [];
@@ -1966,7 +2133,7 @@ export async function startMonth(client: SheetsClient, month: number) {
 	}
 	await client.batchUpdate(requests);
 
-	return { tab: newTab, duplicatedFrom: prevTab, kept, cleared, clearedIncomes, lunchCleared, lunchWarning, creditRebuilt, creditWarning };
+	return { tab: newTab, duplicatedFrom: prevTab, kept, cleared, clearedIncomes, lunchCleared, lunchWarning, creditRebuilt, creditWarning, creditPadded };
 }
 
 export interface TripEntryParams {

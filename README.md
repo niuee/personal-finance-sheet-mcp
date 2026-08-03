@@ -11,8 +11,10 @@ A personal [Model Context Protocol](https://modelcontextprotocol.io/introduction
 - **add_tab** — create a new empty tab.
 - **add_expense** — log an expense into a monthly tab (defaults to the current month); a card param routes it into the 信用卡帳單對帳區.
 - **set_expense_date** — date an existing expense row (dropping a card row into its 對帳區 bucket), growing the bucket when full.
+
+Every write to a monthly tab (add_expense, add_lunch, set_expense_date, set_income, adjust_balance, add_transfer) also audits ALL 信用卡帳單對帳區 buckets and grows any whose mirror has outgrown its spill area — so rows typed straight into the UI, which trigger no tool write of their own, are healed by the next tool write of any kind.
 - **month_summary** — get a month's numbers as clean JSON.
-- **start_month** — open a new month by duplicating the previous month's tab, and rolls the 信用卡帳單對帳區 forward.
+- **start_month** — open a new month by duplicating the previous month's tab, rolls the 信用卡帳單對帳區 forward, and pads every card bucket's spill area to 20 blank rows of headroom.
 - **add_trip_entry** — log a purchase into a trip tab's mosaic category block, discovering the block by title and choosing between jpy (¥-priced) or twd (NTD-direct) rows.
 - **trip_budget_status** — read a trip tab's 目前實際開銷 budget-vs-actual summary: per-分類 spent / budget / remaining (NTD and JPY) plus totals.
 - **get_sheet_conventions** — read how the spreadsheet is organized.
