@@ -7,9 +7,11 @@ import {
 	addTripEntry,
 	adjustBalance,
 	annotateRows,
+	auditCreditBuckets,
 	cellData,
 	colIndex,
 	colLetter,
+	CREDIT_BUCKET_PAD_ROWS,
 	expandAnchorRange,
 	expensePositionFor,
 	findCells,
@@ -563,6 +565,92 @@ describe("findCreditSection", () => {
 	});
 });
 
+describe("auditCreditBuckets", () => {
+	/** creditGrid + three hand-entered 國泰 CUBE rows dated pre-結帳日 — one over the 結帳日前 bucket's 2-row spill area. */
+	function overflowedGrid(): unknown[][] {
+		const g = creditGrid();
+		g[4] = [dateSerial(2026, 7, 10), "手填1", "訂閱", "", 100, "TWD", "國泰 Cube"];
+		g[5] = [dateSerial(2026, 7, 10), "手填2", "訂閱", "", 100, "TWD", "國泰 Cube"];
+		g[6] = [dateSerial(2026, 7, 10), "手填3", "訂閱", "", 100, "TWD", "國泰 Cube"];
+		return g;
+	}
+
+	it("no-ops on a healthy section when there is no pending entry", () => {
+		expect(auditCreditBuckets(creditGrid(), "9 月", 111, 0)).toEqual({
+			requests: [],
+			bucket: null,
+			rowsAdded: 0,
+			grown: [],
+		});
+	});
+
+	it("skips silently on tabs without the section", () => {
+		expect(auditCreditBuckets(lunchGrid(), "6 月", 111, 0)).toEqual({
+			requests: [],
+			bucket: null,
+			rowsAdded: 0,
+			grown: [],
+		});
+	});
+
+	it("degrades to a warning on a torn section", () => {
+		const g = creditGrid();
+		(g[43] as unknown[])[7] = ""; // CUBE loses 本月需繳款
+		const result = auditCreditBuckets(g, "9 月", 111, 0);
+		expect(result.requests).toEqual([]);
+		expect(result.warning).toMatch(/國泰 CUBE.*本月需繳款/);
+	});
+
+	it("grows a bucket that hand-entered rows overflowed, with no pending entry", () => {
+		const result = auditCreditBuckets(overflowedGrid(), "9 月", 111, 0);
+		expect(result.bucket).toBeNull();
+		expect(result.rowsAdded).toBe(0);
+		expect(result.grown).toEqual([{ card: "國泰 CUBE", bucket: "結帳日前", rowsAdded: 1 }]);
+		const inserts = result.requests.filter((r: any) => (r as any).insertRange) as any[];
+		expect(inserts).toEqual([
+			{
+				insertRange: {
+					range: { sheetId: 111, startRowIndex: 48, endRowIndex: 49, startColumnIndex: 7, endColumnIndex: 14 },
+					shiftDimension: "ROWS",
+				},
+			},
+		]);
+		// the grown bucket's whole spill area is stamped (post-insert rows 47-49)
+		expect(result.requests).toEqual(expect.arrayContaining(bucketFormatStamps(46, 49, 7, "[$NTD ]#,##0.00")));
+	});
+
+	it("pads every bucket to minCapacity bottom-up, one insert per aligned 小計 row", () => {
+		const result = auditCreditBuckets(creditGrid(), "9 月", 111, 0, undefined, CREDIT_BUCKET_PAD_ROWS);
+		const inserts = (result.requests.filter((r: any) => (r as any).insertRange) as any[]).map(
+			(r) => r.insertRange.range,
+		);
+		// both cards' 小計 rows align (49/55), so one 18-row H–N insert per
+		// bucket row widens both card columns at once — never a double-growth
+		expect(inserts).toEqual([
+			{ sheetId: 111, startRowIndex: 54, endRowIndex: 72, startColumnIndex: 7, endColumnIndex: 14 },
+			{ sheetId: 111, startRowIndex: 48, endRowIndex: 66, startColumnIndex: 7, endColumnIndex: 14 },
+		]);
+		expect(result.grown).toEqual([
+			{ card: "國泰 CUBE", bucket: "結帳日後", rowsAdded: 18 },
+			{ card: "國泰 CUBE", bucket: "結帳日前", rowsAdded: 18 },
+		]);
+		// the widened twin blocks (CHASE) get their padded spill areas stamped too
+		expect(result.requests).toEqual(expect.arrayContaining(bucketFormatStamps(46, 66, 11, '"$"#,##0.00')));
+	});
+
+	it("counts a pending entry into its bucket while auditing the rest of the section", () => {
+		const result = auditCreditBuckets(overflowedGrid(), "9 月", 111, 0, {
+			cardName: "國泰 CUBE",
+			dateSerial: dateSerial(2026, 7, 25),
+		});
+		// pending lands post-結帳日: its bucket has room (0+1 of 2), the
+		// overflowed 結帳日前 bucket still heals in the same audit
+		expect(result.bucket).toBe("結帳日後");
+		expect(result.rowsAdded).toBe(0);
+		expect(result.grown).toEqual([{ card: "國泰 CUBE", bucket: "結帳日前", rowsAdded: 1 }]);
+	});
+});
+
 /** Like fakeClient, but the single-cell scratch read returns `rate` instead of the grid. */
 function transferClient(grid: unknown[][], rate: unknown = 29.85): SheetsClient {
 	return {
@@ -606,7 +694,8 @@ describe("addTransfer", () => {
 		const client = transferClient(transferGrid());
 		const result = await addTransfer(client, { ntd: 30000, usd: 1000, fee: 30, month: 9, date: "9/2" });
 
-		expect((client.readRange as any).mock.calls[0]).toEqual(["'9 月'!A1:N60", "FORMULA"]);
+		// full month grid, not a shallow H–N window — the write also audits the 對帳區 below
+		expect((client.readRange as any).mock.calls[0]).toEqual(["'9 月'!A1:S160", "FORMULA"]);
 		// batch 1: scratch GOOGLEFINANCE into J35, no insert needed
 		const batch1 = (client.batchUpdate as any).mock.calls[0][0];
 		expect(batch1).toHaveLength(1);
@@ -720,6 +809,42 @@ describe("addTransfer", () => {
 		(client.readRange as any).mockResolvedValue({ range: "x", values: transferGrid(), truncated: true });
 		await expect(addTransfer(client, { ntd: 100, usd: 3, fee: 0, month: 9 })).rejects.toThrow("truncated");
 		expect((client.batchUpdate as any).mock.calls).toHaveLength(0);
+	});
+
+	it("audits the 對帳區 below the transfer block, healing hand-entered overflow", async () => {
+		const g = creditGrid();
+		g[4] = [dateSerial(2026, 7, 10), "手填1", "訂閱", "", 100, "TWD", "國泰 Cube"];
+		g[5] = [dateSerial(2026, 7, 10), "手填2", "訂閱", "", 100, "TWD", "國泰 Cube"];
+		g[6] = [dateSerial(2026, 7, 10), "手填3", "訂閱", "", 100, "TWD", "國泰 Cube"];
+		const client = transferClient(g);
+
+		const result = await addTransfer(client, { ntd: 30000, usd: 1000, fee: 30, month: 9, date: "9/2" });
+
+		// the transfer slot (row 35) was free, so nothing shifted the section
+		const batch2 = (client.batchUpdate as any).mock.calls[1][0];
+		const insert = batch2.find((r: any) => r.insertRange);
+		expect(insert.insertRange.range).toMatchObject({ startRowIndex: 48, endRowIndex: 49, startColumnIndex: 7 });
+		expect(result).toMatchObject({
+			row: 35,
+			bucketsGrown: [{ card: "國泰 CUBE", bucket: "結帳日前", rowsAdded: 1 }],
+		});
+	});
+
+	it("shifts the audit's inserts by the transfer section's own full-section insert", async () => {
+		const g = creditGrid();
+		(g[34] ??= [])[7] = 46266; // the only data slot is taken → the write inserts above 總和
+		(g[34] as unknown[])[8] = 30000;
+		g[4] = [dateSerial(2026, 7, 10), "手填1", "訂閱", "", 100, "TWD", "國泰 Cube"];
+		g[5] = [dateSerial(2026, 7, 10), "手填2", "訂閱", "", 100, "TWD", "國泰 Cube"];
+		g[6] = [dateSerial(2026, 7, 10), "手填3", "訂閱", "", 100, "TWD", "國泰 Cube"];
+		const client = transferClient(g);
+
+		await addTransfer(client, { ntd: 15000, usd: 500, fee: 15, month: 9, date: "9/9" });
+
+		// the H–N insert above 總和 (scratch batch) pushed the section down one
+		const batch2 = (client.batchUpdate as any).mock.calls[1][0];
+		const insert = batch2.find((r: any) => r.insertRange);
+		expect(insert.insertRange.range).toMatchObject({ startRowIndex: 49, endRowIndex: 50, startColumnIndex: 7 });
 	});
 });
 
@@ -1110,6 +1235,22 @@ describe("addLunch", () => {
 			expect(result.bucket).toBeNull();
 			expect(result.bucketRowsAdded).toBe(0);
 			expect(result.bucketWarning).toBeUndefined();
+		});
+
+		it("audits every bucket on a cash lunch, healing hand-entered overflow", async () => {
+			const g = creditGrid();
+			g[4] = [dateSerial(2026, 7, 10), "手填1", "訂閱", "", 100, "TWD", "國泰 Cube"];
+			g[5] = [dateSerial(2026, 7, 10), "手填2", "訂閱", "", 100, "TWD", "國泰 Cube"];
+			g[6] = [dateSerial(2026, 7, 10), "手填3", "訂閱", "", 100, "TWD", "國泰 Cube"];
+			const client = fakeClient(g);
+			const result = await addLunch(client, { amount: 100, month: 9, date: "9/2" });
+			const requests = (client.batchUpdate as any).mock.calls[0][0];
+			const insert = requests.find((r: any) => r.insertRange && r.insertRange.range.startColumnIndex === 7);
+			expect(insert.insertRange.range).toMatchObject({ startRowIndex: 48, endRowIndex: 49 });
+			expect(result).toMatchObject({
+				bucket: null,
+				bucketsGrown: [{ card: "國泰 CUBE", bucket: "結帳日前", rowsAdded: 1 }],
+			});
 		});
 	});
 });
@@ -1654,6 +1795,28 @@ describe("addExpense", () => {
 			expect(result.bucketWarning).toBeUndefined();
 		});
 
+		it("audits every bucket on a dateless non-card write, healing hand-entered overflow", async () => {
+			const g = creditGrid();
+			// three hand-entered CUBE rows — one over the 結帳日前 spill area,
+			// and none of them ever triggered the pending-entry guard
+			g[4] = [dateSerial(2026, 7, 10), "手填1", "訂閱", "", 100, "TWD", "國泰 Cube"];
+			g[5] = [dateSerial(2026, 7, 10), "手填2", "訂閱", "", 100, "TWD", "國泰 Cube"];
+			g[6] = [dateSerial(2026, 7, 10), "手填3", "訂閱", "", 100, "TWD", "國泰 Cube"];
+			const client = fakeClient(g);
+			const result = await addExpense(client, { item: "Netflix", amount: 390, currency: "TWD", month: 9 });
+			const requests = (client.batchUpdate as any).mock.calls[0][0];
+			const insert = requests.find((r: any) => r.insertRange);
+			expect(insert.insertRange).toEqual({
+				range: { sheetId: 111, startRowIndex: 48, endRowIndex: 49, startColumnIndex: 7, endColumnIndex: 14 },
+				shiftDimension: "ROWS",
+			});
+			expect(result).toMatchObject({
+				bucket: null,
+				bucketRowsAdded: 0,
+				bucketsGrown: [{ card: "國泰 CUBE", bucket: "結帳日前", rowsAdded: 1 }],
+			});
+		});
+
 		it("writes the expense even when the tab has no 信用卡帳單對帳區 (pre-section tabs)", async () => {
 			const client = fakeClient(lunchGrid());
 			const result = await addExpense(client, {
@@ -1848,6 +2011,25 @@ describe("setExpenseDate", () => {
 		expect(result.card).toBeNull();
 		expect(result.bucket).toBeNull();
 		expect(result.bucketWarning).toBeUndefined();
+	});
+
+	it("audits every bucket when dating a no-支付方式 row, healing hand-entered overflow", async () => {
+		const g = dateGrid();
+		g[4] = [dateSerial(2026, 7, 10), "手填1", "訂閱", "", 100, "TWD", "國泰 Cube"];
+		g[5] = [dateSerial(2026, 7, 10), "手填2", "訂閱", "", 100, "TWD", "國泰 Cube"];
+		g[7] = [dateSerial(2026, 7, 10), "手填3", "訂閱", "", 100, "TWD", "國泰 Cube"];
+		const client = fakeClient(g);
+
+		const result = await setExpenseDate(client, { item: "Netflix", date: "7/5", month: 9 });
+
+		const requests = (client.batchUpdate as any).mock.calls[0][0];
+		const insert = requests.find((r: any) => r.insertRange);
+		expect(insert.insertRange.range).toMatchObject({ startRowIndex: 48, endRowIndex: 49, startColumnIndex: 7 });
+		expect(result).toMatchObject({
+			card: null,
+			bucket: null,
+			bucketsGrown: [{ card: "國泰 CUBE", bucket: "結帳日前", rowsAdded: 1 }],
+		});
 	});
 
 	it("dates a 現金 row without warning — a non-card 支付方式 has no bucket to guard", async () => {
@@ -2130,6 +2312,25 @@ describe("adjustBalance", () => {
 		// adjustedBalanceGrid leaves the end cells as formula strings — a broken render.
 		const client = fakeClient(adjustedBalanceGrid());
 		await expect(adjustBalance(client, { currency: "TWD", actual: 450, month: 9 })).rejects.toThrow("本月底新臺幣真實餘額");
+	});
+
+	it("audits the 對帳區 alongside the 調整 write, healing hand-entered overflow", async () => {
+		const g = gridWithNumbers();
+		g[4] = [dateSerial(2026, 7, 10), "手填1", "訂閱", "", 100, "TWD", "國泰 Cube"];
+		g[5] = [dateSerial(2026, 7, 10), "手填2", "訂閱", "", 100, "TWD", "國泰 Cube"];
+		g[6] = [dateSerial(2026, 7, 10), "手填3", "訂閱", "", 100, "TWD", "國泰 Cube"];
+		const client = fakeClient(g);
+
+		const result = await adjustBalance(client, { currency: "TWD", actual: 450, month: 9 });
+
+		const requests = (client.batchUpdate as any).mock.calls[0][0];
+		expect(requests[0].updateCells.start).toEqual({ sheetId: 111, rowIndex: 43, columnIndex: 3 });
+		const insert = requests.find((r: any) => r.insertRange);
+		expect(insert.insertRange.range).toMatchObject({ startRowIndex: 48, endRowIndex: 49, startColumnIndex: 7 });
+		expect(result).toMatchObject({
+			adjustment: -50,
+			bucketsGrown: [{ card: "國泰 CUBE", bucket: "結帳日前", rowsAdded: 1 }],
+		});
 	});
 });
 
@@ -2428,11 +2629,39 @@ describe("startMonth", () => {
 		expect(result.creditRebuilt).toEqual(["國泰 CUBE", "CHASE Amazon"]);
 	});
 
+	it("pads every bucket's spill area to CREDIT_BUCKET_PAD_ROWS blank rows at month open", async () => {
+		const client = startMonthClient(creditGrid(), ["9 月", "8 月"]);
+
+		const result = await startMonth(client, 10);
+
+		const requests = (client.batchUpdate as any).mock.calls[1][0];
+		const inserts = requests.filter((r: any) => r.insertRange).map((r: any) => r.insertRange.range);
+		// both cards' 小計 rows align (49/55), so one 18-row H–N insert per
+		// bucket row (bottom-up) pads both card columns at once
+		expect(inserts).toEqual([
+			{ sheetId: 555, startRowIndex: 54, endRowIndex: 72, startColumnIndex: 7, endColumnIndex: 14 },
+			{ sheetId: 555, startRowIndex: 48, endRowIndex: 66, startColumnIndex: 7, endColumnIndex: 14 },
+		]);
+		// the pads land AFTER the 本月需繳款 rewires, so those just-written
+		// formulas' 小計 references shift down in lockstep with the inserts
+		const dueWriteIdx = requests.findIndex(
+			(r: any) => r.updateCells && r.updateCells.start.rowIndex === 43 && r.updateCells.start.columnIndex === 9,
+		);
+		const firstInsertIdx = requests.findIndex((r: any) => r.insertRange);
+		expect(dueWriteIdx).toBeGreaterThanOrEqual(0);
+		expect(firstInsertIdx).toBeGreaterThan(dueWriteIdx);
+		expect(result.creditPadded).toEqual([
+			{ card: "國泰 CUBE", bucket: "結帳日後", rowsAdded: 18 },
+			{ card: "國泰 CUBE", bucket: "結帳日前", rowsAdded: 18 },
+		]);
+	});
+
 	it("skips the credit rebuild silently on tabs without the section", async () => {
 		const client = startMonthClient(lunchGrid(), ["9 月", "8 月"]);
 		const result = await startMonth(client, 10);
 		expect(result.creditRebuilt).toEqual([]);
 		expect(result.creditWarning).toBeUndefined();
+		expect(result.creditPadded).toBeUndefined();
 	});
 
 	it("surfaces a torn credit block as a warning instead of failing the month-open", async () => {
@@ -3464,5 +3693,23 @@ describe("setIncome", () => {
 		(client.readRange as any).mockResolvedValue({ range: "x", values: currentMonthGrid(), truncated: true });
 		await expect(setIncome(client, { item: "薪水", amount: 1, currency: "TWD", month: 9 })).rejects.toThrow("truncated");
 		expect((client.batchUpdate as any).mock.calls).toHaveLength(0);
+	});
+
+	it("audits the 對帳區 on an income write, healing hand-entered overflow", async () => {
+		const g = creditGrid();
+		g[4] = [dateSerial(2026, 7, 10), "手填1", "訂閱", "", 100, "TWD", "國泰 Cube"];
+		g[5] = [dateSerial(2026, 7, 10), "手填2", "訂閱", "", 100, "TWD", "國泰 Cube"];
+		g[6] = [dateSerial(2026, 7, 10), "手填3", "訂閱", "", 100, "TWD", "國泰 Cube"];
+		const client = fakeClient(g);
+
+		const result = await setIncome(client, { item: "薪水", amount: 70000, currency: "TWD", month: 9 });
+
+		const requests = (client.batchUpdate as any).mock.calls[0][0];
+		const insert = requests.find((r: any) => r.insertRange && r.insertRange.range.startColumnIndex === 7);
+		expect(insert.insertRange.range).toMatchObject({ startRowIndex: 48, endRowIndex: 49 });
+		expect(result).toMatchObject({
+			action: "updated",
+			bucketsGrown: [{ card: "國泰 CUBE", bucket: "結帳日前", rowsAdded: 1 }],
+		});
 	});
 });
