@@ -588,11 +588,22 @@ export function auditCreditBuckets(
 		}
 		const cardName = norm(block.card.name);
 		for (const isPre of [true, false] as const) {
-			// A row dated exactly ON the 結帳日 belongs to the NEXT statement —
-			// the 結帳日前 bucket is strictly < 結帳日, mirroring the sheet's
-			// FILTER/SUMIFS conditions (< / >=).
+			// The statement boundary mirrors each card's sheet FILTER/SUMIFS
+			// conditions and is per-card: normally a row dated exactly ON the
+			// 結帳日 belongs to the NEXT statement (結帳日前 strictly < 結帳日,
+			// i.e. < / >=), but an inclusiveClose card (Apple Card, whose
+			// statement is the calendar month) keeps the close date in the
+			// closing statement (<= / >).
+			const inclusive = block.card.inclusiveClose;
 			const inBucket = (serial: unknown): boolean =>
-				typeof serial === "number" && (isPre ? serial < closeSerial : serial >= closeSerial);
+				typeof serial === "number" &&
+				(isPre
+					? inclusive
+						? serial <= closeSerial
+						: serial < closeSerial
+					: inclusive
+						? serial > closeSerial
+						: serial >= closeSerial);
 			let required = 0;
 			for (let r = 3; r <= values.length; r++) {
 				if (r === pending?.excludeRow) continue;

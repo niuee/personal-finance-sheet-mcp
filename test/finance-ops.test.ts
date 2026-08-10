@@ -1755,6 +1755,60 @@ describe("addExpense", () => {
 			expect(result).toMatchObject({ bucket: "結帳日後" });
 		});
 
+		/** creditGrid + an Apple Card block stacked below 國泰 CUBE in H/I/J: title 57, 結帳日 58 (7/31 in J58), 繳款日 59, 本月需繳款 60, 結帳日前 61, header 62, cushion 63-64, 小計 65, 結帳日後 67, header 68, cushion 69-70, 小計 71. */
+		function appleGrid(): unknown[][] {
+			const g = creditGrid();
+			const put = (idx: number, col: number, v: unknown) => {
+				((g[idx] ??= []) as unknown[])[col] = v;
+			};
+			put(56, 7, "Apple Card");
+			put(57, 7, "本月結帳日");
+			put(57, 9, dateSerial(2026, 7, 31));
+			put(58, 7, "本月繳款日");
+			put(58, 9, dateSerial(2026, 7, 31));
+			put(59, 7, "本月需繳款");
+			put(59, 9, "='6 月'!J65+'5 月'!J71");
+			put(60, 7, "結帳日前");
+			put(61, 7, "日期");
+			put(61, 8, "項目");
+			put(61, 9, "金額");
+			put(64, 8, "小計");
+			put(64, 9, '=SUMIFS(D3:D,G3:G,"Apple Card",A3:A,"<="&J58,A3:A,">0")');
+			put(66, 7, "結帳日後");
+			put(67, 7, "日期");
+			put(67, 8, "項目");
+			put(67, 9, "金額");
+			put(70, 8, "小計");
+			put(70, 9, '=SUMIFS(D3:D,G3:G,"Apple Card",A3:A,">"&J58)');
+			return g;
+		}
+
+		it("places an Apple Card entry dated ON the 結帳日 into 結帳日前 — its calendar-month statement includes the close date", async () => {
+			const client = fakeClient(appleGrid());
+			const result = await addExpense(client, {
+				item: "Cursor",
+				amount: 20,
+				currency: "USD",
+				month: 9,
+				date: "7/31", // the Apple Card block's 結帳日
+				card: "Apple Card",
+			});
+			expect(result).toMatchObject({ bucket: "結帳日前" });
+		});
+
+		it("places an Apple Card entry dated after the 結帳日 into 結帳日後", async () => {
+			const client = fakeClient(appleGrid());
+			const result = await addExpense(client, {
+				item: "iCloud",
+				amount: 9.99,
+				currency: "USD",
+				month: 9,
+				date: "8/1",
+				card: "Apple Card",
+			});
+			expect(result).toMatchObject({ bucket: "結帳日後" });
+		});
+
 		it("never counts 午餐預算 rows for a USD-billed card", async () => {
 			const g = creditGrid();
 			g[4] = [dateSerial(2026, 7, 1), "既有", "訂閱", 5, "", "USD", "CHASE Amazon"];
