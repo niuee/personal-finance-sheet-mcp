@@ -258,6 +258,8 @@ describe("conventions", () => {
 		expect(CREDIT_CARDS.filter((c) => c.billingCurrency === "TWD").map((c) => c.name)).toEqual(["國泰 CUBE"]);
 		// Only CHASE Amazon's 繳款日 pays the statement closed the SAME month.
 		expect(CREDIT_CARDS.filter((c) => c.statementLag === 0).map((c) => c.name)).toEqual(["CHASE Amazon"]);
+		// Only Apple Card's statement includes the 結帳日 itself (calendar-month cycle).
+		expect(CREDIT_CARDS.filter((c) => c.inclusiveClose).map((c) => c.name)).toEqual(["Apple Card"]);
 		expect(CREDIT_BLOCK_COLS).toEqual([7, 11]); // H and L
 		expect(CREDIT_BLOCK_WIDTH).toBe(3);
 		expect(CREDIT_SUBTOTAL_LABEL).toBe("小計");
