@@ -194,11 +194,20 @@ export function expensePositionFor(
 }
 
 // The deep month grid: the lunch section (P–S) grows one row per entry
-// (band-scoped, its own columns only), and the 信用卡帳單對帳區 (H–N) runs from
-// row 50 to ~117 — a too-shallow read makes startMonth's rewires silently skip.
+// (band-scoped, its own columns only), and the 信用卡帳單對帳區 (H–N) is the
+// deepest section on the tab — it starts around row 65 and every bucket's
+// spill area grows a row per charge, so its depth tracks the month's card
+// volume (8月 2026 ends at row 173, 7月 2026 — a trip month — at row 195).
+// A read that stops above the last 小計 does NOT fail loudly: findCreditSection
+// finds the block's labels but scans past the end of the grid looking for the
+// 小計, reports the block as torn, and every 對帳區 consumer degrades — the
+// bucket guard skips growth for EVERY card (a torn block aborts the whole
+// section scan), and startMonth's 本月需繳款 rewires and month-open pad skip
+// silently. Hence the deliberate headroom: rows past the last one with content
+// cost nothing (Sheets omits trailing empty rows from the response).
 // The width must reach column S (支付方式) or the lunch empty-slot scan and
 // card mirroring would never see it.
-export const FULL_GRID_READ = "A1:S160";
+export const FULL_GRID_READ = "A1:S400";
 
 /** The trip tab's JPY section lives in A–G below all trip content (~row 72 today) — generous headroom. */
 export const TRANSFER_JPY_GRID_READ = "A1:G200";
@@ -386,13 +395,24 @@ export function findCreditSection(values: unknown[][], tab: string): CreditCardB
 			if (titleRow !== null) break;
 		}
 		if (titleRow === null) continue;
+		// A scan that ends without meeting its boundary (the next card title or
+		// the other bucket's label) consumed the grid to its last row with
+		// content. That looks identical to a deleted row, but the likelier cause
+		// is a read window shallower than the section — the 對帳區 grows with the
+		// month's card volume — so say so instead of only blaming the sheet.
+		const offGrid = () =>
+			` The scan reached the end of the ${FULL_GRID_READ} grid read (last row with content: ${values.length}) without meeting the next block, so either the row was deleted or the block extends past the read window.`;
 		const labelRow = (label: string, after: number): number => {
+			let metBoundary = false;
 			for (let r = after + 1; r <= values.length; r++) {
 				const v = cellStr(r, startCol);
 				if (v === label) return r;
-				if (cardNames.has(v)) break; // ran into the next card block stacked below
+				if (cardNames.has(v)) {
+					metBoundary = true; // ran into the next card block stacked below
+					break;
+				}
 			}
-			throw new Error(`The "${card.name}" block in ${tab} is missing its ${label} row.`);
+			throw new Error(`The "${card.name}" block in ${tab} is missing its ${label} row.${metBoundary ? "" : offGrid()}`);
 		};
 		const closeDateRow = labelRow(CREDIT_CLOSE_LABEL, titleRow);
 		const payDateRow = labelRow(CREDIT_PAY_LABEL, closeDateRow);
@@ -402,12 +422,18 @@ export function findCreditSection(values: unknown[][], tab: string): CreditCardB
 		// the next 1st-column boundary (the other bucket's label or the next
 		// card title) so a missing 小計 throws instead of adopting a lower one.
 		const subtotalRow = (after: number, boundary: string | null): number => {
+			let metBoundary = false;
 			for (let r = after + 1; r <= values.length; r++) {
 				const first = cellStr(r, startCol);
-				if (cardNames.has(first) || (boundary !== null && first === boundary)) break;
+				if (cardNames.has(first) || (boundary !== null && first === boundary)) {
+					metBoundary = true;
+					break;
+				}
 				if (cellStr(r, startCol + 1) === CREDIT_SUBTOTAL_LABEL) return r;
 			}
-			throw new Error(`The "${card.name}" block in ${tab} is missing its ${CREDIT_SUBTOTAL_LABEL} row.`);
+			throw new Error(
+				`The "${card.name}" block in ${tab} is missing its ${CREDIT_SUBTOTAL_LABEL} row.${metBoundary ? "" : offGrid()}`,
+			);
 		};
 		const preSubtotalRow = subtotalRow(preLabelRow, CREDIT_POST_LABEL);
 		const postLabelRow = labelRow(CREDIT_POST_LABEL, preSubtotalRow);

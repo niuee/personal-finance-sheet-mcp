@@ -556,6 +556,61 @@ describe("findCreditSection", () => {
 		expect(() => findCreditSection(g, "9 月")).toThrow(/國泰 CUBE.*小計/);
 	});
 
+	/**
+	 * creditGrid + the second card row band (CHASE Freedom / Apple Card) at the
+	 * depth the real 8月 2026 tab puts it: title 122, 結帳日 123, 繳款日 124,
+	 * 本月需繳款 125, 結帳日前 126, header 127, 小計 149, 結帳日後 151,
+	 * header 152, 小計 173 — the last one below the old A1:S160 read window.
+	 */
+	function deepCreditGrid(): unknown[][] {
+		const g = creditGrid();
+		const put = (idx: number, col: number, v: unknown) => {
+			(g[idx] ??= [])[col] = v;
+		};
+		for (const [name, col, close] of [
+			["CHASE Freedom", 7, dateSerial(2026, 8, 10)],
+			["Apple Card", 11, dateSerial(2026, 8, 31)],
+		] as const) {
+			put(121, col, name);
+			put(122, col, "本月結帳日");
+			put(122, col + 2, close);
+			put(123, col, "本月繳款日");
+			put(123, col + 2, close);
+			put(124, col, "本月需繳款");
+			put(124, col + 2, 26.99);
+			put(125, col, "結帳日前");
+			put(126, col, "日期");
+			put(148, col + 1, "小計");
+			put(150, col, "結帳日後");
+			put(151, col, "日期");
+			put(172, col + 1, "小計");
+		}
+		return g;
+	}
+
+	it("locates a block whose 小計 sits far below the shallow-read boundary that used to clip it", () => {
+		const blocks = findCreditSection(deepCreditGrid(), "8 月");
+		expect(blocks.map((b) => b.card.name)).toEqual(["國泰 CUBE", "CHASE Amazon", "CHASE Freedom", "Apple Card"]);
+		expect(blocks[2]).toMatchObject({
+			titleRow: 122,
+			preLabelRow: 126,
+			preSubtotalRow: 149,
+			postLabelRow: 151,
+			postSubtotalRow: 173,
+		});
+		expect(blocks[3]).toMatchObject({ startCol: 11, preSubtotalRow: 149, postSubtotalRow: 173 });
+	});
+
+	it("reads far enough down to clear the deepest 對帳區 a real tab has grown (7月 2026 ends at row 195)", () => {
+		expect(Number(FULL_GRID_READ.match(/(\d+)$/)![1])).toBeGreaterThanOrEqual(300);
+	});
+
+	it("blames the read window when a scan runs off the end of the grid instead of into the next block", () => {
+		const g = deepCreditGrid();
+		g.length = 160; // what A1:S160 used to hand back: Freedom's 結帳日後 小計 clipped away
+		expect(() => findCreditSection(g, "8 月")).toThrow(/CHASE Freedom.*小計.*extends past the read window/s);
+	});
+
 	it("never adopts a 小計 from the next card block stacked below in the same column", () => {
 		const g = creditGrid();
 		(g[54] as unknown[])[8] = ""; // CUBE loses its post-小計 label
@@ -664,13 +719,13 @@ function transferClient(grid: unknown[][], rate: unknown = 29.85): SheetsClient 
 	} as unknown as SheetsClient;
 }
 
-/** Serves the trip grid for A1:G200 reads, the month grid for A1:S160 reads, and `rate` for single cells. */
+/** Serves the trip grid for A1:G200 reads, the month grid for FULL_GRID_READ reads, and `rate` for single cells. */
 function jpyWiringClient(tripGrid: unknown[][], monthGrid: unknown[][], rate: unknown = 0.208): SheetsClient {
 	return {
 		readRange: vi.fn(async (range: string) =>
 			range.includes("A1:G200")
 				? { range, values: tripGrid, truncated: false }
-				: range.includes("A1:S160")
+				: range.includes(FULL_GRID_READ)
 					? { range, values: monthGrid, truncated: false }
 					: { range, values: [[rate]], truncated: false },
 		),
@@ -695,7 +750,7 @@ describe("addTransfer", () => {
 		const result = await addTransfer(client, { ntd: 30000, usd: 1000, fee: 30, month: 9, date: "9/2" });
 
 		// full month grid, not a shallow H–N window — the write also audits the 對帳區 below
-		expect((client.readRange as any).mock.calls[0]).toEqual(["'9 月'!A1:S160", "FORMULA"]);
+		expect((client.readRange as any).mock.calls[0]).toEqual([`'9 月'!${FULL_GRID_READ}`, "FORMULA"]);
 		// batch 1: scratch GOOGLEFINANCE into J35, no insert needed
 		const batch1 = (client.batchUpdate as any).mock.calls[0][0];
 		expect(batch1).toHaveLength(1);
@@ -982,7 +1037,7 @@ describe("addTransfer (jpy) month wiring", () => {
 		expect(result.wiredMonthTab).toBe("7 月");
 		// wiring read targets the month tab
 		const reads = (client.readRange as any).mock.calls.map((c: any) => c[0]);
-		expect(reads).toContain("'7 月'!A1:S160");
+		expect(reads).toContain(`'7 月'!${FULL_GRID_READ}`);
 
 		// last batchUpdate carries the three formula appends
 		const wiring = (client.batchUpdate as any).mock.calls.at(-1)[0];
@@ -1002,7 +1057,7 @@ describe("addTransfer (jpy) month wiring", () => {
 		const client = jpyWiringClient(jpyTransferGrid(), bankMonthGrid());
 		const result = await addTransfer(client, { currency: "jpy", tab: TRIP, ntd: 100, jpy: 470, fee: 0, date: "2026-08-02" });
 		expect(result.wiredMonthTab).toBe("8 月");
-		expect((client.readRange as any).mock.calls.map((c: any) => c[0])).toContain("'8 月'!A1:S160");
+		expect((client.readRange as any).mock.calls.map((c: any) => c[0])).toContain(`'8 月'!${FULL_GRID_READ}`);
 	});
 
 	it("names the already-written trip row when a bank label is missing", async () => {
@@ -1028,7 +1083,7 @@ describe("addTransfer (jpy) month wiring", () => {
 function lunchClient(grid: unknown[][], budgetRow: unknown[] = [3900, "", 3547]): SheetsClient {
 	return {
 		readRange: vi.fn(async (range: string) =>
-			range.includes("A1:S160")
+			range.includes(FULL_GRID_READ)
 				? { range, values: grid, truncated: false }
 				: { range, values: [budgetRow], truncated: false },
 		),
@@ -1042,7 +1097,7 @@ describe("addLunch", () => {
 		const client = lunchClient(lunchGrid());
 		const result = await addLunch(client, { amount: 143, month: 9, date: "9/2" });
 
-		expect((client.readRange as any).mock.calls[0]).toEqual(["'9 月'!A1:S160", "FORMULA"]);
+		expect((client.readRange as any).mock.calls[0]).toEqual([`'9 月'!${FULL_GRID_READ}`, "FORMULA"]);
 		const requests = (client.batchUpdate as any).mock.calls[0][0];
 		expect(requests).toHaveLength(3); // date cell, item+amount, 總和 rewrite — no insert needed
 		const dateCell = requests[0].updateCells;
@@ -1261,7 +1316,7 @@ describe("addExpense", () => {
 
 		const result = await addExpense(client, { item: "晚餐", amount: 250, currency: "TWD", month: 9 });
 
-		expect((client.readRange as any).mock.calls[0]).toEqual(["'9 月'!A1:S160", "FORMULA"]);
+		expect((client.readRange as any).mock.calls[0]).toEqual([`'9 月'!${FULL_GRID_READ}`, "FORMULA"]);
 		const requests = (client.batchUpdate as any).mock.calls[0][0];
 		expect(requests).toEqual([
 			{
@@ -1917,7 +1972,7 @@ describe("setExpenseDate", () => {
 		const client = fakeClient(dateGrid());
 		const result = await setExpenseDate(client, { item: "Netflix", date: "7/10", month: 9 });
 
-		expect((client.readRange as any).mock.calls[0]).toEqual(["'9 月'!A1:S160", "FORMULA"]);
+		expect((client.readRange as any).mock.calls[0]).toEqual([`'9 月'!${FULL_GRID_READ}`, "FORMULA"]);
 		const requests = (client.batchUpdate as any).mock.calls[0][0];
 		expect(requests[0]).toEqual({
 			updateCells: {
@@ -2188,7 +2243,7 @@ describe("monthSummary", () => {
 		const client = fakeClient(grid);
 		const result = await monthSummary(client, 9);
 
-		expect((client.readRange as any).mock.calls[0]).toEqual(["'9 月'!A1:S160", "UNFORMATTED_VALUE"]);
+		expect((client.readRange as any).mock.calls[0]).toEqual([`'9 月'!${FULL_GRID_READ}`, "UNFORMATTED_VALUE"]);
 		expect(result).toEqual({
 			tab: "9 月",
 			花費總額: 72127.21,
@@ -2550,7 +2605,7 @@ describe("startMonth", () => {
 
 		const result = await startMonth(client, 10);
 
-		expect((client.readRange as any).mock.calls[0]).toEqual(["'10 月'!A1:S160", "FORMULA"]);
+		expect((client.readRange as any).mock.calls[0]).toEqual([`'10 月'!${FULL_GRID_READ}`, "FORMULA"]);
 		const requests = (client.batchUpdate as any).mock.calls[1][0];
 		// data rows 37..37 (0-indexed 36..37), columns P–S (15..19) — cells cleared, nothing shifts
 		const clear = requests.find((r: any) => r.repeatCell && r.repeatCell.range.startColumnIndex === 15);
@@ -3600,7 +3655,7 @@ describe("setIncome", () => {
 
 		const result = await setIncome(client, { item: "薪水", amount: 70000, currency: "TWD", month: 9 });
 
-		expect((client.readRange as any).mock.calls[0]).toEqual(["'9 月'!A1:S160", "FORMULA"]);
+		expect((client.readRange as any).mock.calls[0]).toEqual([`'9 月'!${FULL_GRID_READ}`, "FORMULA"]);
 		const requests = (client.batchUpdate as any).mock.calls[0][0];
 		expect(requests).toEqual([
 			{
