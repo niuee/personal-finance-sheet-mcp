@@ -399,6 +399,19 @@ export interface CreditBucketAnchors {
 	subtotalRow: number;
 }
 
+/**
+ * A block opens with these, in this order. Seeing one below a cell that holds
+ * a card's name is what makes that cell a block TITLE rather than a leftover;
+ * seeing a tail marker (結帳日後, or a 小計 in the block's 2nd column) first
+ * means the cell sits INSIDE a block that started higher up.
+ */
+const BLOCK_HEAD_LABELS: readonly string[] = [
+	CREDIT_CLOSE_LABEL,
+	CREDIT_PAY_LABEL,
+	CREDIT_DUE_LABEL,
+	CREDIT_PRE_LABEL,
+];
+
 /** The rows the mirror may spill into: everything strictly between the 日期 header and the 小計. */
 export function bucketSpillCapacity(b: CreditBucketAnchors): number {
 	return b.subtotalRow - b.headerRow - 1;
@@ -468,11 +481,37 @@ export function findCreditSection(values: unknown[][], tab: string): CreditCardB
 	}
 	const spans: BlockSpan[] = [];
 	for (const col of CREDIT_BLOCK_COLS) {
-		const titles: Array<{ card: CreditCard; row: number }> = [];
+		// A cell holding a card name is only a block TITLE if a block HEAD
+		// follows it. Leftovers do end up in these columns — 7月 2026 still
+		// carries an orphaned mirror formula ~24 rows below the section — and a
+		// stray cell naming a card would otherwise mint a phantom block whose
+		// missing labels throw, taking the whole section (and therefore every
+		// card's guard) down with it. Hitting a tail marker first (結帳日後, or a
+		// 小計 in the 2nd column) means the cell is sitting inside a block that
+		// opened above it, so it is a leftover too. Accepting any HEAD label,
+		// not 本月結帳日 specifically, keeps a genuinely torn block loud: it
+		// still opens with the rest of its head, so it becomes a block here and
+		// stage 2 names the row it lost.
+		const looksLikeBlock = (from: number, until: number): boolean => {
+			for (let r = from; r <= until; r++) {
+				const first = cellStr(r, col);
+				if (BLOCK_HEAD_LABELS.includes(first)) return true;
+				if (first === CREDIT_POST_LABEL || cellStr(r, col + 1) === CREDIT_SUBTOTAL_LABEL) return false;
+			}
+			return false;
+		};
+		const candidates: Array<{ card: CreditCard; row: number }> = [];
 		for (let r = anchorRow + 1; r <= lastRow; r++) {
 			const card = registry.get(cellStr(r, col));
-			if (card !== undefined) titles.push({ card, row: r });
+			if (card !== undefined) candidates.push({ card, row: r });
 		}
+		// Vet each candidate against the rows up to the NEXT candidate (a
+		// phantom must not borrow the block below it as evidence)…
+		const titles = candidates.filter((t, i) =>
+			looksLikeBlock(t.row + 1, (candidates[i + 1]?.row ?? lastRow + 1) - 1),
+		);
+		// …then span the survivors, so a rejected candidate's rows stay inside
+		// whichever real block they fall in instead of cutting it short.
 		for (let i = 0; i < titles.length; i++) {
 			const next = titles[i + 1];
 			spans.push({

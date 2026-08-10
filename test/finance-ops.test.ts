@@ -851,6 +851,48 @@ describe("findCreditSection", () => {
 		expect(() => findCreditSection(grid, "8 月")).toThrow(/CHASE Freedom.*小計.*last row with content/s);
 	});
 
+	// ── stray cells in the band are not blocks ─────────────────────────────
+
+	it("ignores an orphan below the section — a card name with no block head under it", () => {
+		const { grid, at } = fourCardGrid();
+		// what the live 7月 tab carries: a leftover ~24 rows below the last
+		// block, in the band's own column
+		const orphan = at["CHASE Freedom"]!.post.subtotalRow + 24;
+		(grid[orphan - 1] ??= [])[7] = "CHASE Amazon";
+		const blocks = findCreditSection(grid, "9 月");
+		expect(blocks.map((b) => [b.card.name, b.startCol])).toEqual([
+			["國泰 CUBE", 7],
+			["CHASE Amazon", 11], // the real L-band block, not the orphan
+			["CHASE Freedom", 7],
+			["Apple Card", 11],
+		]);
+		expect(blocks[1]!.post).toEqual(at["CHASE Amazon"]!.post);
+	});
+
+	for (const bucket of ["pre", "post"] as const) {
+		it(`a stray card name inside a ${bucket === "pre" ? "結帳日前" : "結帳日後"} spill area does not cut its block short`, () => {
+			const { grid, at } = fourCardGrid();
+			const cube = at["國泰 CUBE"]!;
+			// a leftover lands in a spill row: scanning down from it hits the
+			// bucket's 小計 before any block head, so it is inside CUBE's block,
+			// not the start of a new one
+			(grid[cube[bucket].headerRow] ??= [])[7] = "Apple Card";
+			const blocks = findCreditSection(grid, "9 月");
+			expect(blocks.find((b) => b.card.name === "國泰 CUBE")).toMatchObject({ pre: cube.pre, post: cube.post });
+			// …and Apple Card still resolves to its real L-band block
+			expect(blocks.find((b) => b.card.name === "Apple Card")).toMatchObject({
+				startCol: 11,
+				pre: at["Apple Card"]!.pre,
+			});
+		});
+	}
+
+	it("still reports a genuinely torn block loudly — furniture present, one label gone", () => {
+		const { grid, at } = fourCardGrid();
+		(grid[at["CHASE Freedom"]!.closeDateRow - 1] as unknown[])[7] = ""; // 本月結帳日 label deleted
+		expect(() => findCreditSection(grid, "9 月")).toThrow(/CHASE Freedom.*本月結帳日/);
+	});
+
 	it("finds the 日期 header wherever it sits, not one row under the bucket label", () => {
 		// A whole-sheet row inserted by hand (or a band insert from the other
 		// column band) can open a blank row between a bucket's label and its
