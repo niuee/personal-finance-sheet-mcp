@@ -33,7 +33,9 @@ import {
 	setExpenseDate,
 	setIncome,
 	startMonth,
+	TRANSFER_JPY_GRID_READ,
 	TRANSFER_SECTIONS,
+	TRIP_BUDGET_READ,
 	tripBudgetStatus,
 } from "../src/finance-ops";
 import { currentMonthTab, dateSerial, MONTH_COLS, todaySerial } from "../src/conventions";
@@ -313,6 +315,18 @@ describe("findTransferSection", () => {
 		g[35] = [];
 		expect(() => findTransferSection(g, "9 月")).toThrow("總和");
 	});
+
+	it("scans for the header instead of assuming it sits directly under the title", () => {
+		const g = transferGrid();
+		g.splice(33, 0, [], [], []); // three rows opened between the title and the 日期 header
+		expect(findTransferSection(g, "9 月")).toEqual({ headerRow: 37, totalRow: 39 });
+	});
+
+	it("stops the 總和 scan at the 信用卡帳單對帳區 below instead of running into it", () => {
+		const g = creditGrid(); // the 對帳區 title sits in column H under the transfer log
+		g[35] = []; // 總和 gone
+		expect(() => findTransferSection(g, "9 月")).toThrow("總和");
+	});
 });
 
 /** A trip-tab grid whose JPY transfer section sits at A69 (title), A70 (header), A71 (one empty data row), A72 (總和). */
@@ -379,6 +393,14 @@ describe("findLunchSection", () => {
 		expect(findLunchSection(g, "9 月")).toEqual({ budgetRow: 36, headerRow: 37, totalRow: 39 });
 	});
 
+	it("finds a header pushed further down than any fixed row cap would allow", () => {
+		const g = lunchGrid();
+		// ten rows opened between the 午餐預算 title and its 日期 header — the
+		// finder used to give up after eight.
+		g.splice(33, 0, ...Array.from({ length: 10 }, () => [] as unknown[]));
+		expect(findLunchSection(g, "9 月")).toEqual({ budgetRow: 45, headerRow: 46, totalRow: 48 });
+	});
+
 	it("scans past a blank row that a whole-sheet-row insert opened between the values row and the header", () => {
 		const g = lunchGrid();
 		// live July 2026: a row inserted by hand into the income list (same
@@ -390,6 +412,167 @@ describe("findLunchSection", () => {
 });
 
 /**
+ * How tall a card block is depends entirely on how far its two mirrors have
+ * spilled, so the 對帳區 fixtures are BUILT from a spec instead of written out
+ * at fixed rows: every test that needs a different spill length asks for one
+ * and gets back the rows the builder actually used. Nothing in the test file
+ * hard-codes where a 小計 lands, so a changed spill length can never turn into
+ * a stale expectation.
+ */
+interface CardBlockSpec {
+	name: string;
+	/** 0-indexed band column: 7 (H–J) or 11 (L–N). */
+	col: number;
+	close: number;
+	pay: number;
+	due?: number | string;
+	/** Rows the 結帳日前 mirror can spill into (header → 小計 gap). */
+	preSpill: number;
+	/** Rows the 結帳日後 mirror can spill into. */
+	postSpill: number;
+	/** Blank rows between the 結帳日前 小計 and the 結帳日後 label (1 on the live sheet). */
+	gap?: number;
+	/** Blank rows between this block's last 小計 and the next card title stacked below it. */
+	tail?: number;
+	/** Force a start row instead of stacking under the band's previous block. */
+	startRow?: number;
+	/** Column the amounts bill in: "D" for the US cards, "E" (+ lunch "R") for the TWD card. */
+	amountCol?: "D" | "E";
+}
+
+interface BucketAnchorRows {
+	labelRow: number;
+	headerRow: number;
+	subtotalRow: number;
+}
+
+interface CardBlockAnchors {
+	startCol: number;
+	titleRow: number;
+	closeDateRow: number;
+	payDateRow: number;
+	dueRow: number;
+	pre: BucketAnchorRows;
+	post: BucketAnchorRows;
+	/** Row where the next card title in this band goes. */
+	nextTitleRow: number;
+}
+
+/** Write one card block at `startRow` and hand back every row it used. */
+function putCardBlock(g: unknown[][], startRow: number, spec: CardBlockSpec): CardBlockAnchors {
+	const col = spec.col;
+	const put = (row: number, c: number, v: unknown) => {
+		(g[row - 1] ??= [])[c] = v;
+	};
+	const value = colLetter(col + 2);
+	const amount = spec.amountCol ?? (spec.name === "國泰 CUBE" ? "E" : "D");
+	const gap = spec.gap ?? 1;
+	const tail = spec.tail ?? 1;
+
+	const titleRow = startRow;
+	const closeDateRow = startRow + 1;
+	const payDateRow = startRow + 2;
+	const dueRow = startRow + 3;
+	put(titleRow, col, spec.name);
+	put(closeDateRow, col, "本月結帳日");
+	put(closeDateRow, col + 2, spec.close);
+	put(payDateRow, col, "本月繳款日");
+	put(payDateRow, col + 2, spec.pay);
+	put(dueRow, col, "本月需繳款");
+	put(dueRow, col + 2, spec.due ?? 0);
+
+	const closeRef = `${value}${closeDateRow}`;
+	// 結帳日前 is 日期 < 結帳日 for every card except Apple Card, whose statement
+	// IS the calendar month and so keeps the close date — the fixture's mirrors
+	// and 小計s carry the same conditions the live sheet does.
+	const pre = spec.name === "Apple Card" ? "<=" : "<";
+	const post = spec.name === "Apple Card" ? ">" : ">=";
+	const lunchTerm = (op: string) =>
+		amount === "E" ? `+SUMIFS(R3:R,S3:S,"${spec.name}",P3:P,"${op}"&${closeRef})` : "";
+	const mirror = (op: string) =>
+		amount === "E"
+			? `=IFERROR(QUERY({IFERROR(FILTER({A3:A,B3:B,E3:E},G3:G="${spec.name}",A3:A<>"",A3:A${op}${closeRef}),{"","",""});IFERROR(FILTER({P3:P,Q3:Q,R3:R},S3:S="${spec.name}",P3:P<>"",P3:P${op}${closeRef}),{"","",""})},"where Col1 is not null order by Col1",0),)`
+			: `=IFERROR(FILTER({A3:A,B3:B,D3:D},G3:G="${spec.name}",A3:A<>"",A3:A${op}${closeRef}),)`;
+
+	const bucket = (labelRow: number, label: string, spill: number, op: string, sumOp: string): BucketAnchorRows => {
+		const headerRow = labelRow + 1;
+		put(labelRow, col, label);
+		put(headerRow, col, "日期");
+		put(headerRow, col + 1, "項目");
+		put(headerRow, col + 2, "金額");
+		// The mirror lives in the first spill row; the rest is blank cushion
+		// (a FORMULA-rendered read shows spilled cells as empty anyway).
+		if (spill > 0) put(headerRow + 1, col, mirror(op));
+		const subtotalRow = headerRow + spill + 1;
+		put(subtotalRow, col + 1, "小計");
+		put(
+			subtotalRow,
+			col + 2,
+			`=SUMIFS(${amount}3:${amount},G3:G,"${spec.name}",A3:A,"${sumOp}"&${closeRef}${sumOp.startsWith("<") ? ',A3:A,">0"' : ""})${lunchTerm(sumOp)}`,
+		);
+		return { labelRow, headerRow, subtotalRow };
+	};
+	const preBucket = bucket(dueRow + 1, "結帳日前", spec.preSpill, pre, pre);
+	const postBucket = bucket(preBucket.subtotalRow + gap + 1, "結帳日後", spec.postSpill, post, post);
+	return {
+		startCol: col,
+		titleRow,
+		closeDateRow,
+		payDateRow,
+		dueRow,
+		pre: preBucket,
+		post: postBucket,
+		nextTitleRow: postBucket.subtotalRow + tail + 1,
+	};
+}
+
+/**
+ * Write a whole 信用卡帳單對帳區 (title at `anchorRow`, column H) from a list of
+ * block specs. Blocks stack inside their own column band in the order given;
+ * the two bands are independent, exactly as the sheet's 2×2 grid is.
+ */
+function putCreditSection(
+	g: unknown[][],
+	anchorRow: number,
+	specs: readonly CardBlockSpec[],
+): Record<string, CardBlockAnchors> {
+	(g[anchorRow - 1] ??= [])[7] = "信用卡帳單對帳區";
+	const nextFree = new Map<number, number>();
+	const anchors: Record<string, CardBlockAnchors> = {};
+	for (const spec of specs) {
+		const start = spec.startRow ?? nextFree.get(spec.col) ?? anchorRow + 1;
+		const a = putCardBlock(g, start, spec);
+		nextFree.set(spec.col, a.nextTitleRow);
+		anchors[spec.name] = a;
+	}
+	return anchors;
+}
+
+/** The two-card spec the default fixture uses: 國泰 CUBE in H–J (lag 1), CHASE Amazon in L–N (lag 0), 2-row spills. */
+function twoCardSpecs(): CardBlockSpec[] {
+	return [
+		{
+			name: "國泰 CUBE",
+			col: 7,
+			close: dateSerial(2026, 7, 19),
+			pay: dateSerial(2026, 7, 6),
+			due: 21500,
+			preSpill: 2,
+			postSpill: 2,
+		},
+		{
+			name: "CHASE Amazon",
+			col: 11,
+			close: dateSerial(2026, 7, 3),
+			pay: dateSerial(2026, 7, 28),
+			due: "=N49+'6 月'!N55",
+			preSpill: 2,
+			postSpill: 2,
+		},
+	];
+}
+
+/**
  * lunchGrid + a 信用卡帳單對帳區 (anchor H40) with two card blocks:
  * 國泰 CUBE at H41 (values in J, lag 1) and CHASE Amazon at L41 (values in N,
  * lag 0). Rows: title 41, 結帳日 42, 繳款日 43, 本月需繳款 44, 結帳日前 45,
@@ -398,53 +581,16 @@ describe("findLunchSection", () => {
  */
 function creditGrid(): unknown[][] {
 	const g = lunchGrid();
-	const put = (idx: number, col: number, v: unknown) => {
-		(g[idx] ??= [])[col] = v;
-	};
-	put(39, 7, "信用卡帳單對帳區");
-	// 國泰 CUBE — H/I/J (7/8/9)
-	put(40, 7, "國泰 CUBE");
-	put(41, 7, "本月結帳日");
-	put(41, 9, dateSerial(2026, 7, 19));
-	put(42, 7, "本月繳款日");
-	put(42, 9, dateSerial(2026, 7, 6));
-	put(43, 7, "本月需繳款");
-	put(43, 9, 21500);
-	put(44, 7, "結帳日前");
-	put(45, 7, "日期");
-	put(45, 8, "項目");
-	put(45, 9, "金額");
-	// rows 47-48 (idx 46-47) intentionally empty data cushion
-	put(48, 8, "小計");
-	put(48, 9, '=SUMIFS(E3:E,G3:G,"國泰 CUBE",A3:A,"<="&J43,A3:A,">0")');
-	put(50, 7, "結帳日後");
-	put(51, 7, "日期");
-	put(51, 8, "項目");
-	put(51, 9, "金額");
-	// rows 53-54 (idx 52-53) intentionally empty data cushion
-	put(54, 8, "小計");
-	put(54, 9, '=SUMIFS(E3:E,G3:G,"國泰 CUBE",A3:A,">"&J43)');
-	// CHASE Amazon — L/M/N (11/12/13)
-	put(40, 11, "CHASE Amazon");
-	put(41, 11, "本月結帳日");
-	put(41, 13, dateSerial(2026, 7, 3));
-	put(42, 11, "本月繳款日");
-	put(42, 13, dateSerial(2026, 7, 28));
-	put(43, 11, "本月需繳款");
-	put(43, 13, "=N49+'6 月'!N55");
-	put(44, 11, "結帳日前");
-	put(45, 11, "日期");
-	put(45, 12, "項目");
-	put(45, 13, "金額");
-	put(48, 12, "小計");
-	put(48, 13, '=SUMIFS(D3:D,G3:G,"CHASE Amazon",A3:A,"<="&N43,A3:A,">0")');
-	put(50, 11, "結帳日後");
-	put(51, 11, "日期");
-	put(51, 12, "項目");
-	put(51, 13, "金額");
-	put(54, 12, "小計");
-	put(54, 13, '=SUMIFS(D3:D,G3:G,"CHASE Amazon",A3:A,">"&N43)');
+	putCreditSection(g, 40, twoCardSpecs());
 	return g;
+}
+
+/** creditGrid's 國泰 CUBE anchors — tool-level tests assert insert/stamp rows against these, never against literals. */
+const CUBE_AT = creditGridAnchors()["國泰 CUBE"]!;
+
+/** creditGrid's anchors, for tests that need the rows without re-deriving them. */
+function creditGridAnchors(): Record<string, CardBlockAnchors> {
+	return putCreditSection(lunchGrid(), 40, twoCardSpecs());
 }
 
 /** The repeatCells the bucket guard emits to stamp a spill area's 日期/金額 formats (0-indexed rows, end exclusive). */
@@ -520,24 +666,53 @@ function adjustedBalanceGrid(): unknown[][] {
 	return g;
 }
 
+/**
+ * The full 2×2 grid: 國泰 CUBE / CHASE Freedom stacked in H–J, CHASE Amazon /
+ * Apple Card in L–N, with per-card spill lengths. `spills` names the four
+ * cards' [結帳日前, 結帳日後] capacities; anything omitted keeps the default.
+ * Every test that cares about rows reads them out of the returned anchors, so
+ * changing ANY card's spill length here can only move rows, never break a test.
+ */
+type SpillMap = Partial<Record<string, [number, number]>>;
+
+function fourCardSpecs(spills: SpillMap = {}): CardBlockSpec[] {
+	const base: Array<[string, number, number, number, number | string]> = [
+		["國泰 CUBE", 7, dateSerial(2026, 7, 19), dateSerial(2026, 7, 6), 21500],
+		["CHASE Amazon", 11, dateSerial(2026, 7, 3), dateSerial(2026, 7, 28), 4.99],
+		["CHASE Freedom", 7, dateSerial(2026, 7, 13), dateSerial(2026, 7, 16), 26.99],
+		["Apple Card", 11, dateSerial(2026, 7, 31), dateSerial(2026, 7, 31), 172.61],
+	];
+	return base.map(([name, col, close, pay, due]) => {
+		const [preSpill, postSpill] = spills[name] ?? [2, 2];
+		return { name, col, close, pay, due, preSpill, postSpill };
+	});
+}
+
+function fourCardGrid(spills: SpillMap = {}, anchorRow = 40): { grid: unknown[][]; at: Record<string, CardBlockAnchors> } {
+	const grid = lunchGrid();
+	const at = putCreditSection(grid, anchorRow, fourCardSpecs(spills));
+	return { grid, at };
+}
+
+const CARD_NAMES = ["國泰 CUBE", "CHASE Amazon", "CHASE Freedom", "Apple Card"] as const;
+
 describe("findCreditSection", () => {
 	it("locates every card block present, skipping registry cards missing from the sheet", () => {
+		const at = creditGridAnchors();
 		const blocks = findCreditSection(creditGrid(), "9 月");
 		expect(blocks.map((b) => [b.card.name, b.startCol])).toEqual([
 			["國泰 CUBE", 7],
 			["CHASE Amazon", 11],
 		]);
 		expect(blocks[0]).toMatchObject({
-			titleRow: 41,
-			closeDateRow: 42,
-			payDateRow: 43,
-			dueRow: 44,
-			preLabelRow: 45,
-			postLabelRow: 51,
-			preSubtotalRow: 49,
-			postSubtotalRow: 55,
+			titleRow: at["國泰 CUBE"]!.titleRow,
+			closeDateRow: at["國泰 CUBE"]!.closeDateRow,
+			payDateRow: at["國泰 CUBE"]!.payDateRow,
+			dueRow: at["國泰 CUBE"]!.dueRow,
+			pre: at["國泰 CUBE"]!.pre,
+			post: at["國泰 CUBE"]!.post,
 		});
-		expect(blocks[1]).toMatchObject({ titleRow: 41, startCol: 11, postSubtotalRow: 55 });
+		expect(blocks[1]).toMatchObject({ startCol: 11, post: at["CHASE Amazon"]!.post });
 	});
 
 	it("throws when the tab has no 信用卡帳單對帳區", () => {
@@ -546,77 +721,151 @@ describe("findCreditSection", () => {
 
 	it("throws naming the card and the missing label when a block is torn", () => {
 		const g = creditGrid();
-		(g[43] as unknown[])[7] = ""; // CUBE loses its 本月需繳款 label
+		(g[creditGridAnchors()["國泰 CUBE"]!.dueRow - 1] as unknown[])[7] = ""; // CUBE loses its 本月需繳款 label
 		expect(() => findCreditSection(g, "9 月")).toThrow(/國泰 CUBE.*本月需繳款/);
 	});
 
 	it("throws naming the card and 小計 when the bounded scan crosses into the next bucket", () => {
 		const g = creditGrid();
-		(g[48] as unknown[])[8] = ""; // CUBE loses its pre-小計 label
+		(g[creditGridAnchors()["國泰 CUBE"]!.pre.subtotalRow - 1] as unknown[])[8] = ""; // CUBE loses its pre-小計 label
 		expect(() => findCreditSection(g, "9 月")).toThrow(/國泰 CUBE.*小計/);
-	});
-
-	/**
-	 * creditGrid + the second card row band (CHASE Freedom / Apple Card) at the
-	 * depth the real 8月 2026 tab puts it: title 122, 結帳日 123, 繳款日 124,
-	 * 本月需繳款 125, 結帳日前 126, header 127, 小計 149, 結帳日後 151,
-	 * header 152, 小計 173 — the last one below the old A1:S160 read window.
-	 */
-	function deepCreditGrid(): unknown[][] {
-		const g = creditGrid();
-		const put = (idx: number, col: number, v: unknown) => {
-			(g[idx] ??= [])[col] = v;
-		};
-		for (const [name, col, close] of [
-			["CHASE Freedom", 7, dateSerial(2026, 8, 10)],
-			["Apple Card", 11, dateSerial(2026, 8, 31)],
-		] as const) {
-			put(121, col, name);
-			put(122, col, "本月結帳日");
-			put(122, col + 2, close);
-			put(123, col, "本月繳款日");
-			put(123, col + 2, close);
-			put(124, col, "本月需繳款");
-			put(124, col + 2, 26.99);
-			put(125, col, "結帳日前");
-			put(126, col, "日期");
-			put(148, col + 1, "小計");
-			put(150, col, "結帳日後");
-			put(151, col, "日期");
-			put(172, col + 1, "小計");
-		}
-		return g;
-	}
-
-	it("locates a block whose 小計 sits far below the shallow-read boundary that used to clip it", () => {
-		const blocks = findCreditSection(deepCreditGrid(), "8 月");
-		expect(blocks.map((b) => b.card.name)).toEqual(["國泰 CUBE", "CHASE Amazon", "CHASE Freedom", "Apple Card"]);
-		expect(blocks[2]).toMatchObject({
-			titleRow: 122,
-			preLabelRow: 126,
-			preSubtotalRow: 149,
-			postLabelRow: 151,
-			postSubtotalRow: 173,
-		});
-		expect(blocks[3]).toMatchObject({ startCol: 11, preSubtotalRow: 149, postSubtotalRow: 173 });
-	});
-
-	it("reads far enough down to clear the deepest 對帳區 a real tab has grown (7月 2026 ends at row 195)", () => {
-		expect(Number(FULL_GRID_READ.match(/(\d+)$/)![1])).toBeGreaterThanOrEqual(300);
-	});
-
-	it("blames the read window when a scan runs off the end of the grid instead of into the next block", () => {
-		const g = deepCreditGrid();
-		g.length = 160; // what A1:S160 used to hand back: Freedom's 結帳日後 小計 clipped away
-		expect(() => findCreditSection(g, "8 月")).toThrow(/CHASE Freedom.*小計.*extends past the read window/s);
 	});
 
 	it("never adopts a 小計 from the next card block stacked below in the same column", () => {
-		const g = creditGrid();
-		(g[54] as unknown[])[8] = ""; // CUBE loses its post-小計 label
-		(g[57] ??= [])[7] = "CHASE Freedom"; // ...and Freedom's block starts below
-		(g[58] ??= [])[8] = "小計"; // a literal match a few rows below Freedom's title — must never be adopted
-		expect(() => findCreditSection(g, "9 月")).toThrow(/國泰 CUBE.*小計/);
+		const { grid, at } = fourCardGrid();
+		(grid[at["國泰 CUBE"]!.post.subtotalRow - 1] as unknown[])[8] = ""; // CUBE loses its post-小計 label
+		// CHASE Freedom's block starts below it in the same band and has 小計s of
+		// its own — the boundary must stop the scan before it reaches them.
+		expect(() => findCreditSection(grid, "9 月")).toThrow(/國泰 CUBE.*小計/);
+	});
+
+	// ── spill-length independence ──────────────────────────────────────────
+	// The bug this suite exists for: the 對帳區's anchors move whenever a card's
+	// spill area grows, so anything located by a fixed offset (or by a fixed
+	// read depth) breaks one card at a time. These cases vary the spills and
+	// assert the finder returns the rows the fixture actually used.
+
+	const SPILL_CASES: Array<[string, SpillMap]> = [
+		["a freshly opened month (every spill still the same size)", {}],
+		["one card grown far past the others", { "國泰 CUBE": [28, 32] }],
+		["every card grown differently, top and bottom bands both deep", {
+			"國泰 CUBE": [28, 32],
+			"CHASE Amazon": [3, 41],
+			"CHASE Freedom": [11, 9],
+			"Apple Card": [40, 1],
+		}],
+		["the bottom band far deeper than the top", { "CHASE Freedom": [55, 60], "Apple Card": [70, 12] }],
+		["empty spills (a month with no card charges yet)", {
+			"國泰 CUBE": [0, 0],
+			"CHASE Amazon": [0, 0],
+			"CHASE Freedom": [0, 0],
+			"Apple Card": [0, 0],
+		}],
+		["a spill big enough to push the last 小計 past any fixed read window", { "Apple Card": [260, 180] }],
+	];
+
+	for (const [label, spills] of SPILL_CASES) {
+		it(`resolves all four blocks with ${label}`, () => {
+			const { grid, at } = fourCardGrid(spills);
+			const blocks = findCreditSection(grid, "9 月");
+			expect(blocks.map((b) => b.card.name)).toEqual([...CARD_NAMES]);
+			for (const b of blocks) {
+				const want = at[b.card.name]!;
+				expect({ name: b.card.name, ...b, card: undefined, endRow: undefined }).toMatchObject({
+					titleRow: want.titleRow,
+					startCol: want.startCol,
+					closeDateRow: want.closeDateRow,
+					payDateRow: want.payDateRow,
+					dueRow: want.dueRow,
+					pre: want.pre,
+					post: want.post,
+				});
+			}
+		});
+	}
+
+	it("keeps each band's blocks independent when the two bands are misaligned", () => {
+		// A band insert widens both bands at the same rows, so live blocks stay
+		// roughly aligned — but nothing may DEPEND on that. Here the L band's
+		// second block starts 40 rows above the H band's.
+		const grid = lunchGrid();
+		const at = putCreditSection(grid, 40, [
+			{ name: "國泰 CUBE", col: 7, close: dateSerial(2026, 7, 19), pay: dateSerial(2026, 7, 6), preSpill: 30, postSpill: 30 },
+			{ name: "CHASE Amazon", col: 11, close: dateSerial(2026, 7, 3), pay: dateSerial(2026, 7, 28), preSpill: 1, postSpill: 1 },
+			{ name: "CHASE Freedom", col: 7, close: dateSerial(2026, 7, 13), pay: dateSerial(2026, 7, 16), preSpill: 4, postSpill: 4 },
+			{ name: "Apple Card", col: 11, close: dateSerial(2026, 7, 31), pay: dateSerial(2026, 7, 31), preSpill: 9, postSpill: 9 },
+		]);
+		expect(at["Apple Card"]!.titleRow).toBeLessThan(at["CHASE Freedom"]!.titleRow);
+		const blocks = findCreditSection(grid, "9 月");
+		for (const b of blocks) {
+			expect(b.pre).toEqual(at[b.card.name]!.pre);
+			expect(b.post).toEqual(at[b.card.name]!.post);
+		}
+	});
+
+	it("handles a month carrying only some of the cards", () => {
+		// 5月/6月 have no section at all…
+		expect(() => findCreditSection(lunchGrid(), "6 月")).toThrow("信用卡帳單對帳區");
+		// …and a partially built section resolves exactly the blocks present,
+		// including a band holding a single card.
+		const grid = lunchGrid();
+		const at = putCreditSection(grid, 40, [
+			{ name: "CHASE Amazon", col: 11, close: dateSerial(2026, 7, 3), pay: dateSerial(2026, 7, 28), preSpill: 7, postSpill: 2 },
+			{ name: "CHASE Freedom", col: 7, close: dateSerial(2026, 7, 13), pay: dateSerial(2026, 7, 16), preSpill: 3, postSpill: 15 },
+		]);
+		const blocks = findCreditSection(grid, "9 月");
+		expect(blocks.map((b) => b.card.name)).toEqual(["CHASE Amazon", "CHASE Freedom"]);
+		expect(blocks[0]).toMatchObject({ startCol: 11, pre: at["CHASE Amazon"]!.pre, post: at["CHASE Amazon"]!.post });
+		expect(blocks[1]).toMatchObject({ startCol: 7, pre: at["CHASE Freedom"]!.pre, post: at["CHASE Freedom"]!.post });
+	});
+
+	it("resolves the live 7月 2026 geometry, whose CUBE 小計s sit at J127 and J163", () => {
+		// The exact tab that reported "國泰 CUBE … is missing its 小計 row": the
+		// section anchor at 92, CUBE's buckets grown to 28/32 spill rows, and the
+		// second band starting at 165.
+		const grid = lunchGrid();
+		const at = putCreditSection(grid, 92, [
+			{ name: "國泰 CUBE", col: 7, close: dateSerial(2026, 7, 19), pay: dateSerial(2026, 7, 6), due: 11658, preSpill: 28, postSpill: 32 },
+			{ name: "CHASE Amazon", col: 11, close: dateSerial(2026, 7, 3), pay: dateSerial(2026, 7, 28), due: 4.99, preSpill: 28, postSpill: 32 },
+			{ name: "CHASE Freedom", col: 7, close: dateSerial(2026, 7, 13), pay: dateSerial(2026, 7, 16), due: 26.99, preSpill: 11, postSpill: 10 },
+			{ name: "Apple Card", col: 11, close: dateSerial(2026, 7, 31), pay: dateSerial(2026, 7, 31), due: 172.61, preSpill: 11, postSpill: 10 },
+		]);
+		expect(at["國泰 CUBE"]!.pre.subtotalRow).toBe(127);
+		expect(at["國泰 CUBE"]!.post.subtotalRow).toBe(163);
+		expect(at["CHASE Freedom"]!.titleRow).toBe(165);
+		expect(at["Apple Card"]!.post.subtotalRow).toBe(196);
+		const blocks = findCreditSection(grid, "7 月");
+		expect(blocks.map((b) => b.card.name)).toEqual([...CARD_NAMES]);
+		expect(blocks[0]!.pre.subtotalRow).toBe(127);
+		expect(blocks[0]!.post.subtotalRow).toBe(163);
+	});
+
+	it("reads the whole tab: the grid read carries no row bound that a spill could outgrow", () => {
+		expect(FULL_GRID_READ).toBe("A1:S");
+		expect(FULL_GRID_READ).not.toMatch(/\d+$/);
+	});
+
+	it("names the read extent when a scan runs off the end of the grid instead of into the next block", () => {
+		const { grid, at } = fourCardGrid({ "CHASE Freedom": [22, 22] });
+		grid.length = at["CHASE Freedom"]!.post.subtotalRow - 2; // the response stopped short of Freedom's last 小計
+		expect(() => findCreditSection(grid, "8 月")).toThrow(/CHASE Freedom.*小計.*last row with content/s);
+	});
+
+	it("finds the 日期 header wherever it sits, not one row under the bucket label", () => {
+		// A whole-sheet row inserted by hand (or a band insert from the other
+		// column band) can open a blank row between a bucket's label and its
+		// header. The header, the spill and the 小計 all move; nothing may assume
+		// the old distance.
+		const { grid, at } = fourCardGrid();
+		const cube = at["國泰 CUBE"]!;
+		grid.splice(cube.pre.headerRow - 1, 0, []); // blank row lands between 結帳日前 and 日期
+		const block = findCreditSection(grid, "9 月").find((b) => b.card.name === "國泰 CUBE")!;
+		expect(block.pre.labelRow).toBe(cube.pre.labelRow);
+		expect(block.pre.headerRow).toBe(cube.pre.headerRow + 1);
+		expect(block.pre.subtotalRow).toBe(cube.pre.subtotalRow + 1);
+		// …and the spill capacity is measured from the header, so the inserted
+		// row is NOT miscounted as usable spill room.
+		expect(block.pre.subtotalRow - block.pre.headerRow - 1).toBe(2);
 	});
 });
 
@@ -650,13 +899,14 @@ describe("auditCreditBuckets", () => {
 
 	it("degrades to a warning on a torn section", () => {
 		const g = creditGrid();
-		(g[43] as unknown[])[7] = ""; // CUBE loses 本月需繳款
+		(g[creditGridAnchors()["國泰 CUBE"]!.dueRow - 1] as unknown[])[7] = ""; // CUBE loses 本月需繳款
 		const result = auditCreditBuckets(g, "9 月", 111, 0);
 		expect(result.requests).toEqual([]);
 		expect(result.warning).toMatch(/國泰 CUBE.*本月需繳款/);
 	});
 
 	it("grows a bucket that hand-entered rows overflowed, with no pending entry", () => {
+		const cube = creditGridAnchors()["國泰 CUBE"]!;
 		const result = auditCreditBuckets(overflowedGrid(), "9 月", 111, 0);
 		expect(result.bucket).toBeNull();
 		expect(result.rowsAdded).toBe(0);
@@ -665,32 +915,61 @@ describe("auditCreditBuckets", () => {
 		expect(inserts).toEqual([
 			{
 				insertRange: {
-					range: { sheetId: 111, startRowIndex: 48, endRowIndex: 49, startColumnIndex: 7, endColumnIndex: 14 },
+					range: {
+						sheetId: 111,
+						startRowIndex: cube.pre.subtotalRow - 1,
+						endRowIndex: cube.pre.subtotalRow,
+						startColumnIndex: 7,
+						endColumnIndex: 14,
+					},
 					shiftDimension: "ROWS",
 				},
 			},
 		]);
-		// the grown bucket's whole spill area is stamped (post-insert rows 47-49)
-		expect(result.requests).toEqual(expect.arrayContaining(bucketFormatStamps(46, 49, 7, "[$NTD ]#,##0.00")));
+		// the grown bucket's whole spill area is stamped: the row under the 日期
+		// header through the row above the (shifted-down) 小計
+		expect(result.requests).toEqual(
+			expect.arrayContaining(bucketFormatStamps(cube.pre.headerRow, cube.pre.subtotalRow, 7, "[$NTD ]#,##0.00")),
+		);
 	});
 
 	it("pads every bucket to minCapacity bottom-up, one insert per aligned 小計 row", () => {
+		const at = creditGridAnchors();
+		const cube = at["國泰 CUBE"]!;
+		const pad = CREDIT_BUCKET_PAD_ROWS - 2; // the fixture's buckets already hold 2
 		const result = auditCreditBuckets(creditGrid(), "9 月", 111, 0, undefined, CREDIT_BUCKET_PAD_ROWS);
 		const inserts = (result.requests.filter((r: any) => (r as any).insertRange) as any[]).map(
 			(r) => r.insertRange.range,
 		);
-		// both cards' 小計 rows align (49/55), so one 18-row H–N insert per
-		// bucket row widens both card columns at once — never a double-growth
+		// both cards' 小計 rows align, so one H–N insert per bucket row widens
+		// both card columns at once — never a double-growth
 		expect(inserts).toEqual([
-			{ sheetId: 111, startRowIndex: 54, endRowIndex: 72, startColumnIndex: 7, endColumnIndex: 14 },
-			{ sheetId: 111, startRowIndex: 48, endRowIndex: 66, startColumnIndex: 7, endColumnIndex: 14 },
+			{
+				sheetId: 111,
+				startRowIndex: cube.post.subtotalRow - 1,
+				endRowIndex: cube.post.subtotalRow - 1 + pad,
+				startColumnIndex: 7,
+				endColumnIndex: 14,
+			},
+			{
+				sheetId: 111,
+				startRowIndex: cube.pre.subtotalRow - 1,
+				endRowIndex: cube.pre.subtotalRow - 1 + pad,
+				startColumnIndex: 7,
+				endColumnIndex: 14,
+			},
 		]);
 		expect(result.grown).toEqual([
-			{ card: "國泰 CUBE", bucket: "結帳日後", rowsAdded: 18 },
-			{ card: "國泰 CUBE", bucket: "結帳日前", rowsAdded: 18 },
+			{ card: "國泰 CUBE", bucket: "結帳日後", rowsAdded: pad },
+			{ card: "國泰 CUBE", bucket: "結帳日前", rowsAdded: pad },
 		]);
 		// the widened twin blocks (CHASE) get their padded spill areas stamped too
-		expect(result.requests).toEqual(expect.arrayContaining(bucketFormatStamps(46, 66, 11, '"$"#,##0.00')));
+		const amazon = at["CHASE Amazon"]!;
+		expect(result.requests).toEqual(
+			expect.arrayContaining(
+				bucketFormatStamps(amazon.pre.headerRow, amazon.pre.subtotalRow - 1 + pad, 11, '"$"#,##0.00'),
+			),
+		);
 	});
 
 	it("counts a pending entry into its bucket while auditing the rest of the section", () => {
@@ -703,6 +982,150 @@ describe("auditCreditBuckets", () => {
 		expect(result.bucket).toBe("結帳日後");
 		expect(result.rowsAdded).toBe(0);
 		expect(result.grown).toEqual([{ card: "國泰 CUBE", bucket: "結帳日前", rowsAdded: 1 }]);
+	});
+
+	// ── every card × every bucket, at any spill length ─────────────────────
+
+	/**
+	 * Write `count` card charges dated `serial` into columns A–G from row
+	 * `startIdx + 1`. Only the expense columns are touched, so a run long enough
+	 * to reach another section's rows cannot silently damage it — and reaching
+	 * the 對帳區 itself throws, so a future spill bump fails loudly here instead
+	 * of quietly testing a torn grid.
+	 */
+	function putCardRows(g: unknown[][], startIdx: number, count: number, card: string, serial: number): void {
+		const sectionIdx = g.findIndex((r) => String(r?.[7] ?? "").trim() === "信用卡帳單對帳區");
+		if (sectionIdx >= 0 && startIdx + count > sectionIdx) {
+			throw new Error(`fixture overflow: ${count} card rows from index ${startIdx} would reach the 對帳區`);
+		}
+		for (let i = 0; i < count; i++) {
+			const row = (g[startIdx + i] ??= []);
+			row[0] = serial;
+			row[1] = `手填${i + 1}`;
+			row[2] = "訂閱";
+			row[3] = 10;
+			row[4] = 100;
+			row[5] = "TWD";
+			row[6] = card;
+		}
+	}
+
+	const GROWTH_SPILLS: Array<[string, SpillMap]> = [
+		["a freshly opened month", {}],
+		[
+			"spills already grown to different lengths",
+			{ "國泰 CUBE": [9, 3], "CHASE Amazon": [1, 25], "CHASE Freedom": [17, 6], "Apple Card": [4, 30] },
+		],
+		[
+			"empty spill areas (nothing has spilled yet)",
+			{ "國泰 CUBE": [0, 0], "CHASE Amazon": [0, 0], "CHASE Freedom": [0, 0], "Apple Card": [0, 0] },
+		],
+	];
+
+	for (const [label, spills] of GROWTH_SPILLS) {
+		for (const card of CARD_NAMES) {
+			for (const bucket of ["結帳日前", "結帳日後"] as const) {
+				it(`grows ${card}'s ${bucket} bucket by exactly what overflows it — ${label}`, () => {
+					const { grid, at } = fourCardGrid(spills);
+					const anchors = at[card]!;
+					const target = bucket === "結帳日前" ? anchors.pre : anchors.post;
+					const capacity = target.subtotalRow - target.headerRow - 1;
+					const charges = capacity + 3;
+					// Apple Card's statement closes ON its 結帳日 (the calendar
+					// month's last day); every other card's 結帳日 belongs to the
+					// NEXT statement. Date the charges away from the boundary so
+					// this case tests capacity, not the boundary rule.
+					const close = grid[anchors.closeDateRow - 1]![anchors.startCol + 2] as number;
+					putCardRows(grid, 2, charges, card, bucket === "結帳日前" ? close - 3 : close + 3);
+
+					const result = auditCreditBuckets(grid, "9 月", 111, 0);
+					expect(result.grown).toEqual([{ card, bucket, rowsAdded: 3 }]);
+					const inserts = (result.requests.filter((r: any) => r.insertRange) as any[]).map(
+						(r) => r.insertRange.range,
+					);
+					expect(inserts).toEqual([
+						{
+							sheetId: 111,
+							startRowIndex: target.subtotalRow - 1,
+							endRowIndex: target.subtotalRow - 1 + 3,
+							startColumnIndex: 7,
+							endColumnIndex: 14,
+						},
+					]);
+					// …and the grown spill area is stamped in the card's billing currency
+					expect(result.requests).toEqual(
+						expect.arrayContaining(
+							bucketFormatStamps(
+								target.headerRow,
+								target.subtotalRow - 1 + 3,
+								anchors.startCol,
+								card === "國泰 CUBE" ? "[$NTD ]#,##0.00" : '"$"#,##0.00',
+							),
+						),
+					);
+				});
+			}
+		}
+	}
+
+	it("measures capacity from the scanned 日期 header, not from the bucket label", () => {
+		// A hand-inserted row between 結帳日前 and its 日期 header is NOT spill
+		// room: counting label→小計 would over-report capacity by one and leave
+		// the mirror one row short (#REF!).
+		const { grid, at } = fourCardGrid();
+		const cube = at["國泰 CUBE"]!;
+		grid.splice(cube.pre.headerRow - 1, 0, []);
+		putCardRows(grid, 2, 3, "國泰 CUBE", (grid[cube.closeDateRow - 1]![9] as number) - 3);
+		const result = auditCreditBuckets(grid, "9 月", 111, 0);
+		expect(result.grown).toEqual([{ card: "國泰 CUBE", bucket: "結帳日前", rowsAdded: 1 }]);
+		const inserts = (result.requests.filter((r: any) => r.insertRange) as any[]).map((r) => r.insertRange.range);
+		expect(inserts[0]).toMatchObject({ startRowIndex: cube.pre.subtotalRow }); // one row lower than before the splice
+	});
+
+	it("skips buckets that are already big enough, however long their spills are", () => {
+		const { grid } = fourCardGrid({ "國泰 CUBE": [30, 30], "Apple Card": [12, 12] });
+		putCardRows(grid, 2, 4, "國泰 CUBE", dateSerial(2026, 7, 10));
+		expect(auditCreditBuckets(grid, "9 月", 111, 0).grown).toEqual([]);
+	});
+
+	// ── the per-card rules the refactor must not lose ──────────────────────
+
+	it("keeps Apple Card's 結帳日-inclusive statement while the other three exclude it", () => {
+		for (const card of CARD_NAMES) {
+			const { grid, at } = fourCardGrid({ [card]: [0, 0] });
+			const anchors = at[card]!;
+			const close = grid[anchors.closeDateRow - 1]![anchors.startCol + 2] as number;
+			putCardRows(grid, 2, 1, card, close); // dated exactly ON the 結帳日
+			const grown = auditCreditBuckets(grid, "9 月", 111, 0).grown;
+			expect(grown).toEqual([
+				{ card, bucket: card === "Apple Card" ? "結帳日前" : "結帳日後", rowsAdded: 1 },
+			]);
+		}
+	});
+
+	it("counts the 午餐預算 log's card lunches into the TWD-billed card's buckets only", () => {
+		const { grid, at } = fourCardGrid({ "國泰 CUBE": [0, 0], "Apple Card": [0, 0] });
+		const cube = at["國泰 CUBE"]!;
+		const close = grid[cube.closeDateRow - 1]![9] as number;
+		// two lunches on the CUBE (P=日期, Q=項目, R=金額, S=支付方式), one each side
+		// of its 結帳日 — the mirror QUERY-merges them, so the buckets must too
+		(grid[36] ??= [])[15] = close - 2;
+		grid[36]![16] = "中餐";
+		grid[36]![17] = 143;
+		grid[36]![18] = "國泰 CUBE";
+		(grid[37] ??= [])[15] = close + 2;
+		grid[37]![16] = "中餐";
+		grid[37]![17] = 120;
+		grid[37]![18] = "國泰 Cube"; // case-insensitive, like Sheets' =
+		const grown = auditCreditBuckets(grid, "9 月", 111, 0).grown;
+		expect(grown).toEqual(
+			expect.arrayContaining([
+				{ card: "國泰 CUBE", bucket: "結帳日前", rowsAdded: 1 },
+				{ card: "國泰 CUBE", bucket: "結帳日後", rowsAdded: 1 },
+			]),
+		);
+		// the USD cards' buckets never look at the lunch log
+		expect(grown.filter((g) => g.card !== "國泰 CUBE")).toEqual([]);
 	});
 });
 
@@ -719,11 +1142,11 @@ function transferClient(grid: unknown[][], rate: unknown = 29.85): SheetsClient 
 	} as unknown as SheetsClient;
 }
 
-/** Serves the trip grid for A1:G200 reads, the month grid for FULL_GRID_READ reads, and `rate` for single cells. */
+/** Serves the trip grid for TRANSFER_JPY_GRID_READ reads, the month grid for FULL_GRID_READ reads, and `rate` for single cells. */
 function jpyWiringClient(tripGrid: unknown[][], monthGrid: unknown[][], rate: unknown = 0.208): SheetsClient {
 	return {
 		readRange: vi.fn(async (range: string) =>
-			range.includes("A1:G200")
+			range.includes(TRANSFER_JPY_GRID_READ)
 				? { range, values: tripGrid, truncated: false }
 				: range.includes(FULL_GRID_READ)
 					? { range, values: monthGrid, truncated: false }
@@ -878,7 +1301,7 @@ describe("addTransfer", () => {
 		// the transfer slot (row 35) was free, so nothing shifted the section
 		const batch2 = (client.batchUpdate as any).mock.calls[1][0];
 		const insert = batch2.find((r: any) => r.insertRange);
-		expect(insert.insertRange.range).toMatchObject({ startRowIndex: 48, endRowIndex: 49, startColumnIndex: 7 });
+		expect(insert.insertRange.range).toMatchObject({ startRowIndex: CUBE_AT.pre.subtotalRow - 1, endRowIndex: CUBE_AT.pre.subtotalRow, startColumnIndex: 7 });
 		expect(result).toMatchObject({
 			row: 35,
 			bucketsGrown: [{ card: "國泰 CUBE", bucket: "結帳日前", rowsAdded: 1 }],
@@ -899,7 +1322,7 @@ describe("addTransfer", () => {
 		// the H–N insert above 總和 (scratch batch) pushed the section down one
 		const batch2 = (client.batchUpdate as any).mock.calls[1][0];
 		const insert = batch2.find((r: any) => r.insertRange);
-		expect(insert.insertRange.range).toMatchObject({ startRowIndex: 49, endRowIndex: 50, startColumnIndex: 7 });
+		expect(insert.insertRange.range).toMatchObject({ startRowIndex: CUBE_AT.pre.subtotalRow, endRowIndex: CUBE_AT.pre.subtotalRow + 1, startColumnIndex: 7 });
 	});
 });
 
@@ -936,7 +1359,7 @@ describe("addTransfer (jpy)", () => {
 			date: "7/10",
 		});
 
-		expect((client.readRange as any).mock.calls[0]).toEqual([`'${TRIP}'!A1:G200`, "FORMULA"]);
+		expect((client.readRange as any).mock.calls[0]).toEqual([`'${TRIP}'!${TRANSFER_JPY_GRID_READ}`, "FORMULA"]);
 		// batch 1: scratch GOOGLEFINANCE into C71 (first empty data row), no insert
 		const batch1 = (client.batchUpdate as any).mock.calls[0][0];
 		expect(batch1).toHaveLength(1);
@@ -1254,7 +1677,7 @@ describe("addLunch", () => {
 			const requests = (client.batchUpdate as any).mock.calls[0][0];
 			const insert = requests.find((r: any) => r.insertRange);
 			expect(insert.insertRange).toEqual({
-				range: { sheetId: 111, startRowIndex: 48, endRowIndex: 49, startColumnIndex: 7, endColumnIndex: 14 },
+				range: { sheetId: 111, startRowIndex: CUBE_AT.pre.subtotalRow - 1, endRowIndex: CUBE_AT.pre.subtotalRow, startColumnIndex: 7, endColumnIndex: 14 },
 				shiftDimension: "ROWS",
 			});
 			expect(result).toMatchObject({ bucket: "結帳日前", bucketRowsAdded: 1 });
@@ -1277,7 +1700,7 @@ describe("addLunch", () => {
 			// lands at the same row as it would with a free lunch slot
 			const bucketInsert = requests.find((r: any) => r.insertRange && r.insertRange.range.startColumnIndex === 7);
 			expect(bucketInsert.insertRange).toEqual({
-				range: { sheetId: 111, startRowIndex: 48, endRowIndex: 49, startColumnIndex: 7, endColumnIndex: 14 },
+				range: { sheetId: 111, startRowIndex: CUBE_AT.pre.subtotalRow - 1, endRowIndex: CUBE_AT.pre.subtotalRow, startColumnIndex: 7, endColumnIndex: 14 },
 				shiftDimension: "ROWS",
 			});
 			expect(requests.some((r: any) => r.insertDimension)).toBe(false);
@@ -1301,7 +1724,7 @@ describe("addLunch", () => {
 			const result = await addLunch(client, { amount: 100, month: 9, date: "9/2" });
 			const requests = (client.batchUpdate as any).mock.calls[0][0];
 			const insert = requests.find((r: any) => r.insertRange && r.insertRange.range.startColumnIndex === 7);
-			expect(insert.insertRange.range).toMatchObject({ startRowIndex: 48, endRowIndex: 49 });
+			expect(insert.insertRange.range).toMatchObject({ startRowIndex: CUBE_AT.pre.subtotalRow - 1, endRowIndex: CUBE_AT.pre.subtotalRow });
 			expect(result).toMatchObject({
 				bucket: null,
 				bucketsGrown: [{ card: "國泰 CUBE", bucket: "結帳日前", rowsAdded: 1 }],
@@ -1712,12 +2135,12 @@ describe("addExpense", () => {
 			// H–N only — the 銀行餘額 stack (B–D) and lunch log (P–S) beside
 			// the grid must not move
 			expect(insert.insertRange).toEqual({
-				range: { sheetId: 111, startRowIndex: 48, endRowIndex: 49, startColumnIndex: 7, endColumnIndex: 14 },
+				range: { sheetId: 111, startRowIndex: CUBE_AT.pre.subtotalRow - 1, endRowIndex: CUBE_AT.pre.subtotalRow, startColumnIndex: 7, endColumnIndex: 14 },
 				shiftDimension: "ROWS",
 			});
 			// the stamps cover the grown spill area (rows 47-49) — the inserted
 			// row inherits from the blank cushion row and would render raw
-			expect(requests).toEqual(expect.arrayContaining(bucketFormatStamps(46, 49, 7, "[$NTD ]#,##0.00")));
+			expect(requests).toEqual(expect.arrayContaining(bucketFormatStamps(CUBE_AT.pre.headerRow, CUBE_AT.pre.subtotalRow, 7, "[$NTD ]#,##0.00")));
 			expect(result).toMatchObject({ bucket: "結帳日前", bucketRowsAdded: 1 });
 		});
 
@@ -1744,11 +2167,11 @@ describe("addExpense", () => {
 			// the credit section down one — the bucket insert follows it
 			const bucketInsert = requests.find((r: any) => r.insertRange);
 			expect(bucketInsert.insertRange).toEqual({
-				range: { sheetId: 111, startRowIndex: 49, endRowIndex: 50, startColumnIndex: 7, endColumnIndex: 14 },
+				range: { sheetId: 111, startRowIndex: CUBE_AT.pre.subtotalRow, endRowIndex: CUBE_AT.pre.subtotalRow + 1, startColumnIndex: 7, endColumnIndex: 14 },
 				shiftDimension: "ROWS",
 			});
 			// format stamps shift with the section, same as the insert
-			expect(requests).toEqual(expect.arrayContaining(bucketFormatStamps(47, 50, 7, "[$NTD ]#,##0.00")));
+			expect(requests).toEqual(expect.arrayContaining(bucketFormatStamps(CUBE_AT.pre.headerRow + 1, CUBE_AT.pre.subtotalRow + 1, 7, "[$NTD ]#,##0.00")));
 			expect(result).toMatchObject({ bucketRowsAdded: 1 });
 		});
 
@@ -1789,11 +2212,11 @@ describe("addExpense", () => {
 			const requests = (client.batchUpdate as any).mock.calls[0][0];
 			const insert = requests.find((r: any) => r.insertRange);
 			expect(insert.insertRange).toEqual({
-				range: { sheetId: 111, startRowIndex: 54, endRowIndex: 55, startColumnIndex: 7, endColumnIndex: 14 },
+				range: { sheetId: 111, startRowIndex: CUBE_AT.post.subtotalRow - 1, endRowIndex: CUBE_AT.post.subtotalRow, startColumnIndex: 7, endColumnIndex: 14 },
 				shiftDimension: "ROWS",
 			});
 			// the stamps target the 結帳日後 bucket's own spill area
-			expect(requests).toEqual(expect.arrayContaining(bucketFormatStamps(52, 55, 7, "[$NTD ]#,##0.00")));
+			expect(requests).toEqual(expect.arrayContaining(bucketFormatStamps(CUBE_AT.post.headerRow, CUBE_AT.post.subtotalRow, 7, "[$NTD ]#,##0.00")));
 			expect(result).toMatchObject({ bucket: "結帳日後", bucketRowsAdded: 1 });
 		});
 
@@ -1810,31 +2233,18 @@ describe("addExpense", () => {
 			expect(result).toMatchObject({ bucket: "結帳日後" });
 		});
 
-		/** creditGrid + an Apple Card block stacked below 國泰 CUBE in H/I/J: title 57, 結帳日 58 (7/31 in J58), 繳款日 59, 本月需繳款 60, 結帳日前 61, header 62, cushion 63-64, 小計 65, 結帳日後 67, header 68, cushion 69-70, 小計 71. */
+		/** creditGrid + an Apple Card block (結帳日 7/31) stacked below 國泰 CUBE in H/I/J. */
 		function appleGrid(): unknown[][] {
 			const g = creditGrid();
-			const put = (idx: number, col: number, v: unknown) => {
-				((g[idx] ??= []) as unknown[])[col] = v;
-			};
-			put(56, 7, "Apple Card");
-			put(57, 7, "本月結帳日");
-			put(57, 9, dateSerial(2026, 7, 31));
-			put(58, 7, "本月繳款日");
-			put(58, 9, dateSerial(2026, 7, 31));
-			put(59, 7, "本月需繳款");
-			put(59, 9, "='6 月'!J65+'5 月'!J71");
-			put(60, 7, "結帳日前");
-			put(61, 7, "日期");
-			put(61, 8, "項目");
-			put(61, 9, "金額");
-			put(64, 8, "小計");
-			put(64, 9, '=SUMIFS(D3:D,G3:G,"Apple Card",A3:A,"<="&J58,A3:A,">0")');
-			put(66, 7, "結帳日後");
-			put(67, 7, "日期");
-			put(67, 8, "項目");
-			put(67, 9, "金額");
-			put(70, 8, "小計");
-			put(70, 9, '=SUMIFS(D3:D,G3:G,"Apple Card",A3:A,">"&J58)');
+			putCardBlock(g, creditGridAnchors()["國泰 CUBE"]!.nextTitleRow, {
+				name: "Apple Card",
+				col: 7,
+				close: dateSerial(2026, 7, 31),
+				pay: dateSerial(2026, 7, 31),
+				due: "='6 月'!J65+'5 月'!J71",
+				preSpill: 2,
+				postSpill: 2,
+			});
 			return g;
 		}
 
@@ -1916,7 +2326,7 @@ describe("addExpense", () => {
 			const requests = (client.batchUpdate as any).mock.calls[0][0];
 			const insert = requests.find((r: any) => r.insertRange);
 			expect(insert.insertRange).toEqual({
-				range: { sheetId: 111, startRowIndex: 48, endRowIndex: 49, startColumnIndex: 7, endColumnIndex: 14 },
+				range: { sheetId: 111, startRowIndex: CUBE_AT.pre.subtotalRow - 1, endRowIndex: CUBE_AT.pre.subtotalRow, startColumnIndex: 7, endColumnIndex: 14 },
 				shiftDimension: "ROWS",
 			});
 			expect(result).toMatchObject({
@@ -1943,7 +2353,7 @@ describe("addExpense", () => {
 
 		it("writes the expense and surfaces a warning when the credit section is torn", async () => {
 			const g = creditGrid();
-			(g[43] as unknown[])[7] = ""; // CUBE loses its 本月需繳款 label -> findCreditSection throws
+			(g[creditGridAnchors()["國泰 CUBE"]!.dueRow - 1] as unknown[])[7] = ""; // CUBE loses its 本月需繳款 label -> findCreditSection throws
 			const client = fakeClient(g);
 			const result = await addExpense(client, {
 				item: "Netflix",
@@ -2133,7 +2543,7 @@ describe("setExpenseDate", () => {
 
 		const requests = (client.batchUpdate as any).mock.calls[0][0];
 		const insert = requests.find((r: any) => r.insertRange);
-		expect(insert.insertRange.range).toMatchObject({ startRowIndex: 48, endRowIndex: 49, startColumnIndex: 7 });
+		expect(insert.insertRange.range).toMatchObject({ startRowIndex: CUBE_AT.pre.subtotalRow - 1, endRowIndex: CUBE_AT.pre.subtotalRow, startColumnIndex: 7 });
 		expect(result).toMatchObject({
 			card: null,
 			bucket: null,
@@ -2435,7 +2845,7 @@ describe("adjustBalance", () => {
 		const requests = (client.batchUpdate as any).mock.calls[0][0];
 		expect(requests[0].updateCells.start).toEqual({ sheetId: 111, rowIndex: 43, columnIndex: 3 });
 		const insert = requests.find((r: any) => r.insertRange);
-		expect(insert.insertRange.range).toMatchObject({ startRowIndex: 48, endRowIndex: 49, startColumnIndex: 7 });
+		expect(insert.insertRange.range).toMatchObject({ startRowIndex: CUBE_AT.pre.subtotalRow - 1, endRowIndex: CUBE_AT.pre.subtotalRow, startColumnIndex: 7 });
 		expect(result).toMatchObject({
 			adjustment: -50,
 			bucketsGrown: [{ card: "國泰 CUBE", bucket: "結帳日前", rowsAdded: 1 }],
@@ -2701,22 +3111,33 @@ describe("startMonth", () => {
 	});
 
 	it("bumps each card's 結帳日/繳款日 one month and rewires 本月需繳款 across two months per statementLag", async () => {
+		const anchors = creditGridAnchors();
+		const cube = anchors["國泰 CUBE"]!;
+		const amazon = anchors["CHASE Amazon"]!;
 		const client = startMonthClient(creditGrid(), ["9 月", "8 月"]);
 
 		const result = await startMonth(client, 10);
 
 		const requests = (client.batchUpdate as any).mock.calls[1][0];
-		const at = (rowIndex: number, columnIndex: number) =>
+		const at = (row: number, columnIndex: number) =>
 			requests.find(
-				(r: any) => r.updateCells && r.updateCells.start.rowIndex === rowIndex && r.updateCells.start.columnIndex === columnIndex,
+				(r: any) => r.updateCells && r.updateCells.start.rowIndex === row - 1 && r.updateCells.start.columnIndex === columnIndex,
 			);
 		// 國泰 CUBE (values in J = column 9): dates bumped 7/19→8/19, 7/6→8/6.
-		expect(at(41, 9).updateCells.rows[0].values).toEqual([{ userEnteredValue: { numberValue: dateSerial(2026, 8, 19) } }]);
-		expect(at(42, 9).updateCells.rows[0].values).toEqual([{ userEnteredValue: { numberValue: dateSerial(2026, 8, 6) } }]);
-		// lag 1: 本月需繳款 = prev tab's 結帳日前小計 (J49) + prev-prev tab's 結帳日後小計 (J55).
-		expect(at(43, 9).updateCells.rows[0].values).toEqual([{ userEnteredValue: { formulaValue: "='9 月'!J49+'8 月'!J55" } }]);
-		// CHASE Amazon (values in N = column 13), lag 0: 本月需繳款 = this tab's 結帳日前小計 (N49) + prev tab's 結帳日後小計 (N55).
-		expect(at(43, 13).updateCells.rows[0].values).toEqual([{ userEnteredValue: { formulaValue: "=N49+'9 月'!N55" } }]);
+		expect(at(cube.closeDateRow, 9).updateCells.rows[0].values).toEqual([
+			{ userEnteredValue: { numberValue: dateSerial(2026, 8, 19) } },
+		]);
+		expect(at(cube.payDateRow, 9).updateCells.rows[0].values).toEqual([
+			{ userEnteredValue: { numberValue: dateSerial(2026, 8, 6) } },
+		]);
+		// lag 1: 本月需繳款 = prev tab's 結帳日前小計 + prev-prev tab's 結帳日後小計.
+		expect(at(cube.dueRow, 9).updateCells.rows[0].values).toEqual([
+			{ userEnteredValue: { formulaValue: `='9 月'!J${cube.pre.subtotalRow}+'8 月'!J${cube.post.subtotalRow}` } },
+		]);
+		// CHASE Amazon (values in N = column 13), lag 0: 本月需繳款 = this tab's 結帳日前小計 + prev tab's 結帳日後小計.
+		expect(at(amazon.dueRow, 13).updateCells.rows[0].values).toEqual([
+			{ userEnteredValue: { formulaValue: `=N${amazon.pre.subtotalRow}+'9 月'!N${amazon.post.subtotalRow}` } },
+		]);
 		// No 本期帳單總額 row exists anymore — only the two date bumps plus the single due write per card.
 		expect(requests.filter((r: any) => r.updateCells && r.updateCells.start.columnIndex === 9)).toHaveLength(3);
 		expect(requests.filter((r: any) => r.updateCells && r.updateCells.start.columnIndex === 13)).toHaveLength(3);
@@ -2724,45 +3145,115 @@ describe("startMonth", () => {
 		expect(result.creditWarning).toBeUndefined();
 	});
 
+	it("wires all four cards' 本月需繳款 to their own scanned 小計 rows, whatever the spills are", async () => {
+		// Each card's buckets are a different length here, so a lag rule that
+		// leaned on a shared or offset-derived 小計 row would point at the wrong
+		// cell for at least one card.
+		const { grid, at } = fourCardGrid({
+			"國泰 CUBE": [15, 4],
+			"CHASE Amazon": [2, 33],
+			"CHASE Freedom": [7, 9],
+			"Apple Card": [21, 2],
+		});
+		const client = startMonthClient(grid, ["9 月", "8 月"]);
+
+		const result = await startMonth(client, 10);
+
+		const requests = (client.batchUpdate as any).mock.calls[1][0];
+		expect(result.creditRebuilt).toEqual([...CARD_NAMES]);
+		for (const card of CARD_NAMES) {
+			const a = at[card]!;
+			const col = a.startCol + 2;
+			const letter = colLetter(col);
+			const write = requests.find(
+				(r: any) => r.updateCells && r.updateCells.start.rowIndex === a.dueRow - 1 && r.updateCells.start.columnIndex === col,
+			);
+			expect(write.updateCells.rows[0].values[0].userEnteredValue.formulaValue).toBe(
+				// CHASE Amazon is the only statementLag 0 card.
+				card === "CHASE Amazon"
+					? `=${letter}${a.pre.subtotalRow}+'9 月'!${letter}${a.post.subtotalRow}`
+					: `='9 月'!${letter}${a.pre.subtotalRow}+'8 月'!${letter}${a.post.subtotalRow}`,
+			);
+		}
+	});
+
 	it("omits the prev-prev term when that tab doesn't exist in the spreadsheet", async () => {
+		const cube = creditGridAnchors()["國泰 CUBE"]!;
 		const client = startMonthClient(creditGrid(), ["9 月"]);
 
 		const result = await startMonth(client, 10);
 
 		const requests = (client.batchUpdate as any).mock.calls[1][0];
-		const at = (rowIndex: number, columnIndex: number) =>
-			requests.find(
-				(r: any) => r.updateCells && r.updateCells.start.rowIndex === rowIndex && r.updateCells.start.columnIndex === columnIndex,
-			);
-		expect(at(43, 9).updateCells.rows[0].values).toEqual([{ userEnteredValue: { formulaValue: "='9 月'!J49" } }]);
+		const write = requests.find(
+			(r: any) => r.updateCells && r.updateCells.start.rowIndex === cube.dueRow - 1 && r.updateCells.start.columnIndex === 9,
+		);
+		expect(write.updateCells.rows[0].values).toEqual([
+			{ userEnteredValue: { formulaValue: `='9 月'!J${cube.pre.subtotalRow}` } },
+		]);
 		expect(result.creditRebuilt).toEqual(["國泰 CUBE", "CHASE Amazon"]);
 	});
 
 	it("pads every bucket's spill area to CREDIT_BUCKET_PAD_ROWS blank rows at month open", async () => {
+		const cube = creditGridAnchors()["國泰 CUBE"]!;
+		const pad = CREDIT_BUCKET_PAD_ROWS - 2; // the fixture's buckets already hold 2
 		const client = startMonthClient(creditGrid(), ["9 月", "8 月"]);
 
 		const result = await startMonth(client, 10);
 
 		const requests = (client.batchUpdate as any).mock.calls[1][0];
 		const inserts = requests.filter((r: any) => r.insertRange).map((r: any) => r.insertRange.range);
-		// both cards' 小計 rows align (49/55), so one 18-row H–N insert per
-		// bucket row (bottom-up) pads both card columns at once
+		// both cards' 小計 rows align, so one H–N insert per bucket row
+		// (bottom-up) pads both card columns at once
 		expect(inserts).toEqual([
-			{ sheetId: 555, startRowIndex: 54, endRowIndex: 72, startColumnIndex: 7, endColumnIndex: 14 },
-			{ sheetId: 555, startRowIndex: 48, endRowIndex: 66, startColumnIndex: 7, endColumnIndex: 14 },
+			{
+				sheetId: 555,
+				startRowIndex: cube.post.subtotalRow - 1,
+				endRowIndex: cube.post.subtotalRow - 1 + pad,
+				startColumnIndex: 7,
+				endColumnIndex: 14,
+			},
+			{
+				sheetId: 555,
+				startRowIndex: cube.pre.subtotalRow - 1,
+				endRowIndex: cube.pre.subtotalRow - 1 + pad,
+				startColumnIndex: 7,
+				endColumnIndex: 14,
+			},
 		]);
 		// the pads land AFTER the 本月需繳款 rewires, so those just-written
 		// formulas' 小計 references shift down in lockstep with the inserts
 		const dueWriteIdx = requests.findIndex(
-			(r: any) => r.updateCells && r.updateCells.start.rowIndex === 43 && r.updateCells.start.columnIndex === 9,
+			(r: any) => r.updateCells && r.updateCells.start.rowIndex === cube.dueRow - 1 && r.updateCells.start.columnIndex === 9,
 		);
 		const firstInsertIdx = requests.findIndex((r: any) => r.insertRange);
 		expect(dueWriteIdx).toBeGreaterThanOrEqual(0);
 		expect(firstInsertIdx).toBeGreaterThan(dueWriteIdx);
 		expect(result.creditPadded).toEqual([
-			{ card: "國泰 CUBE", bucket: "結帳日後", rowsAdded: 18 },
-			{ card: "國泰 CUBE", bucket: "結帳日前", rowsAdded: 18 },
+			{ card: "國泰 CUBE", bucket: "結帳日後", rowsAdded: pad },
+			{ card: "國泰 CUBE", bucket: "結帳日前", rowsAdded: pad },
 		]);
+	});
+
+	it("pads a month whose cards' spills are already past the pad without touching them", async () => {
+		const { grid, at } = fourCardGrid({
+			"國泰 CUBE": [CREDIT_BUCKET_PAD_ROWS + 5, CREDIT_BUCKET_PAD_ROWS + 5],
+			"CHASE Amazon": [CREDIT_BUCKET_PAD_ROWS + 5, CREDIT_BUCKET_PAD_ROWS + 5],
+			"CHASE Freedom": [1, CREDIT_BUCKET_PAD_ROWS],
+			"Apple Card": [1, CREDIT_BUCKET_PAD_ROWS],
+		});
+		const client = startMonthClient(grid, ["9 月", "8 月"]);
+
+		const result = await startMonth(client, 10);
+
+		// only CHASE Freedom's 結帳日前 (1 row) is under the pad; its aligned twin
+		// Apple Card gains the same rows from the shared band insert
+		expect(result.creditPadded).toEqual([
+			{ card: "CHASE Freedom", bucket: "結帳日前", rowsAdded: CREDIT_BUCKET_PAD_ROWS - 1 },
+		]);
+		const inserts = (client.batchUpdate as any).mock.calls[1][0]
+			.filter((r: any) => r.insertRange)
+			.map((r: any) => r.insertRange.range.startRowIndex);
+		expect(inserts).toEqual([at["CHASE Freedom"]!.pre.subtotalRow - 1]);
 	});
 
 	it("skips the credit rebuild silently on tabs without the section", async () => {
@@ -2775,7 +3266,7 @@ describe("startMonth", () => {
 
 	it("surfaces a torn credit block as a warning instead of failing the month-open", async () => {
 		const g = creditGrid();
-		(g[43] as unknown[])[7] = ""; // CUBE loses 本月需繳款
+		(g[creditGridAnchors()["國泰 CUBE"]!.dueRow - 1] as unknown[])[7] = ""; // CUBE loses 本月需繳款
 		const client = startMonthClient(g, ["9 月", "8 月"]);
 		const result = await startMonth(client, 10);
 		expect(result.creditRebuilt).toEqual([]);
@@ -3377,7 +3868,7 @@ describe("tripBudgetStatus", () => {
 
 		const result = await tripBudgetStatus(client, { tab: "京都" });
 
-		expect((client.readRange as any).mock.calls[0]).toEqual(["'京都'!A1:AZ200", "UNFORMATTED_VALUE"]);
+		expect((client.readRange as any).mock.calls[0]).toEqual([`'京都'!${TRIP_BUDGET_READ}`, "UNFORMATTED_VALUE"]);
 		expect(result.categories).toEqual([
 			{ 分類: "鐵道模型", 金額: 6861, 預算: 14000, 預算餘額: 7139, "餘額 JP": 35970.27 },
 			{ 分類: "衣服", 金額: 0, 預算: 10000, 預算餘額: 10000, "餘額 JP": 50385.58 },
@@ -3815,7 +4306,7 @@ describe("setIncome", () => {
 
 		const requests = (client.batchUpdate as any).mock.calls[0][0];
 		const insert = requests.find((r: any) => r.insertRange && r.insertRange.range.startColumnIndex === 7);
-		expect(insert.insertRange.range).toMatchObject({ startRowIndex: 48, endRowIndex: 49 });
+		expect(insert.insertRange.range).toMatchObject({ startRowIndex: CUBE_AT.pre.subtotalRow - 1, endRowIndex: CUBE_AT.pre.subtotalRow });
 		expect(result).toMatchObject({
 			action: "updated",
 			bucketsGrown: [{ card: "國泰 CUBE", bucket: "結帳日前", rowsAdded: 1 }],

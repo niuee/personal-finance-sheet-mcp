@@ -24,6 +24,7 @@ import {
 	CREDIT_SUBTOTAL_LABEL,
 	type CreditCard,
 	currentMonthTab,
+	DATE_HEADER_LABEL,
 	INCOME_HEADER_LABEL,
 	LUNCH_ADJUST_LABEL,
 	LUNCH_BUDGET_LABEL,
@@ -195,22 +196,26 @@ export function expensePositionFor(
 
 // The deep month grid: the lunch section (P–S) grows one row per entry
 // (band-scoped, its own columns only), and the 信用卡帳單對帳區 (H–N) is the
-// deepest section on the tab — it starts around row 65 and every bucket's
-// spill area grows a row per charge, so its depth tracks the month's card
-// volume (8月 2026 ends at row 173, 7月 2026 — a trip month — at row 195).
+// deepest section on the tab — every bucket's spill area grows a row per
+// charge, so its depth tracks the month's card volume (8月 2026 ends at row
+// 173, 7月 2026 — a trip month — at row 196) and NO row number bounds it.
 // A read that stops above the last 小計 does NOT fail loudly: findCreditSection
 // finds the block's labels but scans past the end of the grid looking for the
 // 小計, reports the block as torn, and every 對帳區 consumer degrades — the
 // bucket guard skips growth for EVERY card (a torn block aborts the whole
 // section scan), and startMonth's 本月需繳款 rewires and month-open pad skip
-// silently. Hence the deliberate headroom: rows past the last one with content
-// cost nothing (Sheets omits trailing empty rows from the response).
+// silently. That is why the row bound is GONE rather than merely generous:
+// "A1:S" reads to the end of the tab, so no amount of spill growth can push a
+// 小計 out of view (a bound of 160 clipped 7月's, a bound of 400 would clip a
+// busy enough month's). Trailing empty rows cost nothing — Sheets omits them
+// from the response — and an oversized response still fails loudly through
+// assertNotTruncated rather than silently losing rows.
 // The width must reach column S (支付方式) or the lunch empty-slot scan and
 // card mirroring would never see it.
-export const FULL_GRID_READ = "A1:S400";
+export const FULL_GRID_READ = "A1:S";
 
-/** The trip tab's JPY section lives in A–G below all trip content (~row 72 today) — generous headroom. */
-export const TRANSFER_JPY_GRID_READ = "A1:G200";
+/** The trip tab's JPY section lives in A–G below all trip content — unbounded rows, same reason as FULL_GRID_READ. */
+export const TRANSFER_JPY_GRID_READ = "A1:G";
 
 /** Per-currency shape of a 乾坤大挪移 section: where it lives and how its rate is pinned. */
 export interface TransferSectionConfig {
@@ -220,6 +225,8 @@ export interface TransferSectionConfig {
 	pair: "USDTWD" | "JPYTWD";
 	/** Appended to the missing-section error. */
 	missingHint: string;
+	/** Titles of the sections stacked BELOW this one in the same column — the 總和 scan stops there instead of running into them. */
+	nextSectionLabels: readonly string[];
 }
 
 export const TRANSFER_SECTIONS: { usd: TransferSectionConfig; jpy: TransferSectionConfig } = {
@@ -239,12 +246,17 @@ export const TRANSFER_SECTIONS: { usd: TransferSectionConfig; jpy: TransferSecti
 		gridRead: FULL_GRID_READ,
 		pair: "USDTWD",
 		missingHint: "the transfer log exists from 7月 2026 on.",
+		// The 信用卡帳單對帳區 title sits in the same column (H) below the
+		// transfer log — the section's floor.
+		nextSectionLabels: [CREDIT_SECTION_LABEL],
 	},
 	jpy: {
 		cols: TRANSFER_JPY_COLS,
 		gridRead: TRANSFER_JPY_GRID_READ,
 		pair: "JPYTWD",
 		missingHint: "the NTD→JPY log lives on the trip tab — create the section (title/header/總和, columns A–G, below all trip content) before logging.",
+		// The JPY log is the last thing on a trip tab.
+		nextSectionLabels: [],
 	},
 };
 
@@ -268,18 +280,36 @@ export function findTransferSection(
 			`No ${TRANSFER_SECTION_LABEL} section in ${tab} (searched column ${colLetter(dateCol)} of ${cfg.gridRead}) — ${cfg.missingHint}`,
 		);
 	}
-	const headerRow = anchorRow + 1;
-	if (String(values[headerRow - 1]?.[dateCol] ?? "").trim() !== "日期") {
-		throw new Error(
-			`The row under the ${TRANSFER_SECTION_LABEL} anchor in ${tab} is not the 日期/新臺幣/… header row.`,
-		);
+	// Bottom boundary first: the 總和 row, or the title of the section stacked
+	// below when the 總和 is gone — never past it into a neighbouring block.
+	let totalRow: number | null = null;
+	for (let r = anchorRow + 1; r <= values.length; r++) {
+		const v = String(values[r - 1]?.[dateCol] ?? "").trim();
+		if (v === TRANSFER_TOTAL_LABEL) {
+			totalRow = r;
+			break;
+		}
+		if (cfg.nextSectionLabels.includes(v)) break;
 	}
-	for (let r = headerRow + 1; r <= values.length; r++) {
-		if (String(values[r - 1]?.[dateCol] ?? "").trim() === TRANSFER_TOTAL_LABEL) {
-			return { headerRow, totalRow: r };
+	if (totalRow === null) {
+		throw new Error(`No ${TRANSFER_TOTAL_LABEL} row under the ${TRANSFER_SECTION_LABEL} header in ${tab}.`);
+	}
+	// The header is SCANNED between the title and the 總和, not assumed at
+	// anchor+1: a row inserted by hand (or by a neighbouring section's band
+	// insert) can open a gap under the title at any time.
+	let headerRow: number | null = null;
+	for (let r = anchorRow + 1; r < totalRow; r++) {
+		if (String(values[r - 1]?.[dateCol] ?? "").trim() === DATE_HEADER_LABEL) {
+			headerRow = r;
+			break;
 		}
 	}
-	throw new Error(`No ${TRANSFER_TOTAL_LABEL} row under the ${TRANSFER_SECTION_LABEL} header in ${tab}.`);
+	if (headerRow === null) {
+		throw new Error(
+			`No ${DATE_HEADER_LABEL}/新臺幣/… header row between the ${TRANSFER_SECTION_LABEL} anchor (row ${anchorRow}) and its ${TRANSFER_TOTAL_LABEL} row (${totalRow}) in ${tab}.`,
+		);
+	}
+	return { headerRow, totalRow };
 }
 
 export interface LunchSection {
@@ -306,17 +336,29 @@ export function findLunchSection(values: unknown[][], tab: string): LunchSection
 	// add_transfer's full-section path inserts a whole sheet row directly above
 	// the transfer 總和 row; on live geometry that lands between this section's
 	// label row and its values row, opening a blank row here. A fixed
-	// anchor+3 offset would then miss the header, so scan for it instead.
+	// anchor+3 offset would then miss the header, so scan for it — bounded by
+	// the section's own 總和 row rather than by a row count, since any number of
+	// rows can be opened above the header.
+	let totalRow: number | null = null;
+	for (let r = anchorRow + 1; r <= values.length; r++) {
+		if (String(values[r - 1]?.[LUNCH_COLS.item] ?? "").trim() === LUNCH_TOTAL_LABEL) {
+			totalRow = r;
+			break;
+		}
+	}
+	if (totalRow === null) {
+		throw new Error(`No ${LUNCH_TOTAL_LABEL} row under the ${LUNCH_SECTION_LABEL} header in ${tab}.`);
+	}
 	let headerRow: number | null = null;
-	for (let r = anchorRow + 1; r <= anchorRow + 8; r++) {
-		if (String(values[r - 1]?.[dateCol] ?? "").trim() === "日期") {
+	for (let r = anchorRow + 1; r < totalRow; r++) {
+		if (String(values[r - 1]?.[dateCol] ?? "").trim() === DATE_HEADER_LABEL) {
 			headerRow = r;
 			break;
 		}
 	}
 	if (headerRow === null) {
 		throw new Error(
-			`No 日期/項目/金額 header row found within 8 rows of the ${LUNCH_SECTION_LABEL} anchor in ${tab}.`,
+			`No ${DATE_HEADER_LABEL}/項目/金額 header row between the ${LUNCH_SECTION_LABEL} anchor (row ${anchorRow}) and its ${LUNCH_TOTAL_LABEL} row (${totalRow}) in ${tab}.`,
 		);
 	}
 	// The 編列預算/剩餘 values row: the first non-empty row strictly between
@@ -338,12 +380,28 @@ export function findLunchSection(values: unknown[][], tab: string): LunchSection
 		}
 		break;
 	}
-	for (let r = headerRow + 1; r <= values.length; r++) {
-		if (String(values[r - 1]?.[LUNCH_COLS.item] ?? "").trim() === LUNCH_TOTAL_LABEL) {
-			return { budgetRow, headerRow, totalRow: r };
-		}
-	}
-	throw new Error(`No ${LUNCH_TOTAL_LABEL} row under the ${LUNCH_SECTION_LABEL} header in ${tab}.`);
+	return { budgetRow, headerRow, totalRow };
+}
+
+/**
+ * One 結帳日前/結帳日後 bucket's anchors. Every row here is SCANNED for its
+ * label inside the bucket's own boundaries — none is derived by adding a
+ * fixed offset to the block's title or to the bucket's label, because the
+ * mirror's spill area grows a row per charge and pushes everything below it
+ * down.
+ */
+export interface CreditBucketAnchors {
+	/** The bucket's label row (結帳日前 / 結帳日後) in the block's 1st column. */
+	labelRow: number;
+	/** The 日期/項目/金額 header row. The mirror formula lives in the row directly under it — that IS the spill's first row, by construction. */
+	headerRow: number;
+	/** The 小計 row: label in the block's 2nd column, =SUMIFS in the 3rd. */
+	subtotalRow: number;
+}
+
+/** The rows the mirror may spill into: everything strictly between the 日期 header and the 小計. */
+export function bucketSpillCapacity(b: CreditBucketAnchors): number {
+	return b.subtotalRow - b.headerRow - 1;
 }
 
 export interface CreditCardBlock {
@@ -352,24 +410,43 @@ export interface CreditCardBlock {
 	titleRow: number;
 	/** 0-indexed column of the title — the block's first column (H or L). */
 	startCol: number;
+	/**
+	 * Last row of the block's span: the row above the next card title stacked
+	 * below IN THE SAME COLUMN BAND, or the grid's last row with content for
+	 * the bottom block. Every scan inside the block is bounded by it, so no
+	 * scan can wander into a neighbouring block however long a spill grows.
+	 */
+	endRow: number;
 	closeDateRow: number;
 	payDateRow: number;
 	dueRow: number;
-	/** Rows of the buckets' 小計 rows — the 小計 label sits in the block's 2nd column, the value in the 3rd. */
-	preSubtotalRow: number;
-	postSubtotalRow: number;
-	/** The bucket label rows (結帳日前/結帳日後); the 日期/項目/金額 header sits at label+1, data from label+2 to 小計−1. */
-	preLabelRow: number;
-	postLabelRow: number;
+	pre: CreditBucketAnchors;
+	post: CreditBucketAnchors;
 }
 
 /**
- * Locate the 信用卡帳單對帳區 card blocks (grid of FULL_GRID_READ). Returns
- * a block per CREDIT_CARDS entry present on the sheet, in registry order;
+ * Locate the 信用卡帳單對帳區 card blocks (grid of FULL_GRID_READ). Returns a
+ * block per CREDIT_CARDS entry present on the sheet, in registry order;
  * registry cards absent from the sheet are skipped (the section is
- * hand-maintained). Throws when the section anchor is missing, or when a
- * found card's block lacks one of its label rows — a label scan never runs
- * past the next card title stacked below in the same column.
+ * hand-maintained, and a month may carry only some of the cards). Throws when
+ * the section anchor is missing, or when a found card's block lacks one of its
+ * label rows.
+ *
+ * The layout is a 2×2 grid of blocks: two column bands (H–J and L–N) that
+ * stack independently, each block as tall as its two mirrors' spill areas
+ * happen to be. So the scan works in two stages:
+ *
+ *  1. Enumerate the card titles in each band top to bottom. A title and the
+ *     next title in the SAME band delimit a block's row span (the last block
+ *     in a band runs to the grid's last row with content).
+ *  2. Inside that span, find every anchor by its own label, each scan bounded
+ *     by the anchor before it and by the block's (or bucket's) end — the date
+ *     rows and 本月需繳款 in the 1st column, both bucket labels in the 1st, each
+ *     bucket's 日期 header in the 1st and its 小計 in the 2nd.
+ *
+ * Nothing is assumed about how many rows any of these sit apart, so a bucket
+ * whose spill grew by 30 rows (or shrank to nothing) resolves exactly like a
+ * freshly-opened month's.
  */
 export function findCreditSection(values: unknown[][], tab: string): CreditCardBlock[] {
 	const anchorRow = findRowByValue(values, CREDIT_BLOCK_COLS[0], CREDIT_SECTION_LABEL);
@@ -379,76 +456,92 @@ export function findCreditSection(values: unknown[][], tab: string): CreditCardB
 		);
 	}
 	const cellStr = (r: number, c: number) => String(values[r - 1]?.[c] ?? "").trim();
-	const cardNames = new Set(CREDIT_CARDS.map((c) => c.name));
+	const lastRow = values.length;
+	const registry = new Map(CREDIT_CARDS.map((c) => [c.name, c] as const));
+
+	// Stage 1 — the block spans, band by band.
+	interface BlockSpan {
+		card: CreditCard;
+		titleRow: number;
+		startCol: number;
+		endRow: number;
+	}
+	const spans: BlockSpan[] = [];
+	for (const col of CREDIT_BLOCK_COLS) {
+		const titles: Array<{ card: CreditCard; row: number }> = [];
+		for (let r = anchorRow + 1; r <= lastRow; r++) {
+			const card = registry.get(cellStr(r, col));
+			if (card !== undefined) titles.push({ card, row: r });
+		}
+		for (let i = 0; i < titles.length; i++) {
+			const next = titles[i + 1];
+			spans.push({
+				card: titles[i]!.card,
+				titleRow: titles[i]!.row,
+				startCol: col,
+				endRow: next === undefined ? lastRow : next.row - 1,
+			});
+		}
+	}
+
+	// Stage 2 — the anchors inside each span.
 	const blocks: CreditCardBlock[] = [];
 	for (const card of CREDIT_CARDS) {
-		let titleRow: number | null = null;
-		let startCol = CREDIT_BLOCK_COLS[0] as number;
-		for (const col of CREDIT_BLOCK_COLS) {
-			for (let r = anchorRow + 1; r <= values.length; r++) {
-				if (cellStr(r, col) === card.name) {
-					titleRow = r;
-					startCol = col;
-					break;
-				}
-			}
-			if (titleRow !== null) break;
-		}
-		if (titleRow === null) continue;
-		// A scan that ends without meeting its boundary (the next card title or
-		// the other bucket's label) consumed the grid to its last row with
-		// content. That looks identical to a deleted row, but the likelier cause
-		// is a read window shallower than the section — the 對帳區 grows with the
-		// month's card volume — so say so instead of only blaming the sheet.
-		const offGrid = () =>
-			` The scan reached the end of the ${FULL_GRID_READ} grid read (last row with content: ${values.length}) without meeting the next block, so either the row was deleted or the block extends past the read window.`;
-		const labelRow = (label: string, after: number): number => {
-			let metBoundary = false;
-			for (let r = after + 1; r <= values.length; r++) {
-				const v = cellStr(r, startCol);
-				if (v === label) return r;
-				if (cardNames.has(v)) {
-					metBoundary = true; // ran into the next card block stacked below
-					break;
-				}
-			}
-			throw new Error(`The "${card.name}" block in ${tab} is missing its ${label} row.${metBoundary ? "" : offGrid()}`);
-		};
-		const closeDateRow = labelRow(CREDIT_CLOSE_LABEL, titleRow);
-		const payDateRow = labelRow(CREDIT_PAY_LABEL, closeDateRow);
-		const dueRow = labelRow(CREDIT_DUE_LABEL, payDateRow);
-		const preLabelRow = labelRow(CREDIT_PRE_LABEL, dueRow);
-		// The 小計 label lives in the block's 2nd column; the scan is bounded by
-		// the next 1st-column boundary (the other bucket's label or the next
-		// card title) so a missing 小計 throws instead of adopting a lower one.
-		const subtotalRow = (after: number, boundary: string | null): number => {
-			let metBoundary = false;
-			for (let r = after + 1; r <= values.length; r++) {
-				const first = cellStr(r, startCol);
-				if (cardNames.has(first) || (boundary !== null && first === boundary)) {
-					metBoundary = true;
-					break;
-				}
-				if (cellStr(r, startCol + 1) === CREDIT_SUBTOTAL_LABEL) return r;
+		const span = spans.find((s) => s.card.name === card.name);
+		if (span === undefined) continue;
+		const { titleRow, startCol, endRow } = span;
+		// A block whose span runs to the grid's last row with content has no
+		// next-card title to stop at. A label missing from such a block reads
+		// the same as one whose rows were never read at all, so name the read
+		// extent: the window is unbounded ("A1:S"), so this really is a torn
+		// sheet — unless the response was clipped before it got here.
+		const offGrid =
+			endRow >= lastRow
+				? ` The scan reached the end of the ${FULL_GRID_READ} grid read (last row with content: ${lastRow}) without meeting another card block below, so the row was deleted or the read stopped short of it.`
+				: "";
+		const need = (label: string, col: number, from: number, until: number, described = label): number => {
+			for (let r = from; r <= until; r++) {
+				if (cellStr(r, col) === label) return r;
 			}
 			throw new Error(
-				`The "${card.name}" block in ${tab} is missing its ${CREDIT_SUBTOTAL_LABEL} row.${metBoundary ? "" : offGrid()}`,
+				`The "${card.name}" block in ${tab} is missing its ${described} row (searched ${colLetter(col)}${from}:${colLetter(col)}${Math.max(until, from)}).${offGrid}`,
 			);
 		};
-		const preSubtotalRow = subtotalRow(preLabelRow, CREDIT_POST_LABEL);
-		const postLabelRow = labelRow(CREDIT_POST_LABEL, preSubtotalRow);
-		const postSubtotalRow = subtotalRow(postLabelRow, null);
+		const closeDateRow = need(CREDIT_CLOSE_LABEL, startCol, titleRow + 1, endRow);
+		const payDateRow = need(CREDIT_PAY_LABEL, startCol, closeDateRow + 1, endRow);
+		const dueRow = need(CREDIT_DUE_LABEL, startCol, payDateRow + 1, endRow);
+		// Both bucket labels first: 結帳日後 is the 結帳日前 bucket's floor, so a
+		// missing 小計 throws instead of adopting the next bucket's.
+		const preLabelRow = need(CREDIT_PRE_LABEL, startCol, dueRow + 1, endRow);
+		const postLabelRow = need(CREDIT_POST_LABEL, startCol, preLabelRow + 1, endRow);
+		const bucket = (labelRow: number, until: number): CreditBucketAnchors => {
+			const bucketName = cellStr(labelRow, startCol);
+			const headerRow = need(
+				DATE_HEADER_LABEL,
+				startCol,
+				labelRow + 1,
+				until,
+				`${bucketName} ${DATE_HEADER_LABEL}/項目/金額 header`,
+			);
+			const subtotalRow = need(
+				CREDIT_SUBTOTAL_LABEL,
+				startCol + 1,
+				headerRow + 1,
+				until,
+				`${bucketName} ${CREDIT_SUBTOTAL_LABEL}`,
+			);
+			return { labelRow, headerRow, subtotalRow };
+		};
 		blocks.push({
 			card,
 			titleRow,
 			startCol,
+			endRow,
 			closeDateRow,
 			payDateRow,
 			dueRow,
-			preSubtotalRow,
-			postSubtotalRow,
-			preLabelRow,
-			postLabelRow,
+			pre: bucket(preLabelRow, postLabelRow - 1),
+			post: bucket(postLabelRow, endRow),
 		});
 	}
 	return blocks;
@@ -593,8 +686,8 @@ export function auditCreditBuckets(
 	interface BucketPlan {
 		block: CreditCardBlock;
 		bucket: "結帳日前" | "結帳日後";
-		labelRow: number;
-		subtotalRow: number;
+		/** The bucket's scanned anchors — the spill area is (headerRow, subtotalRow) exclusive. */
+		anchors: CreditBucketAnchors;
 		/** Rows the bucket's mirror must be able to spill (pending entry included). */
 		required: number;
 		holdsPending: boolean;
@@ -648,32 +741,36 @@ export function auditCreditBuckets(
 			plans.push({
 				block,
 				bucket: isPre ? CREDIT_PRE_LABEL : CREDIT_POST_LABEL,
-				labelRow: isPre ? block.preLabelRow : block.postLabelRow,
-				subtotalRow: isPre ? block.preSubtotalRow : block.postSubtotalRow,
+				anchors: isPre ? block.pre : block.post,
 				required,
 				holdsPending,
 			});
 		}
 	}
 
-	plans.sort((a, b) => b.subtotalRow - a.subtotalRow);
+	plans.sort((a, b) => b.anchors.subtotalRow - a.anchors.subtotalRow);
 	const requests: object[] = [];
 	const grown: BucketGrowth[] = [];
 	const planned: Array<{ row: number; count: number }> = [];
 	let pendingBucket: BucketGuardResult["bucket"] = null;
 	let pendingRowsAdded = 0;
 	for (const p of plans) {
+		const { headerRow, subtotalRow } = p.anchors;
 		// Rows an already-planned insert (an aligned bucket's, at or below this
-		// one) opens INSIDE this bucket's span — capacity it gains for free.
+		// one) opens INSIDE this bucket's spill area — capacity it gains for
+		// free. The spill area is bounded by two SCANNED rows, so a bucket whose
+		// header sits further from its label than the freshly-built layout puts
+		// it (a hand-inserted row, a band insert from the other column band)
+		// still measures its own true capacity.
 		const widened = planned.reduce(
-			(sum, ins) => (ins.row >= p.labelRow + 2 && ins.row <= p.subtotalRow ? sum + ins.count : sum),
+			(sum, ins) => (ins.row >= headerRow + 1 && ins.row <= subtotalRow ? sum + ins.count : sum),
 			0,
 		);
-		const capacity = p.subtotalRow - p.labelRow - 2 + widened;
+		const capacity = bucketSpillCapacity(p.anchors) + widened;
 		const rowsAdded = Math.max(Math.max(p.required, minCapacity) - capacity, 0);
 		if (rowsAdded > 0) {
-			requests.push(bandInsert(sheetId, p.subtotalRow + rowOffset, rowsAdded, CREDIT_BLOCK_COLS[0], CREDIT_BAND_END));
-			planned.push({ row: p.subtotalRow, count: rowsAdded });
+			requests.push(bandInsert(sheetId, subtotalRow + rowOffset, rowsAdded, CREDIT_BLOCK_COLS[0], CREDIT_BAND_END));
+			planned.push({ row: subtotalRow, count: rowsAdded });
 			grown.push({ card: p.block.card.name, bucket: p.bucket, rowsAdded });
 		}
 		if (p.holdsPending) {
@@ -693,8 +790,10 @@ export function auditCreditBuckets(
 				repeatCell: {
 					range: {
 						sheetId,
-						startRowIndex: p.labelRow + 1 + rowOffset,
-						endRowIndex: p.subtotalRow - 1 + rowOffset + rowsAdded + widened,
+						// 0-indexed: the row directly under the 日期 header (the
+						// mirror's own row) through the row above the 小計.
+						startRowIndex: headerRow + rowOffset,
+						endRowIndex: subtotalRow - 1 + rowOffset + rowsAdded + widened,
 						startColumnIndex: col,
 						endColumnIndex: col + 1,
 					},
@@ -2094,12 +2193,12 @@ export async function startMonth(client: SheetsClient, month: number) {
 					const serial = values[row - 1]?.[valueCol];
 					if (typeof serial === "number") write(row, addMonthsClamped(serial, 1));
 				}
-				const prevPost = `${quoteTab(prevTab)}!${col}${block.postSubtotalRow}`;
+				const prevPost = `${quoteTab(prevTab)}!${col}${block.post.subtotalRow}`;
 				write(
 					block.dueRow,
 					block.card.statementLag === 0
-						? `=${col}${block.preSubtotalRow}+${prevPost}`
-						: `=${quoteTab(prevTab)}!${col}${block.preSubtotalRow}${prevPrevExists ? `+${quoteTab(prevPrevTab)}!${col}${block.postSubtotalRow}` : ""}`,
+						? `=${col}${block.pre.subtotalRow}+${prevPost}`
+						: `=${quoteTab(prevTab)}!${col}${block.pre.subtotalRow}${prevPrevExists ? `+${quoteTab(prevPrevTab)}!${col}${block.post.subtotalRow}` : ""}`,
 				);
 				creditRebuilt.push(block.card.name);
 			}
@@ -2184,7 +2283,9 @@ export interface TripEntryParams {
 	twd?: number;
 }
 
-const TRIP_READ = "A1:AL200";
+// Unbounded rows, same reason as FULL_GRID_READ: a trip tab grows as the trip
+// does, and a clipped read makes a block look torn instead of failing loudly.
+const TRIP_READ = "A1:AL";
 /** Canonical band cell formats: 日期 as mm/dd hh:mm, prices with their currency sign. */
 const TRIP_DATE_FORMAT = { type: "DATE_TIME", pattern: 'mm"/"dd" "hh":"mm' };
 const TRIP_JPY_FORMAT = { type: "CURRENCY", pattern: "[$¥]#,##0" };
@@ -2467,8 +2568,8 @@ export function findTripBlocks(values: unknown[][]): TripBlock[] {
 	return blocks;
 }
 
-/** The 目前實際開銷 summary sits right of every category band (~AI46 today) — wider than TRIP_READ, so read the full tab width. */
-export const TRIP_BUDGET_READ = "A1:AZ200";
+/** The 目前實際開銷 summary sits right of every category band (~AI46 today) — wider than TRIP_READ, so read the full tab width; rows unbounded, like every other grid read. */
+export const TRIP_BUDGET_READ = "A1:AZ";
 
 export interface TripBudgetSection {
 	/** 1-indexed row of the 目前實際開銷 title. */
