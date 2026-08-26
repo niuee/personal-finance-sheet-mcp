@@ -2,7 +2,7 @@
 
 **Date:** 2026-07-02
 **Status:** Approved
-**Builds on:** `2026-07-02-sheets-mcp-server-design.md` (v1, deployed at sheets-mcp.niuee.workers.dev)
+**Builds on:** `2026-07-02-sheets-mcp-server-design.md` (v1, deployed at sheets-mcp.kinnet.workers.dev)
 
 ## Goal
 

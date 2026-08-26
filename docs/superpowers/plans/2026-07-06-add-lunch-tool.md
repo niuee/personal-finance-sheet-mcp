@@ -803,5 +803,5 @@ git commit -m "feat: month_summary reports 中餐預算 and 午餐超支或回�
 
 ## Post-implementation (not part of the tasks)
 
-- Deploy is a separate, user-approved step: `bun run deploy` (Cloudflare Worker at sheets-mcp.niuee.workers.dev). The add_transfer PR (#11) is also awaiting prod deploy — one deploy ships both.
+- Deploy is a separate, user-approved step: `bun run deploy` (Cloudflare Worker at sheets-mcp.kinnet.workers.dev). The add_transfer PR (#11) is also awaiting prod deploy — one deploy ships both.
 - Live smoke test after deploy: `add_lunch` with a real lunch on the dev copy sheet, then verify 剩餘 and 總新臺幣餘額 moved as expected.
