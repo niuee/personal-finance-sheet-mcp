@@ -2806,3 +2806,277 @@ export async function findCells(client: SheetsClient, p: FindCellsParams) {
 	}
 	return { matches, truncated };
 }
+
+// ---------------------------------------------------------------------------
+// Deletes — removing a row entirely, rather than blanking its cells.
+// ---------------------------------------------------------------------------
+
+/** A 0-indexed half-open column span: the columns one section owns. */
+export interface ColumnBand {
+	startCol: number;
+	/** Exclusive. */
+	endCol: number;
+}
+
+/** The expense list's own columns (A–G): the band an expense delete may shift. */
+export const EXPENSE_BAND: ColumnBand = { startCol: 0, endCol: MONTH_COLS.paidMethod + 1 };
+
+const COLUMN_BAND_RE = /^([A-Za-z]{1,2})(?::([A-Za-z]{1,2}))?$/;
+
+/** Parse a column band spec ("A:G", "P:S", or a single "R") into a 0-indexed half-open span. */
+export function parseColumnBand(spec: string): ColumnBand {
+	const m = spec.trim().match(COLUMN_BAND_RE);
+	if (m === null) {
+		throw new Error(`Invalid columns "${spec}" — expected column letters like "A:G" (a band) or "R" (one column).`);
+	}
+	const startCol = colIndex((m[1] as string).toUpperCase());
+	const endCol = colIndex(((m[2] ?? m[1]) as string).toUpperCase()) + 1;
+	if (endCol <= startCol) {
+		throw new Error(`Invalid columns "${spec}" — the band's last column is left of its first.`);
+	}
+	return { startCol, endCol };
+}
+
+/** A formula that points STRAIGHT at a cell a delete would remove — it would become #REF!. */
+export interface BrokenRef {
+	/** A1 address of the formula cell, e.g. "P35". */
+	cell: string;
+	/** The reference that would break, e.g. "E5". */
+	ref: string;
+	formula: string;
+}
+
+// One pass over a formula, longest-first so a reference is only ever read as
+// its widest form: a cross-tab reference ('8 月'!D19, 火車模型!D4) first, then
+// a range (E3:E10), then a bare single cell ($E$5). The lookbehind keeps
+// LOG10(...) / CEILING12 style text from being read as a column+row, the same
+// guard adaptRowFormula uses.
+const REF_SCAN =
+	/(?:'(?:[^']|'')*'|[^\s!,()+\-*/&=<>]+)!\$?[A-Za-z]{1,2}\$?\d+(?::\$?[A-Za-z]{1,2}\$?\d+)?|(?<![A-Za-z0-9_$!.])\$?([A-Za-z]{1,2})\$?(\d+)(?::\$?[A-Za-z]{1,2}\$?\d+)?/g;
+
+/**
+ * Same-tab single-cell references a delete of rows [startRow, endRow] over
+ * `band` would orphan. RANGE references (=SUM(E3:E10)) are fine — Sheets
+ * shrinks them with the delete, which is exactly how 花費總額 and every SUMIF
+ * window keep covering the list — and cross-tab references are another tab's
+ * business (this scan sees one grid). What breaks is a formula naming a single
+ * deleted cell, like the 午餐預算 block's 編列預算 =E5 pointing at the 中餐
+ * expense row. Formulas INSIDE the deleted rows are skipped: they go away too.
+ */
+export function findBrokenRefs(
+	values: unknown[][],
+	band: ColumnBand,
+	startRow: number,
+	endRow: number,
+): BrokenRef[] {
+	const broken: BrokenRef[] = [];
+	for (let i = 0; i < values.length; i++) {
+		const row = i + 1;
+		const cells = values[i] ?? [];
+		for (let j = 0; j < cells.length; j++) {
+			const formula = cells[j];
+			if (typeof formula !== "string" || !formula.startsWith("=")) continue;
+			// A formula inside the deleted band+rows disappears with them.
+			if (row >= startRow && row <= endRow && j >= band.startCol && j < band.endCol) continue;
+			// String literals can hold anything ("CURRENCY:USDTWD", ">"&E5 is
+			// outside the quotes) — drop them before scanning for references.
+			const scannable = formula.replace(/"(?:[^"]|"")*"/g, '""');
+			for (const m of scannable.matchAll(REF_SCAN)) {
+				const [, colLetters, rowDigits] = m;
+				if (colLetters === undefined || rowDigits === undefined) continue; // cross-tab
+				if (m[0].includes(":")) continue; // a range: it shrinks, it does not break
+				const refRow = Number(rowDigits);
+				const refCol = colIndex(colLetters.toUpperCase());
+				if (refRow < startRow || refRow > endRow) continue;
+				if (refCol < band.startCol || refCol >= band.endCol) continue;
+				broken.push({ cell: `${colLetter(j)}${row}`, ref: m[0], formula });
+			}
+		}
+	}
+	return broken;
+}
+
+function describeBrokenRefs(refs: BrokenRef[]): string {
+	const listed = refs.slice(0, 5).map((r) => `${r.cell} (${r.formula})`).join(", ");
+	return refs.length > 5 ? `${listed} (+${refs.length - 5} more)` : listed;
+}
+
+export interface DeleteRowsParams {
+	tab: string;
+	/** 1-indexed first row to delete. */
+	row: number;
+	count: number;
+	/** Column band to scope the delete to, e.g. "A:G"; omitted = whole rows. */
+	columns?: string;
+	/** Delete even when a formula points straight at a deleted cell. */
+	force?: boolean;
+}
+
+export interface DeleteRowsResult {
+	tab: string;
+	row: number;
+	count: number;
+	columns: string | null;
+	/** What was removed (formulas, not display values) — enough to re-enter it. */
+	deletedValues: AnnotatedRows;
+	/** Why the reference check was skipped, or which formulas force:true broke. */
+	refWarning?: string;
+}
+
+/**
+ * delete_rows with a seatbelt: reads the tab first (the read IS the safety
+ * mechanism — two calls, deliberately not atomic), refuses when a formula
+ * points straight at a cell about to vanish, and always returns what it
+ * removed. The complement of safeUpdateRange, which can only blank cells.
+ */
+export async function safeDeleteRows(client: SheetsClient, p: DeleteRowsParams): Promise<DeleteRowsResult> {
+	const band = p.columns !== undefined ? parseColumnBand(p.columns) : null;
+	const lastRow = p.row + p.count - 1;
+	const scanBand = band ?? { startCol: 0, endCol: Number.MAX_SAFE_INTEGER };
+
+	const grid = await client.readRange(quoteTab(p.tab), "FORMULA");
+	let refWarning: string | undefined;
+	let deletedValues: AnnotatedRows;
+	if (grid.truncated) {
+		// The tab is too big to read whole, so the reference scan cannot be
+		// trusted. Fall back to a narrow read for the record and say so.
+		const target = band === null
+			? `${quoteTab(p.tab)}!${p.row}:${lastRow}`
+			: `${quoteTab(p.tab)}!${colLetter(band.startCol)}${p.row}:${colLetter(band.endCol - 1)}${lastRow}`;
+		const before = await client.readRange(target, "FORMULA");
+		if (before.truncated) {
+			throw new Error(`Refusing to delete: reading ${target} back was truncated, so its contents cannot be recorded.`);
+		}
+		deletedValues = annotateRows(before.range || target, before.values);
+		refWarning = `${p.tab} is too large to read in one call, so formulas pointing at the deleted cells were NOT checked — look for #REF! on the tab afterwards.`;
+	} else {
+		const rows: AnnotatedRows["rows"] = [];
+		for (let r = p.row; r <= lastRow; r++) {
+			const cells = (grid.values[r - 1] ?? []).slice(
+				scanBand.startCol,
+				band === null ? undefined : band.endCol,
+			);
+			if (cells.some((c) => c !== "" && c != null)) rows.push({ row: r, values: cells });
+		}
+		deletedValues = { startRow: p.row, rows };
+
+		const broken = findBrokenRefs(grid.values, scanBand, p.row, lastRow);
+		if (broken.length > 0) {
+			if (p.force !== true) {
+				throw new Error(
+					`Refusing to delete rows ${p.row}-${lastRow} of ${p.tab}: ${broken.length} formula(s) point straight at cells being deleted and would turn into #REF! — ${describeBrokenRefs(broken)}. Re-point them first, or pass force:true to delete anyway.`,
+				);
+			}
+			refWarning = `force:true — ${broken.length} formula(s) now show #REF!: ${describeBrokenRefs(broken)}`;
+		}
+	}
+
+	await client.deleteRows(p.tab, p.row, p.count, band ?? undefined);
+	return { tab: p.tab, row: p.row, count: p.count, columns: p.columns ?? null, deletedValues, refWarning };
+}
+
+export interface DeleteExpenseParams {
+	item: string;
+	month?: number;
+	/** 1-indexed sheet row, to disambiguate duplicate 項目 names. */
+	row?: number;
+}
+
+/**
+ * Remove an expense row from a monthly tab entirely — the row goes, the rows
+ * below move up, and no blank gap is left behind (blanking the cells with
+ * update_range leaves one). The delete is scoped to the expense list's own
+ * columns (A–G), like startMonth's one-off clearing: a whole-row delete would
+ * rip through the 乾坤大挪移 / 午餐預算 / 信用卡帳單對帳區 blocks that share
+ * these sheet rows. 花費總額 and the 支出 SUMIF windows shrink with the row,
+ * and every 對帳區 mirror drops it on its own — the section is audited against
+ * the post-delete grid so the buckets stay right for the rows that remain.
+ */
+export async function deleteExpense(client: SheetsClient, p: DeleteExpenseParams) {
+	const tab = p.month !== undefined ? monthTabName(p.month) : currentMonthTab();
+	const item = p.item.trim();
+
+	const { values, truncated } = await client.readRange(`${quoteTab(tab)}!${FULL_GRID_READ}`, "FORMULA");
+	assertNotTruncated(truncated, tab, FULL_GRID_READ);
+	const { totalRow, start: windowStart, end: windowEnd } = findExpenseWindow(values, tab);
+
+	const candidates: number[] = [];
+	for (let r = windowStart; r <= Math.min(windowEnd, totalRow - 1); r++) {
+		if (String(values[r - 1]?.[MONTH_COLS.item] ?? "").trim() === item) candidates.push(r);
+	}
+	if (candidates.length === 0) {
+		throw new Error(`No "${item}" row inside the expense window of ${tab}.`);
+	}
+	let row: number;
+	if (p.row !== undefined) {
+		if (!candidates.includes(p.row)) {
+			throw new Error(
+				`Row ${p.row} is not one of the "${item}" rows inside the expense window of ${tab} (rows ${candidates.join(", ")}).`,
+			);
+		}
+		row = p.row;
+	} else if (candidates.length === 1) {
+		row = candidates[0] as number;
+	} else {
+		// A delete is not reversible by re-running it: never guess which of
+		// several same-named rows the caller meant.
+		throw new Error(`Multiple "${item}" rows match (rows ${candidates.join(", ")}) — pass row to pick one.`);
+	}
+
+	if (CARRY_ROW_LABELS.includes(item)) {
+		throw new Error(
+			`"${item}" is the formula-owned carry row: it is rebuilt by start_month and the 銀行餘額 ledger adds its cell back by name, so deleting it breaks both. A positive month already carries 0 — leave the row alone.`,
+		);
+	}
+	if (windowEnd <= windowStart) {
+		throw new Error(
+			`The expense window =SUM(${TWD_COL}${windowStart}:${TWD_COL}${windowEnd}) in ${tab} is a single row — deleting it would leave 花費總額 with a broken range.`,
+		);
+	}
+	const broken = findBrokenRefs(values, EXPENSE_BAND, row, row);
+	if (broken.length > 0) {
+		throw new Error(
+			`Refusing to delete row ${row} ("${item}") of ${tab}: ${broken.length} formula(s) point straight at its cells and would turn into #REF! — ${describeBrokenRefs(broken)}. Re-point them first (the 午餐預算 block's 編列預算 points at the 中餐 row this way).`,
+		);
+	}
+
+	const deleted = (values[row - 1] ?? []).slice(EXPENSE_BAND.startCol, EXPENSE_BAND.endCol);
+	const sheetId = await client.getSheetId(tab);
+	const requests: object[] = [
+		{
+			deleteRange: {
+				range: {
+					sheetId,
+					startRowIndex: row - 1,
+					endRowIndex: row,
+					startColumnIndex: EXPENSE_BAND.startCol,
+					endColumnIndex: EXPENSE_BAND.endCol,
+				},
+				shiftDimension: "ROWS",
+			},
+		},
+	];
+
+	// Audit the 對帳區 against the grid as it will look AFTER the delete: the
+	// row's own card charge is gone, so it must not be counted into a bucket's
+	// required rows, while every OTHER bucket still gets its usual chance to
+	// heal (hand-entered rows grow nothing on their own). The delete is
+	// band-scoped to A–G, so the section's rows (H–N) do not move — rowOffset 0.
+	const after = values.slice();
+	const blanked = [...(values[row - 1] ?? [])];
+	for (let c = EXPENSE_BAND.startCol; c < EXPENSE_BAND.endCol; c++) blanked[c] = "";
+	after[row - 1] = blanked;
+	const guard = auditCreditBuckets(after, tab, sheetId, 0);
+	requests.push(...guard.requests);
+
+	await client.batchUpdate(requests);
+	return {
+		tab,
+		row,
+		item,
+		deleted,
+		card: String(values[row - 1]?.[MONTH_COLS.paidMethod] ?? "").trim() || null,
+		bucketWarning: guard.warning,
+		bucketsGrown: guard.grown.length > 0 ? guard.grown : undefined,
+	};
+}

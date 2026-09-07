@@ -11,9 +11,12 @@ import {
 	cellData,
 	colIndex,
 	colLetter,
+	deleteExpense,
 	CREDIT_BUCKET_PAD_ROWS,
+	EXPENSE_BAND,
 	expandAnchorRange,
 	expensePositionFor,
+	findBrokenRefs,
 	findCells,
 	FIND_CELLS_CAP,
 	findCreditSection,
@@ -29,6 +32,8 @@ import {
 	FULL_GRID_READ,
 	getCategories,
 	monthSummary,
+	parseColumnBand,
+	safeDeleteRows,
 	safeUpdateRange,
 	setExpenseDate,
 	setIncome,
@@ -4353,5 +4358,266 @@ describe("setIncome", () => {
 			action: "updated",
 			bucketsGrown: [{ card: "國泰 CUBE", bucket: "結帳日前", rowsAdded: 1 }],
 		});
+	});
+});
+
+describe("parseColumnBand", () => {
+	it("parses a band and a single column into a 0-indexed half-open span", () => {
+		expect(parseColumnBand("A:G")).toEqual({ startCol: 0, endCol: 7 });
+		expect(parseColumnBand("P:S")).toEqual({ startCol: 15, endCol: 19 });
+		expect(parseColumnBand("r")).toEqual({ startCol: 17, endCol: 18 });
+		expect(parseColumnBand(" Z:AF ")).toEqual({ startCol: 25, endCol: 32 });
+	});
+
+	it("rejects anything that is not column letters, and backwards bands", () => {
+		expect(() => parseColumnBand("A1:G9")).toThrow("Invalid columns");
+		expect(() => parseColumnBand("A:")).toThrow("Invalid columns");
+		expect(() => parseColumnBand("")).toThrow("Invalid columns");
+		expect(() => parseColumnBand("G:A")).toThrow("left of its first");
+	});
+});
+
+describe("findBrokenRefs", () => {
+	/** One formula in P35 (outside the A–G band) plus the 花費總額 SUM in E11. */
+	function refGrid(formula: string): unknown[][] {
+		const g: unknown[][] = [];
+		g[34] = [];
+		g[34][15] = formula;
+		g[10] = ["", "", "", "花費總額", "=SUM(E3:E10)"];
+		return g;
+	}
+
+	it("flags a formula pointing straight at a deleted cell", () => {
+		expect(findBrokenRefs(refGrid("=E5"), EXPENSE_BAND, 5, 5)).toEqual([
+			{ cell: "P35", ref: "E5", formula: "=E5" },
+		]);
+		expect(findBrokenRefs(refGrid("=$E$5*2"), EXPENSE_BAND, 5, 5)).toMatchObject([{ cell: "P35", ref: "$E$5" }]);
+	});
+
+	it("leaves range references alone — they shrink with the delete", () => {
+		expect(findBrokenRefs(refGrid("=SUM(E3:E10)"), EXPENSE_BAND, 5, 5)).toEqual([]);
+		// the 花費總額 cell itself spans the row and must not be flagged
+		expect(findBrokenRefs(refGrid("=D5+1"), EXPENSE_BAND, 11, 11)).toEqual([]);
+	});
+
+	it("ignores cross-tab references and quoted strings", () => {
+		expect(findBrokenRefs(refGrid("='8 月'!E5"), EXPENSE_BAND, 5, 5)).toEqual([]);
+		expect(findBrokenRefs(refGrid("=火車模型!E5"), EXPENSE_BAND, 5, 5)).toEqual([]);
+		expect(findBrokenRefs(refGrid('=SUMIF(F3:F10,"E5",D3:D10)'), EXPENSE_BAND, 5, 5)).toEqual([]);
+	});
+
+	it("does not read digits inside a function name as a reference", () => {
+		expect(findBrokenRefs(refGrid("=LOG10(P35)"), EXPENSE_BAND, 10, 10)).toEqual([]);
+	});
+
+	it("ignores references outside the deleted band or the deleted rows", () => {
+		expect(findBrokenRefs(refGrid("=J5"), EXPENSE_BAND, 5, 5)).toEqual([]);
+		expect(findBrokenRefs(refGrid("=E6"), EXPENSE_BAND, 5, 5)).toEqual([]);
+		expect(findBrokenRefs(refGrid("=E5"), { startCol: 0, endCol: Number.MAX_SAFE_INTEGER }, 5, 5)).toHaveLength(1);
+	});
+
+	it("skips formulas that live inside the deleted cells themselves", () => {
+		const g: unknown[][] = [];
+		g[4] = ["", "", "", "", "=D5*2"]; // E5 points at D5, both being deleted
+		expect(findBrokenRefs(g, EXPENSE_BAND, 5, 5)).toEqual([]);
+	});
+});
+
+/** fakeClient + a deleteRows spy, for the raw delete path. */
+function deleteClient(grid: unknown[][], truncated = false): SheetsClient {
+	return {
+		readRange: vi.fn(async (range: string) => ({
+			range: range.includes("!") ? range : "'9 月'!A1:S60",
+			values: grid,
+			truncated,
+		})),
+		getSheetId: vi.fn(async () => 111),
+		batchUpdate: vi.fn(async () => ({ replies: [{}] })),
+		deleteRows: vi.fn(async (_tab: string, row: number, count: number) => ({ deletedAt: row, count })),
+	} as unknown as SheetsClient;
+}
+
+describe("safeDeleteRows", () => {
+	it("deletes whole rows and returns what was removed", async () => {
+		const client = deleteClient(currentMonthGrid());
+
+		const result = await safeDeleteRows(client, { tab: "9 月", row: 6, count: 1 });
+
+		expect((client.deleteRows as any).mock.calls[0]).toEqual(["9 月", 6, 1, undefined]);
+		expect(result).toMatchObject({ tab: "9 月", row: 6, count: 1, columns: null });
+		expect(result.deletedValues.rows).toEqual([
+			{ row: 6, values: [dateSerial(2026, 7, 1), "電話費", "生活用品", "", 1261, "TWD"] },
+		]);
+		expect(result.refWarning).toBeUndefined();
+	});
+
+	it("scopes the delete to a column band and slices the record to it", async () => {
+		// two lunch rows under a =sum(R37:R38) 總和, so removing one leaves the range intact
+		const g = lunchGrid();
+		(g[36] ??= [])[15] = dateSerial(2026, 7, 2);
+		g[36][16] = "中餐";
+		g[36][17] = 120;
+		(g[37] ??= [])[15] = dateSerial(2026, 7, 3);
+		g[37][16] = "中餐";
+		g[37][17] = 95;
+		(g[38] ??= [])[16] = "總和";
+		g[38][17] = "=sum(R37:R38)";
+
+		const client = deleteClient(g);
+
+		const result = await safeDeleteRows(client, { tab: "9 月", row: 37, count: 1, columns: "P:S" });
+
+		expect((client.deleteRows as any).mock.calls[0]).toEqual(["9 月", 37, 1, { startCol: 15, endCol: 19 }]);
+		expect(result.deletedValues.rows).toEqual([{ row: 37, values: [dateSerial(2026, 7, 2), "中餐", 120] }]);
+	});
+
+	it("refuses when a formula points straight at a deleted cell, and names it", async () => {
+		// lunchGrid's 編列預算 (P35) is =E5 — the 中餐 budget pointing at an expense row
+		const client = deleteClient(lunchGrid());
+
+		await expect(safeDeleteRows(client, { tab: "9 月", row: 5, count: 1, columns: "A:G" })).rejects.toThrow(
+			/#REF!.*P35 \(=E5\)/,
+		);
+		expect((client.deleteRows as any).mock.calls).toHaveLength(0);
+	});
+
+	it("force:true deletes anyway and reports the formulas it broke", async () => {
+		const client = deleteClient(lunchGrid());
+
+		const result = await safeDeleteRows(client, { tab: "9 月", row: 5, count: 1, columns: "A:G", force: true });
+
+		expect((client.deleteRows as any).mock.calls).toHaveLength(1);
+		expect(result.refWarning).toMatch(/force:true.*P35/);
+	});
+
+	it("falls back to a narrow read and warns when the tab is too big to scan", async () => {
+		const client = deleteClient(currentMonthGrid(), true);
+		(client.readRange as any).mockResolvedValueOnce({ range: "x", values: currentMonthGrid(), truncated: true });
+		(client.readRange as any).mockResolvedValueOnce({
+			range: "'9 月'!A6:G6",
+			values: [[dateSerial(2026, 7, 1), "電話費"]],
+			truncated: false,
+		});
+
+		const result = await safeDeleteRows(client, { tab: "9 月", row: 6, count: 1, columns: "A:G" });
+
+		expect((client.readRange as any).mock.calls[1][0]).toBe("'9 月'!A6:G6");
+		expect(result.refWarning).toMatch(/NOT checked/);
+		expect(result.deletedValues.rows).toEqual([{ row: 6, values: [dateSerial(2026, 7, 1), "電話費"] }]);
+	});
+
+	it("refuses when even the narrow read comes back truncated", async () => {
+		const client = deleteClient(currentMonthGrid(), true);
+
+		await expect(safeDeleteRows(client, { tab: "9 月", row: 6, count: 1 })).rejects.toThrow("truncated");
+		expect((client.deleteRows as any).mock.calls).toHaveLength(0);
+	});
+});
+
+describe("deleteExpense", () => {
+	/** creditGrid with three 國泰 CUBE charges (rows 6-8) inside the 結帳日前 bucket's 2-row spill. */
+	function cardChargeGrid(count: number): unknown[][] {
+		const g = creditGrid();
+		for (let i = 0; i < count; i++) {
+			g[5 + i] = [dateSerial(2026, 7, 3 + i), `刷卡${i + 1}`, "購物", "", 100, "TWD", "國泰 Cube"];
+		}
+		return g;
+	}
+
+	it("deletes the row scoped to the expense band and returns the cells", async () => {
+		const client = fakeClient(currentMonthGrid());
+
+		const result = await deleteExpense(client, { item: "電話費", month: 9 });
+
+		const requests = (client.batchUpdate as any).mock.calls[0][0];
+		expect(requests[0]).toEqual({
+			deleteRange: {
+				range: { sheetId: 111, startRowIndex: 5, endRowIndex: 6, startColumnIndex: 0, endColumnIndex: 7 },
+				shiftDimension: "ROWS",
+			},
+		});
+		expect(result).toMatchObject({
+			tab: "9 月",
+			row: 6,
+			item: "電話費",
+			card: null,
+			deleted: [dateSerial(2026, 7, 1), "電話費", "生活用品", "", 1261, "TWD"],
+		});
+	});
+
+	it("refuses the formula-owned 上月…透支 carry rows", async () => {
+		const client = fakeClient(currentMonthGrid());
+		await expect(deleteExpense(client, { item: "上月美金透支", month: 9 })).rejects.toThrow("carry row");
+		await expect(deleteExpense(client, { item: "上月新臺幣透支", month: 9 })).rejects.toThrow("carry row");
+		expect((client.batchUpdate as any).mock.calls).toHaveLength(0);
+	});
+
+	it("refuses an item that is not in the expense window", async () => {
+		const client = fakeClient(currentMonthGrid());
+		await expect(deleteExpense(client, { item: "薪水", month: 9 })).rejects.toThrow("No \"薪水\" row");
+		await expect(deleteExpense(client, { item: "沒有這個", month: 9 })).rejects.toThrow("expense window");
+		expect((client.batchUpdate as any).mock.calls).toHaveLength(0);
+	});
+
+	it("never guesses between duplicate 項目 rows — row picks one", async () => {
+		const g = currentMonthGrid();
+		g[6] = ["", "電話費", "生活用品", "", 999, "TWD"];
+		const client = fakeClient(g);
+
+		await expect(deleteExpense(client, { item: "電話費", month: 9 })).rejects.toThrow("rows 6, 7");
+		await expect(deleteExpense(client, { item: "電話費", month: 9, row: 9 })).rejects.toThrow("not one of");
+
+		const result = await deleteExpense(client, { item: "電話費", month: 9, row: 7 });
+		expect(result.row).toBe(7);
+	});
+
+	it("refuses a row the 午餐預算 block's 編列預算 points straight at", async () => {
+		const client = fakeClient(lunchGrid()); // P35 = "=E5", the 中餐 budget link
+
+		await expect(deleteExpense(client, { item: "Google Cloud", month: 9 })).rejects.toThrow(/#REF!.*P35/);
+		expect((client.batchUpdate as any).mock.calls).toHaveLength(0);
+	});
+
+	it("refuses when the expense window is a single row", async () => {
+		const g = currentMonthGrid();
+		g[10] = ["", "", "", "花費總額", "=SUM(E5:E5)"];
+		const client = fakeClient(g);
+
+		await expect(deleteExpense(client, { item: "Google Cloud", month: 9 })).rejects.toThrow("single row");
+	});
+
+	it("audits the 對帳區 against the POST-delete grid: the removed charge stops counting", async () => {
+		const client = fakeClient(cardChargeGrid(3)); // 3 charges, 2-row spill
+
+		const result = await deleteExpense(client, { item: "刷卡3", month: 9 });
+
+		const requests = (client.batchUpdate as any).mock.calls[0][0];
+		expect(requests).toHaveLength(1); // the delete alone: 2 charges left, 2 rows of spill
+		expect(result.bucketsGrown).toBeUndefined();
+	});
+
+	it("still heals a bucket that overflows without the deleted row", async () => {
+		const client = fakeClient(cardChargeGrid(4)); // 4 charges, 2-row spill
+
+		const result = await deleteExpense(client, { item: "刷卡4", month: 9 });
+
+		const requests = (client.batchUpdate as any).mock.calls[0][0];
+		const insert = requests.find((r: any) => r.insertRange);
+		expect(insert.insertRange.range).toMatchObject({
+			startRowIndex: CUBE_AT.pre.subtotalRow - 1,
+			endRowIndex: CUBE_AT.pre.subtotalRow,
+			startColumnIndex: 7,
+		});
+		expect(result).toMatchObject({
+			card: "國泰 Cube",
+			bucketsGrown: [{ card: "國泰 CUBE", bucket: "結帳日前", rowsAdded: 1 }],
+		});
+	});
+
+	it("refuses to operate on a truncated read", async () => {
+		const client = fakeClient(currentMonthGrid());
+		(client.readRange as any).mockResolvedValue({ range: "x", values: currentMonthGrid(), truncated: true });
+		await expect(deleteExpense(client, { item: "電話費", month: 9 })).rejects.toThrow("truncated");
+		expect((client.batchUpdate as any).mock.calls).toHaveLength(0);
 	});
 });
