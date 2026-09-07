@@ -8,9 +8,11 @@ import {
 	addTripEntry,
 	adjustBalance,
 	annotateRows,
+	deleteExpense,
 	findCells,
 	getCategories,
 	monthSummary,
+	safeDeleteRows,
 	safeUpdateRange,
 	setExpenseDate,
 	setIncome,
@@ -189,6 +191,23 @@ export function registerTailoredTools(server: McpServer, client: SheetsClient): 
 		async (p) => {
 			try {
 				return ok(await setExpenseDate(client, p));
+			} catch (e) {
+				return toError(e);
+			}
+		},
+	);
+
+	server.tool(
+		"delete_expense",
+		"Delete an expense row from a monthly tab ENTIRELY — the row disappears and the rows below move up, leaving no blank gap (update_range can only blank the cells, which leaves a hole in the list). Finds the row by exact 項目 inside the expense window; pass row to disambiguate duplicate names (it never guesses). The delete is scoped to columns A-G, so the 乾坤大挪移 / 午餐預算 / 信用卡帳單對帳區 blocks sharing those sheet rows stay put; 花費總額 and the 支出 SUMIF windows shrink with the row and the card 對帳區 mirrors drop it on their own. Refuses the 上月…透支 carry rows and any row a formula points straight at (it would go #REF!). Returns the deleted cells so a mistake can be re-entered.",
+		{
+			item: z.string().min(1).describe("項目 of the expense row to delete, exactly as written"),
+			month: monthParam.optional().describe("Target month 1-12 (default: current month)"),
+			row: z.number().int().min(3).optional().describe("1-indexed sheet row, to disambiguate duplicate 項目 names"),
+		},
+		async (p) => {
+			try {
+				return ok(await deleteExpense(client, p));
 			} catch (e) {
 				return toError(e);
 			}
@@ -383,6 +402,33 @@ export function registerTailoredTools(server: McpServer, client: SheetsClient): 
 		async ({ tab, row, count }) => {
 			try {
 				return ok(await client.insertRows(tab, row, count));
+			} catch (e) {
+				return toError(e);
+			}
+		},
+	);
+
+	server.tool(
+		"delete_rows",
+		"Delete rows for real — the row goes away and everything below moves up, which no other tool does (update_range only blanks cells, leaving an empty row behind). ALWAYS pass columns on a monthly or trip tab: those tabs are mosaics of side-by-side blocks (expense list A-G, 乾坤大挪移 and 信用卡帳單對帳區 H-N, 午餐預算 P-S; trip bands A-G, I-O, Q-W, Z-AF), and a whole-row delete tears every block that shares the row — scoping the delete to one band shifts only that section. Prefer delete_expense for expense rows. Refuses when a formula points straight at a cell being deleted (it would turn into #REF!) unless force:true; SUM/SUMIF ranges spanning the rows are fine, they shrink. Returns deletedValues (with formulas) so the rows can be re-entered.",
+		{
+			tab: z.string().min(1).describe("Tab name, e.g. 9 月"),
+			row: z.number().int().min(2).describe("1-indexed first row to delete"),
+			count: z.number().int().min(1).max(50).default(1),
+			columns: z
+				.string()
+				.optional()
+				.describe(
+					'Column band to scope the delete to, e.g. "A:G" (expense list), "P:S" (午餐預算), "H:N" (乾坤大挪移 / 對帳區) or a single "R". Omit ONLY on a tab with nothing beside the rows — omitting it deletes the whole sheet row.',
+				),
+			force: z
+				.boolean()
+				.optional()
+				.describe("true = delete even though formulas point straight at the deleted cells (they will show #REF!)"),
+		},
+		async (p) => {
+			try {
+				return ok(await safeDeleteRows(client, p));
 			} catch (e) {
 				return toError(e);
 			}

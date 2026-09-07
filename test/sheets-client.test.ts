@@ -236,6 +236,48 @@ describe("SheetsClient generic additions", () => {
 		expect(result).toEqual({ insertedAt: 24, count: 2 });
 	});
 
+	it("deleteRows issues deleteDimension for whole rows", async () => {
+		const fetchMock = vi
+			.fn<FetchMock>()
+			.mockResolvedValueOnce(jsonResponse({ sheets: [{ properties: { title: "9 月", sheetId: 111 } }] }))
+			.mockResolvedValueOnce(jsonResponse({ replies: [{}] }));
+		vi.stubGlobal("fetch", fetchMock);
+
+		const result = await makeClient().deleteRows("9 月", 24, 2);
+
+		expect(parsedBody(fetchMock.mock.calls[1][1])).toEqual({
+			requests: [
+				{
+					deleteDimension: {
+						range: { sheetId: 111, dimension: "ROWS", startIndex: 23, endIndex: 25 },
+					},
+				},
+			],
+		});
+		expect(result).toEqual({ deletedAt: 24, count: 2 });
+	});
+
+	it("deleteRows scopes to a column band with deleteRange + shiftDimension ROWS", async () => {
+		const fetchMock = vi
+			.fn<FetchMock>()
+			.mockResolvedValueOnce(jsonResponse({ sheets: [{ properties: { title: "9 月", sheetId: 111 } }] }))
+			.mockResolvedValueOnce(jsonResponse({ replies: [{}] }));
+		vi.stubGlobal("fetch", fetchMock);
+
+		await makeClient().deleteRows("9 月", 6, 1, { startCol: 0, endCol: 7 });
+
+		expect(parsedBody(fetchMock.mock.calls[1][1])).toEqual({
+			requests: [
+				{
+					deleteRange: {
+						range: { sheetId: 111, startRowIndex: 5, endRowIndex: 6, startColumnIndex: 0, endColumnIndex: 7 },
+						shiftDimension: "ROWS",
+					},
+				},
+			],
+		});
+	});
+
 	it("readRange passes valueRenderOption only for non-default modes", async () => {
 		const fetchMock = vi.fn<FetchMock>(async () => jsonResponse({ range: "x", values: [] }));
 		vi.stubGlobal("fetch", fetchMock);

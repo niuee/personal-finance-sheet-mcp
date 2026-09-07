@@ -156,6 +156,48 @@ export class SheetsClient {
 		return { insertedAt: row, count };
 	}
 
+	/**
+	 * Delete `count` rows starting AT 1-indexed `row`; everything below shifts
+	 * up. `band` (0-indexed, `endCol` exclusive) scopes the delete to one
+	 * column span — a "delete cells, shift up" over the section's own columns,
+	 * the mirror image of the band inserts the tailored ops use. Monthly and
+	 * trip tabs are mosaics of side-by-side blocks, so a whole-row delete
+	 * inside one section tears whatever block straddles the row in the other
+	 * columns; scoping keeps the neighbours in place. References adjust the
+	 * same way either way — ranges spanning the deleted rows shrink, single
+	 * cells pointing INTO them become #REF! (safeDeleteRows checks for those
+	 * before this method is ever called).
+	 */
+	async deleteRows(
+		tab: string,
+		row: number,
+		count: number,
+		band?: { startCol: number; endCol: number },
+	): Promise<{ deletedAt: number; count: number }> {
+		const sheetId = await this.getSheetId(tab);
+		const request =
+			band === undefined
+				? {
+						deleteDimension: {
+							range: { sheetId, dimension: "ROWS", startIndex: row - 1, endIndex: row - 1 + count },
+						},
+					}
+				: {
+						deleteRange: {
+							range: {
+								sheetId,
+								startRowIndex: row - 1,
+								endRowIndex: row - 1 + count,
+								startColumnIndex: band.startCol,
+								endColumnIndex: band.endCol,
+							},
+							shiftDimension: "ROWS",
+						},
+					};
+		await this.batchUpdate([request]);
+		return { deletedAt: row, count };
+	}
+
 	async addTab(title: string): Promise<{ title: string; sheetId: number }> {
 		const data = await this.batchUpdate([{ addSheet: { properties: { title } } }]);
 		const props = data.replies?.[0]?.addSheet?.properties;
