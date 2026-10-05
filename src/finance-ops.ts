@@ -689,6 +689,23 @@ interface PendingBucketEntry {
  * too — those planned rows count into its capacity rather than growing it a
  * second time.
  *
+ * Sheets refuses any insertRange that would split an array formula's
+ * footprint ("You cannot insert or delete cells over an array formula"),
+ * and a mirror whose spill is BLOCKED (#REF!) still claims its whole
+ * intended footprint — straight through its own 小計 row, which is where
+ * the growth insert lands. So each insert is bracketed: every mirror whose
+ * footprint the insert row may run through is cleared just before it and
+ * rewritten (same formula text) just after, all inside the caller's one
+ * atomic batch. Without this, a bucket that a hand edit had already
+ * overflowed could never be healed by a later tool write.
+ *
+ * `values` must be a FORMULA-rendered read (the lifted mirrors are rewritten
+ * from it verbatim), and the returned requests are in its coordinates:
+ * callers put them AHEAD of every structural edit (row/cell insert, delete
+ * or move) in the same batch. Plain content writes may come either side —
+ * only a structural edit could shift the 本月結帳日 cells a mirror names
+ * and leave the rewritten text stale.
+ *
  * `minCapacity` (startMonth's pad) grows any bucket whose spill area holds
  * fewer than that many rows, occupied or not.
  */
@@ -696,7 +713,6 @@ export function auditCreditBuckets(
 	values: unknown[][],
 	tab: string,
 	sheetId: number,
-	rowOffset: number,
 	pending?: PendingBucketEntry,
 	minCapacity = 0,
 ): BucketGuardResult {
@@ -787,6 +803,36 @@ export function auditCreditBuckets(
 		}
 	}
 
+	// Every bucket's mirror anchor (the row under its 日期 header), with the
+	// lowest row its array may claim: at least the bucket's own 小計 row — a
+	// blocked spill's footprint runs onto it, and an insert there splits it —
+	// and further when the counted rows overflow past even that. Erring long
+	// costs only a harmless rewrite; erring short gets the whole batch
+	// refused. A cell without a formula holds no array and needs no lift.
+	interface Mirror {
+		row: number;
+		col: number;
+		formula: string;
+		reach: number;
+	}
+	const mirrors: Mirror[] = [];
+	for (const block of blocks) {
+		for (const anchors of [block.pre, block.post]) {
+			const row = anchors.headerRow + 1;
+			const formula = values[row - 1]?.[block.startCol];
+			if (row >= anchors.subtotalRow || typeof formula !== "string" || !formula.startsWith("=")) continue;
+			const required = plans.find((p) => p.anchors === anchors)?.required ?? 0;
+			mirrors.push({ row, col: block.startCol, formula, reach: Math.max(anchors.subtotalRow, row + required - 1) });
+		}
+	}
+	const mirrorWrite = (m: Mirror, formula: string | null) => ({
+		updateCells: {
+			start: { sheetId, rowIndex: m.row - 1, columnIndex: m.col },
+			rows: [{ values: [cellData(formula)] }],
+			fields: "userEnteredValue",
+		},
+	});
+
 	plans.sort((a, b) => b.anchors.subtotalRow - a.anchors.subtotalRow);
 	const requests: object[] = [];
 	const grown: BucketGrowth[] = [];
@@ -808,7 +854,14 @@ export function auditCreditBuckets(
 		const capacity = bucketSpillCapacity(p.anchors) + widened;
 		const rowsAdded = Math.max(Math.max(p.required, minCapacity) - capacity, 0);
 		if (rowsAdded > 0) {
-			requests.push(bandInsert(sheetId, subtotalRow + rowOffset, rowsAdded, CREDIT_BLOCK_COLS[0], CREDIT_BAND_END));
+			// Bottom-up order means no earlier insert has moved anything at or
+			// above this one, so the read's rows and formula text still hold.
+			const lifted = mirrors.filter((m) => m.row < subtotalRow && subtotalRow <= m.reach);
+			requests.push(
+				...lifted.map((m) => mirrorWrite(m, null)),
+				bandInsert(sheetId, subtotalRow, rowsAdded, CREDIT_BLOCK_COLS[0], CREDIT_BAND_END),
+				...lifted.map((m) => mirrorWrite(m, m.formula)),
+			);
 			planned.push({ row: subtotalRow, count: rowsAdded });
 			grown.push({ card: p.block.card.name, bucket: p.bucket, rowsAdded });
 		}
@@ -831,8 +884,8 @@ export function auditCreditBuckets(
 						sheetId,
 						// 0-indexed: the row directly under the 日期 header (the
 						// mirror's own row) through the row above the 小計.
-						startRowIndex: headerRow + rowOffset,
-						endRowIndex: subtotalRow - 1 + rowOffset + rowsAdded + widened,
+						startRowIndex: headerRow,
+						endRowIndex: subtotalRow - 1 + rowsAdded + widened,
 						startColumnIndex: col,
 						endColumnIndex: col + 1,
 					},
@@ -862,10 +915,9 @@ export function creditBucketGuard(
 	sheetId: number,
 	cardName: string,
 	dateSerialValue: number,
-	rowOffset: number,
 	excludeRow?: number,
 ): BucketGuardResult {
-	return auditCreditBuckets(values, tab, sheetId, rowOffset, { cardName, dateSerial: dateSerialValue, excludeRow });
+	return auditCreditBuckets(values, tab, sheetId, { cardName, dateSerial: dateSerialValue, excludeRow });
 }
 
 export interface IncomeWindow {
@@ -1061,12 +1113,10 @@ export async function setIncome(client: SheetsClient, p: SetIncomeParams) {
 	}
 
 	// Any tool write is a chance to heal 對帳區 buckets that hand-entered card
-	// rows overflowed. The income band insert above (B–D) never shifts the
-	// section's H–N columns, so no row offset.
-	const audit = auditCreditBuckets(values, tab, sheetId, 0);
-	requests.push(...audit.requests);
+	// rows overflowed — ahead of the income band insert, like every audit.
+	const audit = auditCreditBuckets(values, tab, sheetId);
 
-	await client.batchUpdate(requests);
+	await client.batchUpdate([...audit.requests, ...requests]);
 	return {
 		tab,
 		row: targetRow,
@@ -1115,8 +1165,15 @@ export async function adjustBalance(client: SheetsClient, p: AdjustBalanceParams
 			? { end: REAL_NTD_END_BALANCE_LABEL, adjust: NTD_ADJUSTMENT_LABEL }
 			: { end: REAL_USD_END_BALANCE_LABEL, adjust: USD_ADJUSTMENT_LABEL };
 
-	const { values, truncated } = await client.readRange(`${quoteTab(tab)}!${FULL_GRID_READ}`, "UNFORMATTED_VALUE");
-	assertNotTruncated(truncated, tab, FULL_GRID_READ);
+	// The balances need the computed render; the 對帳區 audit needs the
+	// formulas (it may lift and rewrite mirror formulas, which an UNFORMATTED
+	// read only shows as their results — #REF! on an overflowed bucket).
+	const range = `${quoteTab(tab)}!${FULL_GRID_READ}`;
+	const [{ values, truncated }, formulas] = await Promise.all([
+		client.readRange(range, "UNFORMATTED_VALUE"),
+		client.readRange(range, "FORMULA"),
+	]);
+	assertNotTruncated(truncated || formulas.truncated, tab, FULL_GRID_READ);
 
 	const endRow = findRowByValue(values, MONTH_COLS.budgetLabel, labels.end);
 	const adjustRow = findRowByValue(values, MONTH_COLS.budgetLabel, labels.adjust);
@@ -1137,8 +1194,8 @@ export async function adjustBalance(client: SheetsClient, p: AdjustBalanceParams
 
 	const sheetId = await client.getSheetId(tab);
 	// Any tool write is a chance to heal 對帳區 buckets that hand-entered card
-	// rows overflowed (labels and serials read the same in this UNFORMATTED render).
-	const audit = auditCreditBuckets(values, tab, sheetId, 0);
+	// rows overflowed.
+	const audit = auditCreditBuckets(formulas.values, tab, sheetId);
 	await client.batchUpdate([
 		{
 			updateCells: {
@@ -1277,12 +1334,15 @@ export async function addExpense(client: SheetsClient, p: AddExpenseParams) {
 	// rows have no bucket at all). Every OTHER write still audits the whole
 	// section: hand-entered rows (typed straight into the UI) trigger no
 	// growth themselves, so each tool write is the next chance to heal an
-	// overflowed bucket.
+	// overflowed bucket. The guard's requests go FIRST, in the read's
+	// coordinates: the expense row's whole-row insert then shifts the grown
+	// section — and the 本月結帳日 references inside any mirror the guard
+	// rewrote — down with everything else.
 	const guard =
 		card !== undefined && dateSerialValue !== null
-			? creditBucketGuard(values, tab, sheetId, card.name, dateSerialValue, inserted ? 1 : 0)
-			: auditCreditBuckets(values, tab, sheetId, inserted ? 1 : 0);
-	requests.push(...guard.requests);
+			? creditBucketGuard(values, tab, sheetId, card.name, dateSerialValue)
+			: auditCreditBuckets(values, tab, sheetId);
+	requests.unshift(...guard.requests);
 
 	if (moveToRow !== null) {
 		requests.push({
@@ -1410,7 +1470,7 @@ async function wireJpyTransferIntoMonth(
 		});
 	}
 	// Heal any hand-entered 對帳區 bucket drift while we're writing the tab anyway.
-	requests.push(...auditCreditBuckets(values, monthTab, sheetId, 0).requests);
+	requests.push(...auditCreditBuckets(values, monthTab, sheetId).requests);
 	await client.batchUpdate(requests);
 }
 
@@ -1451,7 +1511,15 @@ export async function addTransfer(client: SheetsClient, p: AddTransferParams): P
 	const sheetId = await client.getSheetId(tab);
 	const inserted = targetRow === null;
 	let finalTotalRow = totalRow;
-	const scratchRequests: object[] = [];
+	// A usd transfer writes a month tab — audit the 對帳區 below the transfer
+	// block while we're here, healing buckets hand-entered card rows overflowed
+	// (jpy targets a trip tab, which has no section; its month-tab wiring runs
+	// its own audit). It rides the FIRST batch, ahead of the section's own
+	// insert, so it works in the read's coordinates: a later batch would see
+	// a grid that insert had already shifted, and any mirror formula the
+	// audit rewrote would carry pre-shift references.
+	const audit = currency === "usd" ? auditCreditBuckets(values, tab, sheetId) : null;
+	const scratchRequests: object[] = [...(audit?.requests ?? [])];
 	if (targetRow === null) {
 		// Insert directly above 總和; the ledger's +K/−I/+N references shift with it.
 		// Band-scoped for both hosts: trip tabs are a mosaic of column bands, and
@@ -1526,13 +1594,6 @@ export async function addTransfer(client: SheetsClient, p: AddTransferParams): P
 					formatRepeat(cfg.cols.spread, { numberFormat: { type: "CURRENCY", pattern: "[$NTD ]#,##0" } }, 3), // E:G
 				];
 
-	// A usd transfer writes a month tab — audit the 對帳區 below the transfer
-	// block while we're here, healing buckets hand-entered card rows overflowed
-	// (jpy targets a trip tab, which has no section; its month-tab wiring runs
-	// its own audit). The full-section insert in the scratch batch above
-	// already shifted the section down one row, hence the offset.
-	const audit = currency === "usd" ? auditCreditBuckets(values, tab, sheetId, inserted ? 1 : 0) : null;
-
 	await client.batchUpdate([
 		...jpyFormatRequests,
 		{
@@ -1565,7 +1626,6 @@ export async function addTransfer(client: SheetsClient, p: AddTransferParams): P
 				fields: "userEnteredValue",
 			},
 		},
-		...(audit?.requests ?? []),
 	]);
 
 	const spread = p.ntd - received * rate; // == (當下美金/日幣 − 實際美金/日幣) × rate
@@ -1697,15 +1757,14 @@ export async function addLunch(client: SheetsClient, p: AddLunchParams) {
 
 	// Lunches always carry a date, so the pending-entry guard runs whenever a
 	// REAL card is given (現金 lunches have no bucket, but the write still
-	// audits the whole section for hand-entered drift); its inserts (below the
-	// lunch section) are appended last, after the writes above. The lunch
-	// insert (if any) is band-scoped to P–S and never moves the credit
-	// section — no offset.
+	// audits the whole section for hand-entered drift). Its requests go first,
+	// ahead of the lunch log's own P–S insert — every audit precedes the
+	// batch's structural edits.
 	const guard =
 		card !== undefined
-			? creditBucketGuard(values, tab, sheetId, card.name, dateSerialValue, 0)
-			: auditCreditBuckets(values, tab, sheetId, 0);
-	requests.push(...guard.requests);
+			? creditBucketGuard(values, tab, sheetId, card.name, dateSerialValue)
+			: auditCreditBuckets(values, tab, sheetId);
+	requests.unshift(...guard.requests);
 
 	await client.batchUpdate(requests);
 
@@ -1823,8 +1882,8 @@ export async function setExpenseDate(client: SheetsClient, p: SetExpenseDatePara
 	}
 	const guard =
 		registryCard !== undefined
-			? creditBucketGuard(values, tab, sheetId, registryCard.name, serial, 0, row)
-			: auditCreditBuckets(values, tab, sheetId, 0);
+			? creditBucketGuard(values, tab, sheetId, registryCard.name, serial, row)
+			: auditCreditBuckets(values, tab, sheetId);
 	requests.push(...guard.requests);
 	bucketWarning ??= guard.warning;
 
@@ -2255,7 +2314,7 @@ export async function startMonth(client: SheetsClient, month: number) {
 	// as the rebuild — duplicateSheet has already committed.
 	let creditPadded: BucketGrowth[] | undefined;
 	if (findRowByValue(values, CREDIT_BLOCK_COLS[0], CREDIT_SECTION_LABEL) !== null) {
-		const audit = auditCreditBuckets(values, newTab, sheetId, 0, undefined, CREDIT_BUCKET_PAD_ROWS);
+		const audit = auditCreditBuckets(values, newTab, sheetId, undefined, CREDIT_BUCKET_PAD_ROWS);
 		requests.push(...audit.requests);
 		creditPadded = audit.grown;
 		creditWarning ??= audit.warning;
@@ -3060,14 +3119,17 @@ export async function deleteExpense(client: SheetsClient, p: DeleteExpenseParams
 	// Audit the 對帳區 against the grid as it will look AFTER the delete: the
 	// row's own card charge is gone, so it must not be counted into a bucket's
 	// required rows, while every OTHER bucket still gets its usual chance to
-	// heal (hand-entered rows grow nothing on their own). The delete is
-	// band-scoped to A–G, so the section's rows (H–N) do not move — rowOffset 0.
+	// heal (hand-entered rows grow nothing on their own). The row is blanked
+	// in place rather than removed: the delete is band-scoped to A–G, so the
+	// section's rows (H–N) keep their coordinates — and the audit's requests
+	// still go ahead of it, like every audit precedes the batch's structural
+	// edits.
 	const after = values.slice();
 	const blanked = [...(values[row - 1] ?? [])];
 	for (let c = EXPENSE_BAND.startCol; c < EXPENSE_BAND.endCol; c++) blanked[c] = "";
 	after[row - 1] = blanked;
-	const guard = auditCreditBuckets(after, tab, sheetId, 0);
-	requests.push(...guard.requests);
+	const guard = auditCreditBuckets(after, tab, sheetId);
+	requests.unshift(...guard.requests);
 
 	await client.batchUpdate(requests);
 	return {

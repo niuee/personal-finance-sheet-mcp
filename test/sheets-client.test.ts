@@ -191,6 +191,31 @@ describe("SheetsClient generic additions", () => {
 		expect(result).toEqual({ replies: [{}] });
 	});
 
+	it("batchUpdate says a rejected batch applied none of its requests", async () => {
+		const message = "Invalid requests[1].insertRange: You cannot insert or delete cells over an array formula.";
+		vi.stubGlobal(
+			"fetch",
+			vi.fn<FetchMock>(async () => new Response(JSON.stringify({ error: { message } }), { status: 400 })),
+		);
+
+		const promise = makeClient().batchUpdate([{ a: {} }, { b: {} }, { c: {} }]);
+		await expect(promise).rejects.toThrow(message);
+		await expect(promise).rejects.toThrow("none of its 3 requests took effect");
+		await expect(promise).rejects.toMatchObject({ status: 400 });
+		await expect(promise).rejects.toBeInstanceOf(SheetsApiError);
+	});
+
+	it("batchUpdate makes no claim about what a server-side failure applied", async () => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn<FetchMock>(async () => new Response("<html>Server Error</html>", { status: 502 })),
+		);
+
+		const promise = makeClient().batchUpdate([{ a: {} }]);
+		await expect(promise).rejects.toThrow("Sheets API error (502)");
+		await expect(promise).rejects.not.toThrow("took effect");
+	});
+
 	it("getSheetId resolves a tab title to its numeric sheetId", async () => {
 		const fetchMock = vi.fn<FetchMock>(async () =>
 			jsonResponse({
