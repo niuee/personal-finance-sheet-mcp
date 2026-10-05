@@ -128,11 +128,27 @@ export class SheetsClient {
 		};
 	}
 
+	/**
+	 * Sheets validates and applies a batch atomically: when it rejects one
+	 * request (a 400 naming `requests[i]`), none of the others took effect
+	 * either — said outright in the error, so a caller never has to wonder
+	 * whether the requests before `i` left the sheet half-written. Other
+	 * failures (5xx, network) make no such claim.
+	 */
 	async batchUpdate(requests: object[]): Promise<any> {
-		return this.request(":batchUpdate", {
-			method: "POST",
-			body: JSON.stringify({ requests }),
-		});
+		try {
+			return await this.request(":batchUpdate", {
+				method: "POST",
+				body: JSON.stringify({ requests }),
+			});
+		} catch (err) {
+			if (err instanceof SheetsApiError && err.status === 400) {
+				const applied =
+					requests.length === 1 ? "its one request did not take effect" : `none of its ${requests.length} requests took effect`;
+				throw new SheetsApiError(`${err.message} (Sheets applies a batchUpdate atomically — ${applied}.)`, err.status);
+			}
+			throw err;
+		}
 	}
 
 	async getSheetId(title: string): Promise<number> {

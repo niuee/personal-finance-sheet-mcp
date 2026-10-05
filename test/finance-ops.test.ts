@@ -619,6 +619,17 @@ function bucketFormatStamps(startRow0: number, endRow0: number, startCol: number
 	];
 }
 
+/** The bucket audit's clear (formula null) / rewrite of one mirror anchor around a growth insert. */
+function mirrorWrite(row: number, col: number, formula: string | null) {
+	return {
+		updateCells: {
+			start: { sheetId: 111, rowIndex: row - 1, columnIndex: col },
+			rows: [{ values: [formula === null ? {} : { userEnteredValue: { formulaValue: formula } }] }],
+			fields: "userEnteredValue",
+		},
+	};
+}
+
 /** creditGrid + the 帳戶實際數字對應 block in B/D rows 34-43, below the 銀行餘額 block. */
 function realBalanceGrid(): unknown[][] {
 	const g = creditGrid();
@@ -927,7 +938,7 @@ describe("auditCreditBuckets", () => {
 	}
 
 	it("no-ops on a healthy section when there is no pending entry", () => {
-		expect(auditCreditBuckets(creditGrid(), "9 月", 111, 0)).toEqual({
+		expect(auditCreditBuckets(creditGrid(), "9 月", 111)).toEqual({
 			requests: [],
 			bucket: null,
 			rowsAdded: 0,
@@ -936,7 +947,7 @@ describe("auditCreditBuckets", () => {
 	});
 
 	it("skips silently on tabs without the section", () => {
-		expect(auditCreditBuckets(lunchGrid(), "6 月", 111, 0)).toEqual({
+		expect(auditCreditBuckets(lunchGrid(), "6 月", 111)).toEqual({
 			requests: [],
 			bucket: null,
 			rowsAdded: 0,
@@ -947,14 +958,14 @@ describe("auditCreditBuckets", () => {
 	it("degrades to a warning on a torn section", () => {
 		const g = creditGrid();
 		(g[creditGridAnchors()["國泰 CUBE"]!.dueRow - 1] as unknown[])[7] = ""; // CUBE loses 本月需繳款
-		const result = auditCreditBuckets(g, "9 月", 111, 0);
+		const result = auditCreditBuckets(g, "9 月", 111);
 		expect(result.requests).toEqual([]);
 		expect(result.warning).toMatch(/國泰 CUBE.*本月需繳款/);
 	});
 
 	it("grows a bucket that hand-entered rows overflowed, with no pending entry", () => {
 		const cube = creditGridAnchors()["國泰 CUBE"]!;
-		const result = auditCreditBuckets(overflowedGrid(), "9 月", 111, 0);
+		const result = auditCreditBuckets(overflowedGrid(), "9 月", 111);
 		expect(result.bucket).toBeNull();
 		expect(result.rowsAdded).toBe(0);
 		expect(result.grown).toEqual([{ card: "國泰 CUBE", bucket: "結帳日前", rowsAdded: 1 }]);
@@ -984,7 +995,7 @@ describe("auditCreditBuckets", () => {
 		const at = creditGridAnchors();
 		const cube = at["國泰 CUBE"]!;
 		const pad = CREDIT_BUCKET_PAD_ROWS - 2; // the fixture's buckets already hold 2
-		const result = auditCreditBuckets(creditGrid(), "9 月", 111, 0, undefined, CREDIT_BUCKET_PAD_ROWS);
+		const result = auditCreditBuckets(creditGrid(), "9 月", 111, undefined, CREDIT_BUCKET_PAD_ROWS);
 		const inserts = (result.requests.filter((r: any) => (r as any).insertRange) as any[]).map(
 			(r) => r.insertRange.range,
 		);
@@ -1020,7 +1031,7 @@ describe("auditCreditBuckets", () => {
 	});
 
 	it("counts a pending entry into its bucket while auditing the rest of the section", () => {
-		const result = auditCreditBuckets(overflowedGrid(), "9 月", 111, 0, {
+		const result = auditCreditBuckets(overflowedGrid(), "9 月", 111, {
 			cardName: "國泰 CUBE",
 			dateSerial: dateSerial(2026, 7, 25),
 		});
@@ -1029,6 +1040,118 @@ describe("auditCreditBuckets", () => {
 		expect(result.bucket).toBe("結帳日後");
 		expect(result.rowsAdded).toBe(0);
 		expect(result.grown).toEqual([{ card: "國泰 CUBE", bucket: "結帳日前", rowsAdded: 1 }]);
+	});
+
+	// ── array footprints vs. the growth insert ─────────────────────────────
+	// Sheets refuses an insertRange that would split an array formula's
+	// footprint ("You cannot insert or delete cells over an array formula").
+	// A mirror whose spill is BLOCKED (#REF!) still claims its full intended
+	// footprint, which runs through its own 小計 row — exactly where the
+	// growth insert lands. So a bucket that a hand edit already overflowed
+	// could never be healed (9 月 2026, 國泰 CUBE 結帳日後: H147 #REF!,
+	// `Invalid requests[1].insertRange`).
+
+	/** The cells cleared right before / rewritten right after the insertRange starting at 0-indexed row `startRow0`. */
+	function bracketOf(requests: any[], startRow0: number) {
+		const at = requests.findIndex((r) => r.insertRange?.range.startRowIndex === startRow0);
+		expect(at).toBeGreaterThanOrEqual(0);
+		const cell = (r: any) => [r.updateCells.start.rowIndex + 1, r.updateCells.start.columnIndex];
+		const isClear = (r: any) => r?.updateCells && r.updateCells.rows[0].values[0].userEnteredValue === undefined;
+		const isRestore = (r: any) => r?.updateCells?.rows[0].values[0].userEnteredValue?.formulaValue !== undefined;
+		const cleared: number[][] = [];
+		for (let i = at - 1; isClear(requests[i]); i--) cleared.unshift(cell(requests[i]));
+		const restored: number[][] = [];
+		for (let i = at + 1; isRestore(requests[i]); i++) restored.push(cell(requests[i]));
+		return { cleared, restored };
+	}
+
+	it("lifts a #REF! mirror off the grid around the insert that grows its bucket, then rewrites it verbatim", () => {
+		const g = overflowedGrid(); // CUBE 結帳日前: 3 charges, 2-row spill → H mirror shows #REF!
+		const { "國泰 CUBE": cube, "CHASE Amazon": amazon } = creditGridAnchors();
+		const cubeMirror = g[cube.pre.headerRow]![7] as string;
+		const amazonMirror = g[amazon.pre.headerRow]![11] as string;
+		expect(cubeMirror).toMatch(/^=/);
+
+		const result = auditCreditBuckets(g, "9 月", 111);
+
+		// stamps aside, the batch is exactly: clear → insert → restore. The
+		// twin (CHASE Amazon, same 小計 row, widened by the same H–N insert) is
+		// lifted too: any mirror whose bucket the insert row runs through might
+		// straddle it, and an unneeded lift-and-rewrite is harmless.
+		expect(result.requests.filter((r: any) => !r.repeatCell)).toEqual([
+			mirrorWrite(cube.pre.headerRow + 1, 7, null),
+			mirrorWrite(amazon.pre.headerRow + 1, 11, null),
+			{
+				insertRange: {
+					range: {
+						sheetId: 111,
+						startRowIndex: cube.pre.subtotalRow - 1,
+						endRowIndex: cube.pre.subtotalRow,
+						startColumnIndex: 7,
+						endColumnIndex: 14,
+					},
+					shiftDimension: "ROWS",
+				},
+			},
+			mirrorWrite(cube.pre.headerRow + 1, 7, cubeMirror),
+			mirrorWrite(amazon.pre.headerRow + 1, 11, amazonMirror),
+		]);
+	});
+
+	it("lifts only the mirrors the insert row runs through — never one above its bucket or below the insert", () => {
+		const { grid, at } = fourCardGrid();
+		const cube = at["國泰 CUBE"]!;
+		const close = grid[cube.closeDateRow - 1]![9] as number;
+		putCardRows(grid, 2, 3, "國泰 CUBE", close + 3); // overflow CUBE 結帳日後 by one
+
+		const result = auditCreditBuckets(grid, "9 月", 111);
+
+		expect(result.grown).toEqual([{ card: "國泰 CUBE", bucket: "結帳日後", rowsAdded: 1 }]);
+		// the 結帳日前 mirrors sit above (their buckets end before the insert);
+		// CHASE Freedom / Apple Card sit below and shift whole
+		expect(bracketOf(result.requests, cube.post.subtotalRow - 1)).toEqual({
+			cleared: [
+				[cube.post.headerRow + 1, 7],
+				[at["CHASE Amazon"]!.post.headerRow + 1, 11],
+			],
+			restored: [
+				[cube.post.headerRow + 1, 7],
+				[at["CHASE Amazon"]!.post.headerRow + 1, 11],
+			],
+		});
+		expect(result.requests.filter((r: any) => r.updateCells)).toHaveLength(4);
+	});
+
+	it("lifts a mirror whose overflow runs past its own 小計 for an insert in the block below", () => {
+		const { grid, at } = fourCardGrid();
+		const cube = at["國泰 CUBE"]!;
+		const freedom = at["CHASE Freedom"]!;
+		const cubeClose = grid[cube.closeDateRow - 1]![9] as number;
+		const freedomClose = grid[freedom.closeDateRow - 1]![9] as number;
+		// CUBE's 結帳日後 mirror wants to spill all the way down to CHASE
+		// Freedom's 結帳日前 小計 — through the very row that bucket grows at
+		const deep = freedom.pre.subtotalRow - cube.post.headerRow;
+		putCardRows(grid, 2, deep, "國泰 CUBE", cubeClose + 3);
+		putCardRows(grid, 2 + deep, 3, "CHASE Freedom", freedomClose - 3);
+
+		const result = auditCreditBuckets(grid, "9 月", 111);
+
+		expect(bracketOf(result.requests, freedom.pre.subtotalRow - 1).cleared).toEqual(
+			expect.arrayContaining([[cube.post.headerRow + 1, 7]]),
+		);
+	});
+
+	it("lifts nothing from a mirror cell that holds no formula", () => {
+		const g = overflowedGrid();
+		const { "CHASE Amazon": amazon, "國泰 CUBE": cube } = creditGridAnchors();
+		(g[amazon.pre.headerRow] as unknown[])[11] = ""; // no mirror in the twin bucket
+
+		const result = auditCreditBuckets(g, "9 月", 111);
+
+		expect(bracketOf(result.requests, cube.pre.subtotalRow - 1)).toEqual({
+			cleared: [[cube.pre.headerRow + 1, 7]],
+			restored: [[cube.pre.headerRow + 1, 7]],
+		});
 	});
 
 	// ── every card × every bucket, at any spill length ─────────────────────
@@ -1085,7 +1208,7 @@ describe("auditCreditBuckets", () => {
 					const close = grid[anchors.closeDateRow - 1]![anchors.startCol + 2] as number;
 					putCardRows(grid, 2, charges, card, bucket === "結帳日前" ? close - 3 : close + 3);
 
-					const result = auditCreditBuckets(grid, "9 月", 111, 0);
+					const result = auditCreditBuckets(grid, "9 月", 111);
 					expect(result.grown).toEqual([{ card, bucket, rowsAdded: 3 }]);
 					const inserts = (result.requests.filter((r: any) => r.insertRange) as any[]).map(
 						(r) => r.insertRange.range,
@@ -1123,7 +1246,7 @@ describe("auditCreditBuckets", () => {
 		const cube = at["國泰 CUBE"]!;
 		grid.splice(cube.pre.headerRow - 1, 0, []);
 		putCardRows(grid, 2, 3, "國泰 CUBE", (grid[cube.closeDateRow - 1]![9] as number) - 3);
-		const result = auditCreditBuckets(grid, "9 月", 111, 0);
+		const result = auditCreditBuckets(grid, "9 月", 111);
 		expect(result.grown).toEqual([{ card: "國泰 CUBE", bucket: "結帳日前", rowsAdded: 1 }]);
 		const inserts = (result.requests.filter((r: any) => r.insertRange) as any[]).map((r) => r.insertRange.range);
 		expect(inserts[0]).toMatchObject({ startRowIndex: cube.pre.subtotalRow }); // one row lower than before the splice
@@ -1132,7 +1255,7 @@ describe("auditCreditBuckets", () => {
 	it("skips buckets that are already big enough, however long their spills are", () => {
 		const { grid } = fourCardGrid({ "國泰 CUBE": [30, 30], "Apple Card": [12, 12] });
 		putCardRows(grid, 2, 4, "國泰 CUBE", dateSerial(2026, 7, 10));
-		expect(auditCreditBuckets(grid, "9 月", 111, 0).grown).toEqual([]);
+		expect(auditCreditBuckets(grid, "9 月", 111).grown).toEqual([]);
 	});
 
 	// ── the per-card rules the refactor must not lose ──────────────────────
@@ -1143,7 +1266,7 @@ describe("auditCreditBuckets", () => {
 			const anchors = at[card]!;
 			const close = grid[anchors.closeDateRow - 1]![anchors.startCol + 2] as number;
 			putCardRows(grid, 2, 1, card, close); // dated exactly ON the 結帳日
-			const grown = auditCreditBuckets(grid, "9 月", 111, 0).grown;
+			const grown = auditCreditBuckets(grid, "9 月", 111).grown;
 			expect(grown).toEqual([
 				{ card, bucket: card === "Apple Card" ? "結帳日前" : "結帳日後", rowsAdded: 1 },
 			]);
@@ -1164,7 +1287,7 @@ describe("auditCreditBuckets", () => {
 		grid[37]![16] = "中餐";
 		grid[37]![17] = 120;
 		grid[37]![18] = "國泰 Cube"; // case-insensitive, like Sheets' =
-		const grown = auditCreditBuckets(grid, "9 月", 111, 0).grown;
+		const grown = auditCreditBuckets(grid, "9 月", 111).grown;
 		expect(grown).toEqual(
 			expect.arrayContaining([
 				{ card: "國泰 CUBE", bucket: "結帳日前", rowsAdded: 1 },
@@ -1345,17 +1468,18 @@ describe("addTransfer", () => {
 
 		const result = await addTransfer(client, { ntd: 30000, usd: 1000, fee: 30, month: 9, date: "9/2" });
 
-		// the transfer slot (row 35) was free, so nothing shifted the section
-		const batch2 = (client.batchUpdate as any).mock.calls[1][0];
-		const insert = batch2.find((r: any) => r.insertRange);
+		// the audit rides the first (scratch) batch, in the read's coordinates
+		const batch1 = (client.batchUpdate as any).mock.calls[0][0];
+		const insert = batch1.find((r: any) => r.insertRange);
 		expect(insert.insertRange.range).toMatchObject({ startRowIndex: CUBE_AT.pre.subtotalRow - 1, endRowIndex: CUBE_AT.pre.subtotalRow, startColumnIndex: 7 });
+		expect((client.batchUpdate as any).mock.calls[1][0].some((r: any) => r.insertRange)).toBe(false);
 		expect(result).toMatchObject({
 			row: 35,
 			bucketsGrown: [{ card: "國泰 CUBE", bucket: "結帳日前", rowsAdded: 1 }],
 		});
 	});
 
-	it("shifts the audit's inserts by the transfer section's own full-section insert", async () => {
+	it("runs the audit ahead of the transfer section's own insert, in the read's coordinates", async () => {
 		const g = creditGrid();
 		(g[34] ??= [])[7] = 46266; // the only data slot is taken → the write inserts above 總和
 		(g[34] as unknown[])[8] = 30000;
@@ -1366,10 +1490,18 @@ describe("addTransfer", () => {
 
 		await addTransfer(client, { ntd: 15000, usd: 500, fee: 15, month: 9, date: "9/9" });
 
-		// the H–N insert above 總和 (scratch batch) pushed the section down one
-		const batch2 = (client.batchUpdate as any).mock.calls[1][0];
-		const insert = batch2.find((r: any) => r.insertRange);
-		expect(insert.insertRange.range).toMatchObject({ startRowIndex: CUBE_AT.pre.subtotalRow, endRowIndex: CUBE_AT.pre.subtotalRow + 1, startColumnIndex: 7 });
+		// The bucket insert precedes the H–N insert above 總和, so it (and the
+		// mirror text it rewrites) uses the read's rows; the transfer insert
+		// then shifts the grown section down one, references and all. Nothing
+		// structural is left for the second batch, which would otherwise be
+		// working from a grid one row stale.
+		const batch1 = (client.batchUpdate as any).mock.calls[0][0];
+		const inserts = batch1.filter((r: any) => r.insertRange).map((r: any) => r.insertRange.range);
+		expect(inserts).toEqual([
+			expect.objectContaining({ startRowIndex: CUBE_AT.pre.subtotalRow - 1, endRowIndex: CUBE_AT.pre.subtotalRow, startColumnIndex: 7 }),
+			expect.objectContaining({ startRowIndex: 35, endRowIndex: 36, startColumnIndex: 7 }),
+		]);
+		expect((client.batchUpdate as any).mock.calls[1][0].some((r: any) => r.insertRange)).toBe(false);
 	});
 });
 
@@ -1751,6 +1883,8 @@ describe("addLunch", () => {
 				shiftDimension: "ROWS",
 			});
 			expect(requests.some((r: any) => r.insertDimension)).toBe(false);
+			// the audit precedes the log's own insert (structural edits follow it)
+			expect(requests.indexOf(bucketInsert)).toBeLessThan(requests.indexOf(lunchInsert));
 			expect(result).toMatchObject({ bucketRowsAdded: 1 });
 		});
 
@@ -2191,7 +2325,7 @@ describe("addExpense", () => {
 			expect(result).toMatchObject({ bucket: "結帳日前", bucketRowsAdded: 1 });
 		});
 
-		it("shifts the bucket-room insert by the write's own row insert when the expense window is full", async () => {
+		it("runs the bucket audit ahead of the expense row's own insert, in the read's coordinates", async () => {
 			const g = creditGrid();
 			g[4] = [dateSerial(2026, 7, 10), "既有1", "訂閱", "", 100, "TWD", "國泰 Cube"];
 			g[5] = [dateSerial(2026, 7, 10), "既有2", "訂閱", "", 100, "TWD", "國泰 Cube"];
@@ -2210,15 +2344,23 @@ describe("addExpense", () => {
 			});
 			expect(result.inserted).toBe(true);
 			const requests = (client.batchUpdate as any).mock.calls[0][0];
-			// the expense window's own insert IS a whole-row insert and shifts
-			// the credit section down one — the bucket insert follows it
-			const bucketInsert = requests.find((r: any) => r.insertRange);
-			expect(bucketInsert.insertRange).toEqual({
-				range: { sheetId: 111, startRowIndex: CUBE_AT.pre.subtotalRow, endRowIndex: CUBE_AT.pre.subtotalRow + 1, startColumnIndex: 7, endColumnIndex: 14 },
+			// The audit goes FIRST, so its rows are the read's rows: the mirror
+			// it lifts and rewrites must carry formula text that is still exact
+			// when written. The expense window's whole-row insert comes after
+			// and shifts the grown section (and every reference) down one.
+			const bucketAt = requests.findIndex((r: any) => r.insertRange);
+			const rowAt = requests.findIndex((r: any) => r.insertDimension);
+			expect(bucketAt).toBeLessThan(rowAt);
+			expect(requests[bucketAt].insertRange).toEqual({
+				range: { sheetId: 111, startRowIndex: CUBE_AT.pre.subtotalRow - 1, endRowIndex: CUBE_AT.pre.subtotalRow, startColumnIndex: 7, endColumnIndex: 14 },
 				shiftDimension: "ROWS",
 			});
-			// format stamps shift with the section, same as the insert
-			expect(requests).toEqual(expect.arrayContaining(bucketFormatStamps(CUBE_AT.pre.headerRow + 1, CUBE_AT.pre.subtotalRow + 1, 7, "[$NTD ]#,##0.00")));
+			expect(requests.slice(bucketAt + 1, rowAt)).toContainEqual(
+				mirrorWrite(CUBE_AT.pre.headerRow + 1, 7, g[CUBE_AT.pre.headerRow]![7] as string),
+			);
+			expect(requests.slice(0, rowAt)).toEqual(
+				expect.arrayContaining(bucketFormatStamps(CUBE_AT.pre.headerRow, CUBE_AT.pre.subtotalRow, 7, "[$NTD ]#,##0.00")),
+			);
 			expect(result).toMatchObject({ bucketRowsAdded: 1 });
 		});
 
@@ -2424,6 +2566,33 @@ describe("setExpenseDate", () => {
 		g[6] = ["", "Netflix", "訂閱", "", 390, "TWD", ""];
 		return g;
 	}
+
+	it("heals a bucket a hand edit already overflowed (#REF!): the mirror is lifted around the growth insert", async () => {
+		// 9 月 2026: G61 set to 國泰 CUBE by hand pushed 結帳日後 one row past
+		// its spill area; set_expense_date on that row then had its H–N insert
+		// at the 小計 row refused ("cannot insert or delete cells over an
+		// array formula") because the #REF! mirror's footprint runs through it.
+		const g = creditGrid();
+		g[4] = [dateSerial(2026, 7, 25), "既有1", "訂閱", "", 100, "TWD", "國泰 CUBE"];
+		g[5] = [dateSerial(2026, 7, 25), "既有2", "訂閱", "", 100, "TWD", "國泰 CUBE"];
+		g[6] = [dateSerial(2026, 7, 30), "Claude", "訂閱", "", 6689, "TWD", "國泰 CUBE"];
+		const mirror = g[CUBE_AT.post.headerRow]![7] as string;
+		const client = fakeClient(g);
+
+		const result = await setExpenseDate(client, { item: "Claude", date: "7/30", month: 9, row: 7 });
+
+		const requests = (client.batchUpdate as any).mock.calls[0][0];
+		const insertAt = requests.findIndex((r: any) => r.insertRange);
+		expect(requests[insertAt].insertRange.range).toMatchObject({
+			startRowIndex: CUBE_AT.post.subtotalRow - 1,
+			endRowIndex: CUBE_AT.post.subtotalRow,
+			startColumnIndex: 7,
+			endColumnIndex: 14,
+		});
+		expect(requests.slice(0, insertAt)).toContainEqual(mirrorWrite(CUBE_AT.post.headerRow + 1, 7, null));
+		expect(requests.slice(insertAt + 1)).toContainEqual(mirrorWrite(CUBE_AT.post.headerRow + 1, 7, mirror));
+		expect(result).toMatchObject({ bucket: "結帳日後", bucketRowsAdded: 1 });
+	});
 
 	it("dates a dateless row and returns previousDate null", async () => {
 		const client = fakeClient(dateGrid());
@@ -2878,6 +3047,33 @@ describe("adjustBalance", () => {
 		// adjustedBalanceGrid leaves the end cells as formula strings — a broken render.
 		const client = fakeClient(adjustedBalanceGrid());
 		await expect(adjustBalance(client, { currency: "TWD", actual: 450, month: 9 })).rejects.toThrow("本月底新臺幣真實餘額");
+	});
+
+	it("audits against a FORMULA render, so a lifted mirror is rewritten as its formula, never its #REF! value", async () => {
+		const formulas = gridWithNumbers();
+		formulas[4] = [dateSerial(2026, 7, 10), "手填1", "訂閱", "", 100, "TWD", "國泰 Cube"];
+		formulas[5] = [dateSerial(2026, 7, 10), "手填2", "訂閱", "", 100, "TWD", "國泰 Cube"];
+		formulas[6] = [dateSerial(2026, 7, 10), "手填3", "訂閱", "", 100, "TWD", "國泰 Cube"];
+		const mirrorRow = CUBE_AT.pre.headerRow + 1;
+		const mirror = formulas[mirrorRow - 1]![7] as string;
+		// what the op's UNFORMATTED read sees in the same cells
+		const rendered = formulas.map((row) => (row ? [...row] : row));
+		(rendered[mirrorRow - 1] as unknown[])[7] = "#REF!";
+		const client = {
+			readRange: vi.fn(async (_range: string, mode: string) => ({
+				range: "x",
+				values: mode === "FORMULA" ? formulas : rendered,
+				truncated: false,
+			})),
+			getSheetId: vi.fn(async () => 111),
+			batchUpdate: vi.fn(async () => ({ replies: [{}] })),
+		} as unknown as SheetsClient;
+
+		await adjustBalance(client, { currency: "TWD", actual: 450, month: 9 });
+
+		const requests = (client.batchUpdate as any).mock.calls[0][0];
+		expect(requests).toContainEqual(mirrorWrite(mirrorRow, 7, mirror));
+		expect(JSON.stringify(requests)).not.toContain("#REF!");
 	});
 
 	it("audits the 對帳區 alongside the 調整 write, healing hand-entered overflow", async () => {
@@ -4608,6 +4804,8 @@ describe("deleteExpense", () => {
 			endRowIndex: CUBE_AT.pre.subtotalRow,
 			startColumnIndex: 7,
 		});
+		// the audit runs before the row's own delete, in the read's coordinates
+		expect(requests.indexOf(insert)).toBeLessThan(requests.findIndex((r: any) => r.deleteRange));
 		expect(result).toMatchObject({
 			card: "國泰 Cube",
 			bucketsGrown: [{ card: "國泰 CUBE", bucket: "結帳日前", rowsAdded: 1 }],
