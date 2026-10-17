@@ -52,6 +52,20 @@ For local development, put these in a `.dev.vars` file at the repo root (never c
 
 To exercise the server locally, run `npx @modelcontextprotocol/inspector`, choose transport "Streamable HTTP", and point it at `http://localhost:8788/mcp`.
 
+## Deploying to a Cloudflare account
+
+Nothing in `wrangler.jsonc` is tied to a specific Cloudflare account, so the same steps set the server up in a fresh account or move it to another one.
+
+1. **Connect the repo.** In the account's dashboard, go to Workers & Pages → Create application → GitHub, pick this repo, and keep the Worker name `sheets-mcp` and the production branch `main` (Workers Builds then deploys every push to `main`). Or deploy once by hand with `npx wrangler login` and `npm run deploy`.
+2. **KV is created for you.** The `OAUTH_KV` binding has no ID on purpose: the first deploy into an account creates the namespace (named after the Worker) and later deploys keep reusing it.
+3. **Set the secrets** listed under Configuration, with `npx wrangler secret put <NAME>` or in the dashboard under the Worker's Settings → Variables and Secrets. The server returns errors until all five are set.
+   - `GOOGLE_SA_EMAIL` / `GOOGLE_SA_PRIVATE_KEY`: the same service account as before, so the spreadsheet needs no new sharing.
+   - `GITHUB_CLIENT_SECRET`: GitHub never shows an existing secret again, so generate a new one in the OAuth App.
+   - `COOKIE_ENCRYPTION_KEY`: any fresh random string (`openssl rand -hex 32`).
+4. **Point the GitHub OAuth App at the new URL.** The Worker's address is `https://sheets-mcp.<account-subdomain>.workers.dev` (the subdomain is shown under Workers & Pages). Set the OAuth App's Homepage URL to it and its Authorization callback URL to `…/callback`.
+5. **Reconnect Claude.** Remove the old custom connector and add one for `https://sheets-mcp.<account-subdomain>.workers.dev/mcp`, then sign in with GitHub again. OAuth grants live in the old account's KV and don't carry over.
+6. **Retire the old account's copy** once the new one works: disconnect its Workers Builds from this repo under the Worker's Settings → Builds (otherwise each push to `main` deploys to both), then delete its `sheets-mcp` Worker and its `OAUTH_KV` namespace.
+
 ## More detail
 
 - Full setup and deploy runbook: `docs/superpowers/plans/2026-07-02-sheets-mcp-server.md` (Tasks 0, 6, 7).
