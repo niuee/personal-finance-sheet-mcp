@@ -18,10 +18,12 @@
       }
     ]
   },
+  // No "id": the namespace belongs to whichever Cloudflare account deploys
+  // this Worker. The first `wrangler deploy` (or Workers Builds run) into an
+  // account creates it; later deploys keep reusing the bound namespace.
   "kv_namespaces": [
     {
-      "binding": "OAUTH_KV",
-      "id": "a1ad721aeab24c848aa236b07ea9d49f"
+      "binding": "OAUTH_KV"
     }
   ],
   "vars": {
