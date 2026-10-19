@@ -256,10 +256,16 @@ budget month is then created without any tool code, and from 1 月 on
 For this one-off, 本月匯率 in 12 月 would be set to the formula by hand
 (or by a one-line `update_range`).
 
-`start_month` refuses with a clear message when the previous month is
-old layout and the new month would be a budget month. (How it would know
-to build a budget month without a template is exactly the problem the
-manual rename avoids.)
+`start_month` picks its path from the **previous tab's layout**, with no
+date rule:
+- **Previous month is a budget month:** run the budget steps above.
+- **Previous month is old layout:** run today's old-layout steps,
+  unchanged.
+
+After the renames, 12 月 is a budget month, so 1 月 onward takes the
+budget path. The old path stays only so the existing old-layout tests keep
+passing unchanged. *(My call. A date cutoff can't work because tab names
+carry no year.)*
 
 ## Left to the builder
 
