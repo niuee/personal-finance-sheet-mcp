@@ -307,7 +307,7 @@ describe("old-layout-only tools refuse budget months", () => {
 });
 
 describe("startMonth from the Budget Based template", () => {
-	const NOW = { now: new Date("2026-10-20T04:00:00Z") };
+	const NOW = { now: new Date("2026-10-20T04:00:00Z"), newSheetId: 555 };
 	const write = (rowIndex: number, columnIndex: number, v: string | number) => ({
 		updateCells: { start: { sheetId: 555, rowIndex, columnIndex }, rows: [{ values: [cellData(v)] }], fields: "userEnteredValue" },
 	});
@@ -317,32 +317,46 @@ describe("startMonth from the Budget Based template", () => {
 		const client = budgetClient({ "Budget Based": budgetGrid(), "10 月": oldMonthGrid(), "11 月": budgetGrid() }, ["Budget Based", "10 月"]);
 		const r = await startMonth(client, 11, NOW);
 		const calls = (client.batchUpdate as any).mock.calls.map((c: any) => c[0]);
-		expect(calls[0]).toEqual([{ duplicateSheet: { sourceSheetId: 900, insertSheetIndex: 0, newSheetName: "11 月" } }]);
-		expect(calls[1]).toEqual(
-			expect.arrayContaining([
-				write(0, 0, "11 月花費"),
-				write(2, 3, "=IF(-('10 月'!D43) > 0, -('10 月'!D43), 0)"),
-				write(3, 4, "=IF(-('10 月'!D44) > 0, -('10 月'!D44), 0)"),
-				write(14, 2, rateFormula(2026, 11)),
-			]),
-		);
-		expect(calls).toHaveLength(2);
+		// One atomic batch: the duplicate (with a pre-chosen sheetId) and every write into the copy.
+		expect(calls).toHaveLength(1);
+		expect(calls[0]).toEqual([
+			{ duplicateSheet: { sourceSheetId: 900, insertSheetIndex: 0, newSheetName: "11 月", newSheetId: 555 } },
+			write(0, 0, "11 月花費"),
+			write(2, 3, "=IF(-('10 月'!D43) > 0, -('10 月'!D43), 0)"),
+			write(3, 4, "=IF(-('10 月'!D44) > 0, -('10 月'!D44), 0)"),
+			write(14, 2, rateFormula(2026, 11)),
+		]);
 		expect(r).toMatchObject({ tab: "11 月", layout: "budget", template: "Budget Based", carriesFrom: "10 月", replacedTab: null });
 		expect((r as any).startingEntries["訂閱"]).toEqual(["ElevenLabs", "iCloud", "Google One", "Netflix", "ChatGPT", "Claude"]);
+	});
+
+	it("a failed read writes nothing — no half-built month", async () => {
+		const client = budgetClient({ "Budget Based": budgetGrid(), "10 月": oldMonthGrid(), "11 月": oldMonthGrid() }, [
+			"Budget Based",
+			"10 月",
+			"11 月",
+		]);
+		const real = (client.readRange as any).getMockImplementation();
+		(client.readRange as any).mockImplementation(async (range: string) => {
+			if (range.startsWith("'10 月'")) throw new Error("Sheets API error (503)");
+			return real(range);
+		});
+		await expect(startMonth(client, 11, { ...NOW, replaceOldLayout: true })).rejects.toThrow(/503/);
+		expect(client.batchUpdate).not.toHaveBeenCalled();
 	});
 
 	it("missing previous month → both carries 0", async () => {
 		const client = budgetClient({ "Budget Based": budgetGrid(), "11 月": budgetGrid() }, ["Budget Based"]);
 		const r = await startMonth(client, 11, NOW);
-		const final = (client.batchUpdate as any).mock.calls[1][0];
+		const final = (client.batchUpdate as any).mock.calls[0][0];
 		expect(final).toEqual(expect.arrayContaining([write(2, 3, 0), write(3, 4, 0)]));
 		expect(r).toMatchObject({ carriesFrom: null });
 	});
 
 	it("start_month(1) in December locks to DATE(2027,1,1)", async () => {
 		const client = budgetClient({ "Budget Based": budgetGrid(), "12 月": oldMonthGrid(), "1 月": budgetGrid() }, ["Budget Based", "12 月"]);
-		await startMonth(client, 1, { now: new Date("2026-12-15T04:00:00Z") });
-		expect((client.batchUpdate as any).mock.calls[1][0]).toEqual(expect.arrayContaining([write(14, 2, rateFormula(2027, 1))]));
+		await startMonth(client, 1, { now: new Date("2026-12-15T04:00:00Z"), newSheetId: 555 });
+		expect((client.batchUpdate as any).mock.calls[0][0]).toEqual(expect.arrayContaining([write(14, 2, rateFormula(2027, 1))]));
 	});
 
 	it("existing old-layout 11 月: refuses without the flag; renames to 11 月 DEP with it", async () => {
@@ -355,8 +369,9 @@ describe("startMonth from the Budget Based template", () => {
 		(client.readRange as any).mockResolvedValueOnce({ range: "x", values: oldMonthGrid(), truncated: false }); // the old 11 月
 		const r = await startMonth(client, 11, { ...NOW, replaceOldLayout: true });
 		const calls = (client.batchUpdate as any).mock.calls.map((c: any) => c[0]);
-		expect(calls[0]).toEqual([{ updateSheetProperties: { properties: { sheetId: 111, title: "11 月 DEP" }, fields: "title" } }]);
-		expect(calls[1]).toEqual([{ duplicateSheet: { sourceSheetId: 900, insertSheetIndex: 0, newSheetName: "11 月" } }]);
+		expect(calls).toHaveLength(1);
+		expect(calls[0][0]).toEqual({ updateSheetProperties: { properties: { sheetId: 111, title: "11 月 DEP" }, fields: "title" } });
+		expect(calls[0][1]).toEqual({ duplicateSheet: { sourceSheetId: 900, insertSheetIndex: 0, newSheetName: "11 月", newSheetId: 555 } });
 		expect(r).toMatchObject({ replacedTab: "11 月 DEP" });
 	});
 

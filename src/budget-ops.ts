@@ -363,12 +363,17 @@ export interface StartBudgetMonthResult {
  * 收支狀況 cells, whatever its layout) and the self-locking 本月匯率 formula.
  * An existing old-layout "N 月" is renamed "N 月 DEP" first — only when
  * asked; a budget month is never replaced.
+ *
+ * Every read happens first, then ONE batchUpdate does the rename, the
+ * duplicate (with a pre-chosen sheetId) and the writes into the copy. Sheets
+ * applies a batch atomically, so a failure anywhere leaves the spreadsheet
+ * untouched and a re-run starts clean — never a half-built month.
  */
 export async function startBudgetMonth(
 	client: SheetsClient,
 	month: number,
 	tabTitles: string[],
-	opts: { replaceOldLayout: boolean; now: Date },
+	opts: { replaceOldLayout: boolean; now: Date; newSheetId?: number },
 ): Promise<StartBudgetMonthResult> {
 	const newTab = monthTabName(month);
 	const prevTab = monthTabName(previousMonth(month));
@@ -389,29 +394,23 @@ export async function startBudgetMonth(
 		if (tabTitles.includes(depTab)) {
 			throw new Error(`"${depTab}" already exists — rename or delete it before rebuilding "${newTab}".`);
 		}
-		const oldSheetId = await client.getSheetId(newTab);
-		await client.batchUpdate([{ updateSheetProperties: { properties: { sheetId: oldSheetId, title: depTab }, fields: "title" } }]);
 		replacedTab = depTab;
 	}
 
-	const templateId = await client.getSheetId(BUDGET_TEMPLATE_TAB);
-	const dup = await client.batchUpdate([
-		{ duplicateSheet: { sourceSheetId: templateId, insertSheetIndex: 0, newSheetName: newTab } },
-	]);
-	const sheetId = dup.replies?.[0]?.duplicateSheet?.properties?.sheetId;
-	if (sheetId == null) throw new Error("duplicateSheet did not return the new tab's sheetId.");
-
-	const values = await readBudgetGrid(client, newTab, "FORMULA");
-	const unfinished = (what: string) =>
-		new Error(
-			`${newTab} was created from the "${BUDGET_TEMPLATE_TAB}" template but not finished: ${what} — delete it, fix the template, and re-run start_month.`,
-		);
-	const usdCarryRow = findRowByValue(values, MONTH_COLS.item, PREV_USD_OVERDRAFT_LABEL);
-	if (usdCarryRow === null) throw unfinished(`no ${PREV_USD_OVERDRAFT_LABEL} row`);
-	const ntdCarryRow = findRowByValue(values, MONTH_COLS.item, PREV_NTD_OVERDRAFT_LABEL);
-	if (ntdCarryRow === null) throw unfinished(`no ${PREV_NTD_OVERDRAFT_LABEL} row`);
-	const rateRow = findRowByValue(values, MONTH_COLS.budgetLabel, RATE_LABEL);
-	if (rateRow === null) throw unfinished(`no ${RATE_LABEL} row`);
+	// The copy is identical to the template, so the template's rows are the copy's rows.
+	const template = await readBudgetGrid(client, BUDGET_TEMPLATE_TAB, "FORMULA");
+	const broken = (what: string) =>
+		new Error(`The "${BUDGET_TEMPLATE_TAB}" template has ${what} — fix the template and re-run start_month (nothing was written).`);
+	const usdCarryRow = findRowByValue(template, MONTH_COLS.item, PREV_USD_OVERDRAFT_LABEL);
+	if (usdCarryRow === null) throw broken(`no ${PREV_USD_OVERDRAFT_LABEL} row`);
+	const ntdCarryRow = findRowByValue(template, MONTH_COLS.item, PREV_NTD_OVERDRAFT_LABEL);
+	if (ntdCarryRow === null) throw broken(`no ${PREV_NTD_OVERDRAFT_LABEL} row`);
+	const rateRow = findRowByValue(template, MONTH_COLS.budgetLabel, RATE_LABEL);
+	if (rateRow === null) throw broken(`no ${RATE_LABEL} row`);
+	const startingEntries: Record<string, string[]> = {};
+	for (const block of findBudgetBlocks(template, BUDGET_TEMPLATE_TAB)) {
+		startingEntries[block.category] = blockEntries(template, block).map((e) => e.item);
+	}
 
 	let usdCarry: string | number = 0;
 	let ntdCarry: string | number = 0;
@@ -426,6 +425,17 @@ export async function startBudgetMonth(
 		carriesFrom = prevTab;
 	}
 
+	const templateId = await client.getSheetId(BUDGET_TEMPLATE_TAB);
+	const requests: object[] = [];
+	if (replacedTab !== null) {
+		const oldSheetId = await client.getSheetId(newTab);
+		requests.push({ updateSheetProperties: { properties: { sheetId: oldSheetId, title: replacedTab }, fields: "title" } });
+	}
+	// A pre-chosen id lets the writes below target the copy inside the same batch.
+	const sheetId = opts.newSheetId ?? 1 + Math.floor(Math.random() * 2_000_000_000);
+	requests.push({
+		duplicateSheet: { sourceSheetId: templateId, insertSheetIndex: 0, newSheetName: newTab, newSheetId: sheetId },
+	});
 	const write = (row: number, col: number, value: string | number) => ({
 		updateCells: {
 			start: { sheetId, rowIndex: row - 1, columnIndex: col },
@@ -434,17 +444,14 @@ export async function startBudgetMonth(
 		},
 	});
 	const formula = rateFormula(rateYear(month, opts.now), month);
-	await client.batchUpdate([
+	requests.push(
 		write(1, 0, `${month} 月花費`),
 		write(usdCarryRow, MONTH_COLS.usd, usdCarry),
 		write(ntdCarryRow, MONTH_COLS.twd, ntdCarry),
 		write(rateRow, RATE_VALUE_COL, formula),
-	]);
+	);
+	await client.batchUpdate(requests);
 
-	const startingEntries: Record<string, string[]> = {};
-	for (const block of findBudgetBlocks(values, newTab)) {
-		startingEntries[block.category] = blockEntries(values, block).map((e) => e.item);
-	}
 	return {
 		tab: newTab,
 		layout: "budget",

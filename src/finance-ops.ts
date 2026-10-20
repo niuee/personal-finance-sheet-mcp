@@ -2142,7 +2142,7 @@ export function carryFormula(prevTab: string, row: number): string {
 export async function startMonth(
 	client: SheetsClient,
 	month: number,
-	opts: { replaceOldLayout?: boolean; now?: Date } = {},
+	opts: { replaceOldLayout?: boolean; now?: Date; newSheetId?: number } = {},
 ) {
 	const newTab = monthTabName(month);
 	const prevTab = monthTabName(previousMonth(month));
@@ -2155,7 +2155,7 @@ export async function startMonth(
 			client,
 			month,
 			tabs.map((t) => t.title),
-			{ replaceOldLayout: opts.replaceOldLayout ?? false, now: opts.now ?? new Date() },
+			{ replaceOldLayout: opts.replaceOldLayout ?? false, now: opts.now ?? new Date(), newSheetId: opts.newSheetId },
 		)) as never;
 	}
 	if (opts.replaceOldLayout) {
