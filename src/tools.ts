@@ -258,7 +258,7 @@ export function registerTailoredTools(server: McpServer, client: SheetsClient): 
 
 	server.tool(
 		"month_summary",
-		"Get a month's numbers as clean JSON (unformatted): 花費總額, the carried overdrafts (上月美金透支/上月新臺幣透支, or legacy 上月透支), per-類別 tag totals, the 午餐預算 lunch block (編列預算/總和/剩餘) and 午餐超支或回補, the income list (item/幣別/amount), 薪水, 沛還, 本月美金收支狀況/本月新臺幣收支狀況, plus the 銀行餘額 block (本月美金收入/本月美金支出/本月初美金餘額/本月底美金餘額, the NTD counterparts, and 保守預計本月底新臺幣餘額; old tabs report 剩餘 instead). Defaults to the current month. Fields the sheet doesn't have come back null.",
+		"Get a month's numbers as clean JSON (unformatted): 花費總額, the carried overdrafts (上月美金透支/上月新臺幣透支, or legacy 上月透支), per-類別 tag totals, the 午餐預算 lunch block (編列預算/總和/剩餘) and 午餐超支或回補, the income list (item/幣別/amount), 薪水, 沛還, 本月美金收支狀況/本月新臺幣收支狀況, plus the 銀行餘額 block (本月美金收入/本月美金支出/本月初美金餘額/本月底美金餘額, the NTD counterparts, and 保守預計本月底新臺幣餘額; old tabs report 剩餘 instead). Defaults to the current month. Fields the sheet doesn't have come back null. On BUDGET MONTHS (from 11 月 2026) it returns layout:'budget' instead: per-block 編列預算/總和/剩餘 (budgets), 本月匯率, the carries, 預算總額, the income list, both 收支狀況 lines, 本月超支, 本月超支（加上回補）, 總支出, and the 乾坤大挪移 totals.",
 		{ month: monthParam.optional().describe("Month 1-12 (default: current month)") },
 		async ({ month }) => {
 			try {
@@ -271,7 +271,7 @@ export function registerTailoredTools(server: McpServer, client: SheetsClient): 
 
 	server.tool(
 		"get_categories",
-		"List the canonical 類別 tags from the dropdown (data validation) on a monthly tab's 類別 column. Call this before add_expense when unsure which tag to use. Defaults to the current month.",
+		"List the canonical 類別 tags from the dropdown (data validation) on a monthly tab's 類別 column. Call this before add_expense when unsure which tag to use. Defaults to the current month. On BUDGET MONTHS (from 11 月 2026) it returns the category blocks instead (source BUDGET_BLOCKS; the 午餐 block is reported as 中餐).",
 		{ month: monthParam.optional().describe("Month 1-12 (default: current month)") },
 		async ({ month }) => {
 			try {

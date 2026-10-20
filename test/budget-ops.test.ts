@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { dateSerial } from "../src/conventions";
-import { addExpense, addTransfer, cellData, deleteExpense, setIncome } from "../src/finance-ops";
+import type { BudgetMonthSummary } from "../src/budget-ops";
+import { addExpense, addTransfer, cellData, deleteExpense, getCategories, monthSummary, setIncome } from "../src/finance-ops";
 import type { SheetsClient } from "../src/sheets-client";
 import { budgetGrid } from "./budget-fixtures";
 
@@ -213,5 +214,57 @@ describe("addTransfer on budget months", () => {
 		});
 		expect(JSON.stringify(write)).not.toContain('"rowIndex":4'); // 總和 row untouched
 		expect(r).toMatchObject({ layout: "budget", row: 7, usd: 980, rate: 32.5 });
+	});
+});
+
+describe("monthSummary and getCategories on budget months", () => {
+	it("month_summary reports budgets per block and both 收支狀況 lines", async () => {
+		const g = budgetGrid();
+		g[3]![7] = 3900; // 午餐 編列預算 (H4)
+		g[4]![9] = 0; // 午餐 總和 (J5)
+		g[3]![9] = 3900; // 午餐 剩餘 (J4)
+		g[3]![27] = 13016.72; // 訂閱 編列預算
+		g[4]![29] = 8808.86; // 訂閱 總和
+		g[3]![29] = 4207.86; // 訂閱 剩餘
+		g[2]![3] = 0;
+		g[2]![4] = 0;
+		g[3]![4] = 19281.68;
+		g[14]![4] = 63619.74;
+		g[31]![3] = 183.7;
+		g[32]![3] = -883.62;
+		g[34] = ["", "本月超支", "", 0];
+		g[39] = ["", "總支出", "", 55512.6];
+		g[4]![53] = 0; // 乾坤大挪移 總和: 新臺幣 BB, 實際美金 BD, 手續費 BF, 當筆總額外花費 BG
+		g[4]![55] = 0;
+		g[4]![57] = 0;
+		g[4]![58] = 0;
+		const s = (await monthSummary(budgetClient({ "11 月": g }), 11)) as unknown as BudgetMonthSummary;
+		expect(s).toMatchObject({
+			layout: "budget",
+			本月匯率: 32.4607,
+			上月新臺幣透支: 19281.68,
+			預算總額: 63619.74,
+			本月美金收支狀況: 183.7,
+			本月新臺幣收支狀況: -883.62,
+			本月超支: 0,
+			總支出: 55512.6,
+			incomes: [
+				{ item: "薪水", currency: "TWD", amount: 65271 },
+				{ item: "沛還", currency: "USD", amount: 700 },
+			],
+			乾坤大挪移: { 新臺幣: 0, 實際美金: 0, 手續費: 0, 當筆總額外花費: 0 },
+		});
+		expect(s.budgets[0]).toEqual({ category: "中餐", 編列預算: 3900, 總和: 0, 剩餘: 3900 });
+		expect(s.budgets[4]).toEqual({ category: "訂閱", 編列預算: 13016.72, 總和: 8808.86, 剩餘: 4207.86 });
+	});
+
+	it("get_categories lists the blocks on a budget month", async () => {
+		const client = { ...budgetClient({ "11 月": budgetGrid() }), getDataValidation: vi.fn() } as unknown as SheetsClient;
+		expect(await getCategories(client, 11)).toEqual({
+			tab: "11 月",
+			source: "BUDGET_BLOCKS",
+			categories: ["中餐", "購物", "吃喝", "生活用品", "訂閱", "交通", "娛樂", "學貸", "其他"],
+		});
+		expect((client as any).getDataValidation).not.toHaveBeenCalled();
 	});
 });

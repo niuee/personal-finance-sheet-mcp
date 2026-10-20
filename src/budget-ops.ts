@@ -14,16 +14,40 @@
  * read at module load.
  */
 
-import { serialToIso } from "./conventions";
+import {
+	BUDGET_SUM_LABEL,
+	MONTH_COLS,
+	MONTH_NTD_NET_LABELS,
+	MONTH_USD_NET_LABELS,
+	OVERSPEND_LABEL,
+	OVERSPEND_NET_LABEL,
+	PREV_NTD_OVERDRAFT_LABEL,
+	PREV_USD_OVERDRAFT_LABEL,
+	RATE_LABEL,
+	serialToIso,
+	TOTAL_SPENDING_LABEL,
+} from "./conventions";
 import type { AddExpenseParams, AddTransferParams, AddTransferResult, DeleteExpenseParams } from "./finance-ops";
-import { assertNotTruncated, cellData, pinTransferRate, quoteTab, round2, transferRowCells } from "./finance-ops";
+import {
+	assertNotTruncated,
+	cellData,
+	findIncomeWindow,
+	findRowByLabels,
+	findRowByValue,
+	pinTransferRate,
+	quoteTab,
+	round2,
+	transferRowCells,
+} from "./finance-ops";
 import {
 	blockEntries,
 	BUDGET_GRID_READ,
+	BUDGET_SUM_VALUE_COL,
 	findBudgetBlocks,
 	findBudgetTransferSection,
 	findRateRow,
 	firstEmptyEntryRow,
+	RATE_VALUE_COL,
 	resolveBudgetBlock,
 } from "./budget-layout";
 import type { SheetsClient } from "./sheets-client";
@@ -229,4 +253,84 @@ export async function addBudgetTransfer(
 		usd: received,
 		spotUsd: round2(p.ntd / rate),
 	};
+}
+
+export interface BudgetMonthSummary {
+	tab: string;
+	layout: "budget";
+	本月匯率: number | null;
+	上月美金透支: number | null;
+	上月新臺幣透支: number | null;
+	budgets: Array<{ category: string; 編列預算: number | null; 總和: number | null; 剩餘: number | null }>;
+	預算總額: number | null;
+	incomes: Array<{ item: string; currency: string | null; amount: number | null }>;
+	本月美金收支狀況: number | null;
+	本月新臺幣收支狀況: number | null;
+	本月超支: number | null;
+	"本月超支（加上回補）": number | null;
+	總支出: number | null;
+	乾坤大挪移: { 新臺幣: number | null; 實際美金: number | null; 手續費: number | null; 當筆總額外花費: number | null } | null;
+}
+
+/** month_summary on a budget month: every number read by its label (numbers only; anything else is null). */
+export async function budgetMonthSummary(client: SheetsClient, tab: string): Promise<BudgetMonthSummary> {
+	const values = await readBudgetGrid(client, tab, "UNFORMATTED_VALUE");
+	const num = (v: unknown): number | null => (typeof v === "number" ? v : null);
+	const at = (row: number | null, col: number): number | null => (row === null ? null : num(values[row - 1]?.[col]));
+	const byLabel = (labels: readonly string[]) => at(findRowByLabels(values, MONTH_COLS.budgetLabel, labels), MONTH_COLS.budgetValue);
+
+	const incomes: BudgetMonthSummary["incomes"] = [];
+	const win = findIncomeWindow(values);
+	if (win !== null) {
+		for (let r = win.start; r <= win.end; r++) {
+			const item = String(values[r - 1]?.[MONTH_COLS.item] ?? "").trim();
+			if (item === "") continue;
+			const currency = String(values[r - 1]?.[MONTH_COLS.tag] ?? "").trim();
+			incomes.push({ item, currency: currency === "" ? null : currency, amount: num(values[r - 1]?.[MONTH_COLS.budgetValue]) });
+		}
+	}
+
+	let transfer: BudgetMonthSummary["乾坤大挪移"] = null;
+	try {
+		const t = findBudgetTransferSection(values, tab);
+		transfer = {
+			新臺幣: at(t.totalRow, t.dateCol + 1),
+			實際美金: at(t.totalRow, t.dateCol + 3),
+			手續費: at(t.totalRow, t.dateCol + 5),
+			當筆總額外花費: at(t.totalRow, t.dateCol + 6),
+		};
+	} catch {
+		transfer = null;
+	}
+
+	return {
+		tab,
+		layout: "budget",
+		本月匯率: at(findRowByValue(values, MONTH_COLS.budgetLabel, RATE_LABEL), RATE_VALUE_COL),
+		上月美金透支: at(findRowByValue(values, MONTH_COLS.item, PREV_USD_OVERDRAFT_LABEL), MONTH_COLS.usd),
+		上月新臺幣透支: at(findRowByValue(values, MONTH_COLS.item, PREV_NTD_OVERDRAFT_LABEL), MONTH_COLS.twd),
+		budgets: findBudgetBlocks(values, tab).map((b) => ({
+			category: b.category,
+			編列預算: at(b.budgetRow, b.startCol),
+			總和: at(b.totalRow, b.startCol + 2),
+			剩餘: at(b.budgetRow, b.startCol + 2),
+		})),
+		預算總額: at(findRowByValue(values, MONTH_COLS.totalLabel, BUDGET_SUM_LABEL), BUDGET_SUM_VALUE_COL),
+		incomes,
+		本月美金收支狀況: byLabel(MONTH_USD_NET_LABELS),
+		本月新臺幣收支狀況: byLabel(MONTH_NTD_NET_LABELS),
+		本月超支: byLabel([OVERSPEND_LABEL]),
+		"本月超支（加上回補）": byLabel([OVERSPEND_NET_LABEL]),
+		總支出: byLabel([TOTAL_SPENDING_LABEL]),
+		乾坤大挪移: transfer,
+	};
+}
+
+/** get_categories on a budget month: the category blocks, left to right. */
+export async function budgetCategories(
+	client: SheetsClient,
+	tab: string,
+): Promise<{ tab: string; categories: string[]; source: "BUDGET_BLOCKS" }> {
+	const values = await readBudgetGrid(client, tab, "FORMULA");
+	return { tab, categories: findBudgetBlocks(values, tab).map((b) => b.category), source: "BUDGET_BLOCKS" };
 }

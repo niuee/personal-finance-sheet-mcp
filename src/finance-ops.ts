@@ -94,7 +94,7 @@ import {
 } from "./conventions";
 import type { SheetsClient } from "./sheets-client";
 import { findBudgetIncomeSumifWindow, isBudgetMonth } from "./budget-layout";
-import { addBudgetExpense, addBudgetTransfer, deleteBudgetExpense } from "./budget-ops";
+import { addBudgetExpense, addBudgetTransfer, budgetCategories, budgetMonthSummary, deleteBudgetExpense } from "./budget-ops";
 
 /** Re-target a single-row formula: "=E5*0.22" from row 5 to row 9 → "=E9*0.22". */
 export function adaptRowFormula(formula: string, fromRow: number, toRow: number): string {
@@ -2004,6 +2004,7 @@ export async function monthSummary(client: SheetsClient, month?: number) {
 	const tab = month !== undefined ? monthTabName(month) : currentMonthTab();
 	const { values, truncated } = await client.readRange(`${quoteTab(tab)}!${FULL_GRID_READ}`, "UNFORMATTED_VALUE");
 	assertNotTruncated(truncated, tab, FULL_GRID_READ);
+	if (isBudgetMonth(values)) return (await budgetMonthSummary(client, tab)) as never;
 
 	const num = (v: unknown): number | null => (typeof v === "number" ? v : null);
 	const cellAt = (row: number | null, col: number): number | null =>
@@ -2090,6 +2091,10 @@ const TAG_VALIDATION_ROWS = { start: 3, end: 15 } as const;
 /** The live 類別 tag list, read from the dropdown (data validation) on a monthly tab's 類別 column. */
 export async function getCategories(client: SheetsClient, month?: number) {
 	const tab = month !== undefined ? monthTabName(month) : currentMonthTab();
+	// Layout first: a budget month has no 類別 dropdown — its categories are its blocks.
+	const { values, truncated } = await client.readRange(`${quoteTab(tab)}!${FULL_GRID_READ}`, "FORMULA");
+	assertNotTruncated(truncated, tab, FULL_GRID_READ);
+	if (isBudgetMonth(values)) return (await budgetCategories(client, tab)) as never;
 	const rule = await client.getDataValidation(
 		tab,
 		TAG_VALIDATION_ROWS.start,

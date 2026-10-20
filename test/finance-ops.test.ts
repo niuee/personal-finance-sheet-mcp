@@ -4344,7 +4344,7 @@ describe("getCategories", () => {
 
 		expect((client.getDataValidation as any).mock.calls[0]).toEqual(["7 月", 3, 15, "C"]);
 		expect(result).toEqual({ tab: "7 月", categories: ["訂閱", "吃喝", "交通"], source: "ONE_OF_LIST" });
-		expect(client.readRange).not.toHaveBeenCalled();
+		expect(client.readRange).toHaveBeenCalledTimes(1); // the layout-detection read
 	});
 
 	it("follows a ONE_OF_RANGE rule and flattens non-empty string cells", async () => {
@@ -4359,7 +4359,7 @@ describe("getCategories", () => {
 
 		const result = await getCategories(client, 7);
 
-		expect((client.readRange as any).mock.calls[0]).toEqual(["Settings!A1:A20"]);
+		expect((client.readRange as any).mock.calls[1]).toEqual(["Settings!A1:A20"]);
 		expect(result).toEqual({
 			tab: "7 月",
 			categories: ["訂閱", "吃喝", "生活用品"],
