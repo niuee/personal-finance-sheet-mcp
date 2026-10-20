@@ -3,10 +3,8 @@ import { z } from "zod";
 import { CONVENTIONS_TEXT, KNOWN_TAGS } from "./conventions";
 import {
 	addExpense,
-	addLunch,
 	addTransfer,
 	addTripEntry,
-	adjustBalance,
 	annotateRows,
 	deleteExpense,
 	findCells,
@@ -14,7 +12,6 @@ import {
 	monthSummary,
 	safeDeleteRows,
 	safeUpdateRange,
-	setExpenseDate,
 	setIncome,
 	startMonth,
 	tripBudgetStatus,
@@ -136,7 +133,7 @@ const monthParam = z.number().int().min(1).max(12);
 export function registerTailoredTools(server: McpServer, client: SheetsClient): void {
 	server.tool(
 		"add_expense",
-		"Log an expense into a monthly tab (defaults to the current month). Writes into the expense window at its date-sorted position (after the last row dated on-or-before it; dateless rows sort last) so 花費總額 picks it up and a hand date-sort of the list survives; converts USD via GOOGLEFINANCE, and tags the row's 類別 cell. Use this instead of append_rows/update_range for monthly expenses. On BUDGET MONTHS (from 11 月 2026) the expense goes into its category block instead: tag is required and picks the block (中餐 or 午餐 → the 午餐 block), card is refused, and a USD-priced expense paid from the NTD account (currency USD + paid_with TWD) is written as 幣別 TWD with 金額 = amount × 本月匯率.",
+		"Log an expense into a budget month (defaults to the current month): the entry goes into its category block's first empty row — tag picks the block (中餐 or 午餐 → the 午餐 block) — with 日期 (optional, stamped mm/dd), 項目, 金額 and 幣別, and the block's 總和 / 剩餘 and the month's 超支 and 收支狀況 rows pick it up. 幣別 is the account that PAID: a USD-priced expense paid from the NTD account (currency USD + paid_with TWD) is written as 幣別 TWD with 金額 = amount × 本月匯率. Use this instead of append_rows/update_range for monthly expenses. Old-layout months (5 月–9 月) are read-only and refused.",
 		{
 			item: z.string().min(1).describe("Expense name, e.g. 晚餐 or Netflix"),
 			amount: z.number().describe("The amount, in the given currency"),
@@ -146,7 +143,7 @@ export function registerTailoredTools(server: McpServer, client: SheetsClient): 
 				.min(1)
 				.optional()
 				.describe(
-					`The row's 類別 tag — call get_categories for the live dropdown list (typically ${KNOWN_TAGS.join(", ")}). Free text, new tags allowed; omit only if none fits.`,
+					`Required: the category block — one of ${KNOWN_TAGS.join(", ")} (午餐 also means the 中餐 block); get_categories lists the month's blocks.`,
 				),
 			date: z
 				.string()
@@ -160,14 +157,7 @@ export function registerTailoredTools(server: McpServer, client: SheetsClient): 
 				.enum(["TWD", "USD"])
 				.optional()
 				.describe(
-					"Which real account paid the row — written to the 支付幣別 column (F); defaults to currency. Use currency USD + paid_with TWD for a USD-priced expense paid from the NTD account (the reverse, TWD-priced + USD-paid, is rejected).",
-				),
-			card: z
-				.string()
-				.min(1)
-				.optional()
-				.describe(
-					"支付方式 (column G) — one of the column's dropdown options: a credit card (國泰 CUBE, CHASE Amazon, CHASE Freedom, Apple Card — the 信用卡帳單對帳區 FILTERs mirror dated card rows into that card's statement bucket, growing it automatically when its spill area is full, and 支付幣別 defaults to the card's billing currency unless paid_with is given), 現金 (money left a bank account directly — cash/debit/auto-pay; the 帳戶實際數字對應 block's 現金支出 counts these), or 沛 (沛 paid — hits no tracked account). Omit to leave the cell blank (row not wired to any account).",
+					"Which real account paid — the entry's 幣別; defaults to currency. Use currency USD + paid_with TWD for a USD-priced expense paid from the NTD account (the reverse, TWD-priced + USD-paid, is rejected).",
 				),
 		},
 		async ({ paid_with, ...p }) => {
@@ -180,26 +170,8 @@ export function registerTailoredTools(server: McpServer, client: SheetsClient): 
 	);
 
 	server.tool(
-		"set_expense_date",
-		"Fill in (or change) the 日期 of an existing expense row on a monthly tab — e.g. when a dateless recurring subscription charges a credit card, dating the row is what drops it into the 信用卡帳單對帳區 bucket. Finds the row by exact 項目; with duplicate names it prefers the single dateless row (pass row to disambiguate). The dated row is then moved to its date-sorted position (movedToRow in the result; null when it already sat there). If the row's 支付方式 holds a card, the target bucket is grown automatically when its spill area is full. Refused on BUDGET MONTHS (from 11 月 2026): they have no card buckets.",
-		{
-			item: z.string().min(1).describe("項目 of the expense row, exactly as written"),
-			date: z.string().min(1).describe("Date: M/D, MM/DD, or YYYY-MM-DD (year defaults to the current Taipei year)"),
-			month: monthParam.optional().describe("Target month 1-12 (default: current month)"),
-			row: z.number().int().min(3).optional().describe("1-indexed sheet row, to disambiguate duplicate 項目 names"),
-		},
-		async (p) => {
-			try {
-				return ok(await setExpenseDate(client, p));
-			} catch (e) {
-				return toError(e);
-			}
-		},
-	);
-
-	server.tool(
 		"delete_expense",
-		"Delete an expense row from a monthly tab ENTIRELY — the row disappears and the rows below move up, leaving no blank gap (update_range can only blank the cells, which leaves a hole in the list). Finds the row by exact 項目 inside the expense window; pass row to disambiguate duplicate names (it never guesses). The delete is scoped to columns A-G, so the 乾坤大挪移 / 午餐預算 / 信用卡帳單對帳區 blocks sharing those sheet rows stay put; 花費總額 and the 支出 SUMIF windows shrink with the row and the card 對帳區 mirrors drop it on their own. Refuses the 上月…透支 carry rows and any row a formula points straight at (it would go #REF!). Returns the deleted cells so a mistake can be re-entered.",
+		"Delete an expense entry from a budget month ENTIRELY — the entry disappears and the entries below it in the same block move up, leaving no blank gap (update_range can only blank the cells, which leaves a hole). Finds the entry by exact 項目 across every block; tag narrows the search to one block, and row picks between duplicate names (it never guesses). The delete is scoped to that block's own four columns, so no other block moves. Returns the deleted cells so a mistake can be re-entered. Old-layout months (5 月–9 月) are read-only and refused.",
 		{
 			item: z.string().min(1).describe("項目 of the expense row to delete, exactly as written"),
 			month: monthParam.optional().describe("Target month 1-12 (default: current month)"),
@@ -209,7 +181,7 @@ export function registerTailoredTools(server: McpServer, client: SheetsClient): 
 				.min(1)
 				.optional()
 				.describe(
-					"Budget months only: the category block to search (e.g. 訂閱). Every block has entries on the same sheet rows, so row alone can't pick one.",
+					"The category block to search (e.g. 訂閱). Every block has entries on the same sheet rows, so row alone can't pick one.",
 				),
 		},
 		async (p) => {
@@ -222,29 +194,12 @@ export function registerTailoredTools(server: McpServer, client: SheetsClient): 
 	);
 
 	server.tool(
-		"adjust_balance",
-		"Reconcile a month-end balance against the real bank account. Pass the ACTUAL balance the account shows; the tool writes actual − the computed 本月底…真實餘額 into that currency's …餘額調整 cell (e.g. computed 500, actual 450 → writes -50). The single 調整 cell feeds the 調整後 rows of BOTH the 帳戶實際數字對應 and 銀行餘額 views, and next month's 本月初 cells chain from those 調整後 rows. Overwrites any previous adjustment (delta is always against the raw computed value — re-running never accumulates). Never write the 調整 cell by hand via update_range. Refused on BUDGET MONTHS (from 11 月 2026): they have no bank-balance sections.",
-		{
-			currency: z.enum(["TWD", "USD"]).describe("Which account was checked"),
-			actual: z.number().describe("The balance the real bank account actually shows"),
-			month: monthParam.optional().describe("Target month 1-12 (default: current month)"),
-		},
-		async (p) => {
-			try {
-				return ok(await adjustBalance(client, p));
-			} catch (e) {
-				return toError(e);
-			}
-		},
-	);
-
-	server.tool(
 		"set_income",
-		"Fill in an income row on a monthly tab (defaults to the current month): updates the row if the 項目 already exists (薪水, 沛還, …), otherwise inserts a new ad-hoc income row with its 幣別 — the 本月美金收入/本月新臺幣收入 SUMIFs keep covering every row. Old-layout tabs (6月 2026 and earlier) are frozen history and refused.",
+		"Fill in an income row on a budget month (defaults to the current month): updates the row if the 項目 already exists (薪水, 沛還, …), otherwise adds a new ad-hoc income row with its 幣別 inside the income list — both 收支狀況 lines keep covering every row. Old-layout months (5 月–9 月) are read-only and refused.",
 		{
 			item: z.string().min(1).describe("Income name, e.g. 薪水, 沛還, 股息"),
 			amount: z.number().describe("The amount, in the given currency"),
-			currency: z.enum(["TWD", "USD"]).describe("The income's 幣別 — routes it into 新臺幣收入 or 美金收入"),
+			currency: z.enum(["TWD", "USD"]).describe("The income's 幣別 — routes it into 本月新臺幣收支狀況 or 本月美金收支狀況"),
 			month: monthParam.optional().describe("Target month 1-12 (default: current month)"),
 		},
 		async (p) => {
@@ -258,7 +213,7 @@ export function registerTailoredTools(server: McpServer, client: SheetsClient): 
 
 	server.tool(
 		"month_summary",
-		"Get a month's numbers as clean JSON (unformatted): 花費總額, the carried overdrafts (上月美金透支/上月新臺幣透支, or legacy 上月透支), per-類別 tag totals, the 午餐預算 lunch block (編列預算/總和/剩餘) and 午餐超支或回補, the income list (item/幣別/amount), 薪水, 沛還, 本月美金收支狀況/本月新臺幣收支狀況, plus the 銀行餘額 block (本月美金收入/本月美金支出/本月初美金餘額/本月底美金餘額, the NTD counterparts, and 保守預計本月底新臺幣餘額; old tabs report 剩餘 instead). Defaults to the current month. Fields the sheet doesn't have come back null. On BUDGET MONTHS (from 11 月 2026) it returns layout:'budget' instead: per-block 美金 and 新臺幣 編列預算/總和/剩餘 (budgets: USD in USD, NTD in NTD), 本月匯率, the carries, 預算總額, the income list, both 收支狀況 lines, 本月美金超支 / 本月新臺幣超支 (each currency's overspend, ≤ 0, already included in its line), 本月美金超支（加上回補） / 本月新臺幣超支（加上回補）, 總支出, and the 乾坤大挪移 totals.",
+		"Get a month's numbers as clean JSON (unformatted). Defaults to the current month. A budget month (10 月 2026 on) returns layout:'budget': per-block 美金 and 新臺幣 編列預算/總和/剩餘 (USD in USD, NTD in NTD), 本月匯率, the carries (上月美金透支/上月新臺幣透支), 預算總額, the income list, both 收支狀況 lines, 本月美金超支 / 本月新臺幣超支 (each currency's overspend, ≤ 0, already included in its line), 本月美金超支（加上回補） / 本月新臺幣超支（加上回補）, 總支出, and the 乾坤大挪移 totals. An old-layout month (5 月–9 月, read-only) returns its own shape: 花費總額, the carries (or legacy 上月透支), per-類別 tag totals, the 午餐預算 lunch block and 午餐超支或回補, the income list, 薪水, 沛還, both 收支狀況 lines and the 銀行餘額 block (old tabs report 剩餘 instead); fields the sheet doesn't have come back null.",
 		{ month: monthParam.optional().describe("Month 1-12 (default: current month)") },
 		async ({ month }) => {
 			try {
@@ -271,7 +226,7 @@ export function registerTailoredTools(server: McpServer, client: SheetsClient): 
 
 	server.tool(
 		"get_categories",
-		"List the canonical 類別 tags from the dropdown (data validation) on a monthly tab's 類別 column. Call this before add_expense when unsure which tag to use. Defaults to the current month. On BUDGET MONTHS (from 11 月 2026) it returns the category blocks instead (source BUDGET_BLOCKS; the 午餐 block is reported as 中餐).",
+		"List a budget month's category blocks — the tags add_expense accepts (source BUDGET_BLOCKS; the 午餐 block is reported as 中餐). Call this before add_expense when unsure which tag to use. Defaults to the current month. Old-layout months (5 月–9 月) are refused.",
 		{ month: monthParam.optional().describe("Month 1-12 (default: current month)") },
 		async ({ month }) => {
 			try {
@@ -284,19 +239,11 @@ export function registerTailoredTools(server: McpServer, client: SheetsClient): 
 
 	server.tool(
 		"start_month",
-		"Open a new month: duplicates the previous month's tab (keeping all formulas and recurring items like subscriptions), rewires the 上月…透支 carries to the month just ended's 本月…收支狀況 cells and 本月初新臺幣餘額 to its 本月底新臺幣餘額, clears one-off expenses and ad-hoc income, empties the 午餐預算 lunch log so the budget's 剩餘 resets, rolls the 信用卡帳單對帳區 forward (結帳日/繳款日 +1 month, 本月需繳款 rewired across the two months it covers), and pads every card bucket's spill area to 20 blank rows — headroom for hand-entered card rows, which no tool write would otherwise grow a bucket for. Refuses if the tab already exists. When a 'Budget Based' tab exists (budget months, from 11 月 2026), it builds the month by COPYING THAT TEMPLATE instead: the template's starting entries and budgets carry over as they are, the title is set, 上月美金透支/上月新臺幣透支 point at the previous month's 本月…收支狀況 cells (0 when that tab is missing), and 本月匯率 gets a formula that shows the live USDTWD rate until the 1st and then locks to the 1st's rate.",
-		{
-			month: monthParam.describe("The month to create, 1-12"),
-			replace_old_layout: z
-				.boolean()
-				.optional()
-				.describe(
-					"Budget template only: rebuild an EXISTING old-layout month from the template — the old tab is renamed 'N 月 DEP' first. Never replaces a budget-layout month, and refuses when 'N 月 DEP' already exists.",
-				),
-		},
-		async ({ month, replace_old_layout }) => {
+		"Open a new month by COPYING the 'Budget Based' template tab: the template's starting entries, budgets and income come along as they are, the title is set, 上月美金透支/上月新臺幣透支 point at the previous month's 本月…收支狀況 cells (0 when that tab is missing), and 本月匯率 gets a formula that shows the live USDTWD rate until the 1st and then locks to the 1st's rate. Refuses if the tab already exists, and without the template tab. To change what every new month starts with, edit the template tab by hand.",
+		{ month: monthParam.describe("The month to create, 1-12") },
+		async ({ month }) => {
 			try {
-				return ok(await startMonth(client, month, { replaceOldLayout: replace_old_layout }));
+				return ok(await startMonth(client, month));
 			} catch (e) {
 				return toError(e);
 			}
@@ -346,7 +293,7 @@ export function registerTailoredTools(server: McpServer, client: SheetsClient): 
 
 	server.tool(
 		"add_transfer",
-		"Log a 乾坤大挪移 currency transfer. Default currency:'usd' targets a monthly tab (default: current month): writes into the transfer block (columns H-N), pins 當下美金/匯差 to the USDTWD spot rate at entry time, and keeps the 總和 sums covering every row; the 銀行餘額 ledgers pick it up automatically (+實際美金 into 本月底美金餘額, −新臺幣 from 本月底新臺幣餘額, 手續費 into 本月新臺幣支出 — the 匯差 is already inside the NTD sent, only the external fee is spending). currency:'jpy' targets a TRIP tab (tab required, e.g. 2026/07/25 京都東京): writes into that tab's 乾坤大挪移 section (columns A-G) pinned to the JPYTWD rate, and wires the NTD side per entry into the month the date falls in (−新臺幣 from 本月底/保守預計新臺幣餘額, +手續費 into 本月新臺幣支出); the JPY received is trip cash and joins no bank ledger. Use this instead of update_range for transfers. On BUDGET MONTHS (from 11 月 2026) a usd transfer goes into the 乾坤大挪移 log at BA-BG (its 總和 sits above the open-ended list and is never rewritten); a jpy transfer dated in a budget month is written to the trip tab but NOT linked into that month (the result says so in wiringNote).",
+		"Log a 乾坤大挪移 currency transfer. Default currency:'usd' targets a budget month (default: current month): writes into the 乾坤大挪移 log at BA-BG with 當下美金/匯差 pinned to the USDTWD spot rate at entry time; its 總和 sits above the open-ended list and is never rewritten, and only the 手續費 counts as spending (本月新臺幣收支狀況, 總支出). Old-layout months (5 月–9 月) are read-only and refused. currency:'jpy' targets a TRIP tab (tab required, e.g. 2026/07/25 京都東京): writes into that tab's 乾坤大挪移 section (columns A-G) pinned to the JPYTWD rate; the JPY received is trip cash and the entry joins no month tab. Use this instead of update_range for transfers.",
 		{
 			currency: z.enum(["usd", "jpy"]).optional().describe("Transfer destination currency (default usd)"),
 			tab: z.string().min(1).optional().describe("Trip tab name, exactly as it appears — required for currency:'jpy'"),
@@ -371,44 +318,15 @@ export function registerTailoredTools(server: McpServer, client: SheetsClient): 
 	);
 
 	server.tool(
-		"add_lunch",
-		"Log a lunch into the 午餐預算 section of a monthly tab (titled 中餐預算 on early tabs — both work) (columns P-S; defaults to the current month): writes 日期/項目/金額 and keeps the section's 總和 covering every row. The month's lunch BUDGET is the recurring 中餐 row in the expense list — never also add_expense a lunch. The leftover (剩餘 = 編列預算 − 總和) feeds the 銀行餘額 block's 午餐超支或回補 row: unspent budget returns to 本月底新臺幣餘額, an overdraft deducts more. Returns budget/spent/leftover after the entry. A card lunch (card param) also lands in that card's 信用卡帳單對帳區 bucket. Refused on BUDGET MONTHS (from 11 月 2026): log lunches there with add_expense, tag 中餐.",
-		{
-			amount: z.number().positive().describe("金額 in NTD"),
-			item: z.string().min(1).optional().describe("項目 (default: 中餐)"),
-			date: z
-				.string()
-				.min(1)
-				.optional()
-				.describe("Lunch date: M/D, MM/DD, or YYYY-MM-DD (defaults to today in Taipei)"),
-			card: z
-				.string()
-				.min(1)
-				.optional()
-				.describe(
-					"支付方式 (column S) — a TWD-billed credit card (currently 國泰 CUBE; the 對帳區's TWD-card buckets mirror the lunch into the statement, growing the bucket automatically if its spill area is full) or 現金 for a cash lunch. Omit to leave the cell blank (also treated as cash).",
-				),
-			month: monthParam.optional().describe("Target month 1-12 (default: current month)"),
-		},
-		async (p) => {
-			try {
-				return ok(await addLunch(client, p));
-			} catch (e) {
-				return toError(e);
-			}
-		},
-	);
-
-	server.tool(
 		"get_sheet_conventions",
-		"How this spreadsheet is organized: monthly tab layout, anchors like 花費總額, category formulas, trip blocks. Read this before doing raw range operations on unfamiliar tabs.",
+		"How this spreadsheet is organized: the budget-month layout (budget list, 本月匯率, category blocks, 收支狀況 lines), the read-only old months, trip tabs. Read this before doing raw range operations on unfamiliar tabs.",
 		{},
 		async () => ok({ conventions: CONVENTIONS_TEXT }),
 	);
 
 	server.tool(
 		"insert_rows",
-		"Insert empty rows at a 1-indexed position (existing rows shift down; formulas that span the position auto-extend). Prefer add_expense/add_trip_entry for their use cases.",
+		"Insert empty WHOLE rows at a 1-indexed position (existing rows shift down; formulas that span the position auto-extend). Never on a month or trip tab — their side-by-side blocks share sheet rows and a whole-row insert tears them; add_expense and add_trip_entry grow their own sections.",
 		{
 			tab: z.string().min(1),
 			row: z.number().int().min(2).describe("1-indexed row where the first new row will land"),
@@ -425,16 +343,16 @@ export function registerTailoredTools(server: McpServer, client: SheetsClient): 
 
 	server.tool(
 		"delete_rows",
-		"Delete rows for real — the row goes away and everything below moves up, which no other tool does (update_range only blanks cells, leaving an empty row behind). ALWAYS pass columns on a monthly or trip tab: those tabs are mosaics of side-by-side blocks (expense list A-G, 乾坤大挪移 and 信用卡帳單對帳區 H-N, 午餐預算 P-S; trip bands A-G, I-O, Q-W, Z-AF), and a whole-row delete tears every block that shares the row — scoping the delete to one band shifts only that section. Prefer delete_expense for expense rows. Refuses when a formula points straight at a cell being deleted (it would turn into #REF!) unless force:true; SUM/SUMIF ranges spanning the rows are fine, they shrink. Returns deletedValues (with formulas) so the rows can be re-entered.",
+		"Delete rows for real — the row goes away and everything below moves up, which no other tool does (update_range only blanks cells, leaving an empty row behind). ALWAYS pass columns on a month or trip tab: those tabs are mosaics of side-by-side blocks (a month's budget list A-F, nine category blocks of four columns from H, 乾坤大挪移 BA-BG; trip bands A-G, I-O, Q-W, Z-AF), and a whole-row delete tears every block that shares the row — scoping the delete to one band shifts only that section. Prefer delete_expense for a block entry. Refuses when a formula points straight at a cell being deleted (it would turn into #REF!) unless force:true; SUM/SUMIF ranges spanning the rows are fine, they shrink. Returns deletedValues (with formulas) so the rows can be re-entered.",
 		{
-			tab: z.string().min(1).describe("Tab name, e.g. 9 月"),
+			tab: z.string().min(1).describe("Tab name, e.g. 10 月"),
 			row: z.number().int().min(2).describe("1-indexed first row to delete"),
 			count: z.number().int().min(1).max(50).default(1),
 			columns: z
 				.string()
 				.optional()
 				.describe(
-					'Column band to scope the delete to, e.g. "A:G" (expense list), "P:S" (午餐預算), "H:N" (乾坤大挪移 / 對帳區) or a single "R". Omit ONLY on a tab with nothing beside the rows — omitting it deletes the whole sheet row.',
+					'Column band to scope the delete to, e.g. "M:P" (the 購物 block), "BA:BG" (乾坤大挪移), "B:D" (the income list), "I:O" (a trip band) or a single "R". Omit ONLY on a tab with nothing beside the rows — omitting it deletes the whole sheet row.',
 				),
 			force: z
 				.boolean()

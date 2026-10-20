@@ -1,5 +1,5 @@
 /**
- * Pure finders for budget-month tabs (from 11 月 2026): the budget list and
+ * Pure finders for budget-month tabs (from 10 月 2026): the budget list and
  * income on the left (A–F), one block per category to the right (H…AY), and
  * the 乾坤大挪移 log after the last block (BA–BG). Every block keeps its money
  * ABOVE an open-ended entry list — a 美金 row and a 新臺幣 row, each with
@@ -97,6 +97,13 @@ function isBlank(v: unknown): boolean {
 /** A budget month carries the 本月匯率 label in column B; old-layout months never do. */
 export function isBudgetMonth(values: unknown[][]): boolean {
 	return findRowByValue(values, MONTH_COLS.budgetLabel, RATE_LABEL) !== null;
+}
+
+/** Every write tool's first check: old-layout months are read-only history (month_summary still reads them). */
+export function assertBudgetMonth(values: unknown[][], tab: string): void {
+	if (!isBudgetMonth(values)) {
+		throw new Error(`${tab} is on the old layout, which is read-only now — month_summary still reads it; no tool writes to it.`);
+	}
 }
 
 /** Every block's header, title and category, left to right. Throws on a header without a title and on a duplicate category. */
@@ -262,9 +269,9 @@ export function findRateRow(values: unknown[][], tab: string): number {
 /**
  * The year a month tab belongs to: the occurrence of `month` nearest to the
  * current Taipei month. Months are usually created ahead of time (January
- * built in December is next year's), but replace_old_layout also rebuilds
- * months that already started or just ended (November rebuilt in December
- * is this year's). Six months either way resolves to the coming one.
+ * built in December is next year's), but a month built late — after it
+ * started, or just after it ended (November built in December) — is this
+ * year's. Six months either way resolves to the coming one.
  */
 export function rateYear(month: number, now: Date = new Date()): number {
 	const parts = new Intl.DateTimeFormat("en-US", { timeZone: SHEET_TIMEZONE, year: "numeric", month: "numeric" }).formatToParts(now);

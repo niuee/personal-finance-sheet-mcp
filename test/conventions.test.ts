@@ -1,19 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
-	addMonthsClamped,
 	BUDGET_HEADER_LABEL,
 	CONVENTIONS_TEXT,
-	CREDIT_BLOCK_COLS,
-	CREDIT_BLOCK_WIDTH,
-	CREDIT_CARDS,
-	CREDIT_SECTION_LABEL,
-	CREDIT_SUBTOTAL_LABEL,
 	currentMonthTab,
 	dateSerial,
 	KNOWN_TAGS,
 	LUNCH_ADJUST_LABEL,
 	LUNCH_COLS,
-	LUNCH_DEFAULT_ITEM,
 	LUNCH_SECTION_LABEL,
 	LUNCH_SECTION_LEGACY_LABEL,
 	LUNCH_TOTAL_LABEL,
@@ -32,8 +25,6 @@ import {
 	PREV_NTD_OVERDRAFT_LABEL,
 	PREV_USD_OVERDRAFT_LABEL,
 	previousMonth,
-	RECURRING_INCOME,
-	RECURRING_ITEMS,
 	REMAINDER_LABEL,
 	REPAYMENT_LABEL,
 	SALARY_LABEL,
@@ -78,14 +69,8 @@ describe("conventions", () => {
 		expect(previousMonth(10)).toBe(9);
 	});
 
-	it("knows the recurring items and the total-row anchor", () => {
+	it("knows the old layout's total-row anchor", () => {
 		expect(TOTAL_ROW_LABEL).toBe("花費總額");
-		for (const item of ["Google Cloud", "Netflix", "電話費", "上月透支", "Claude"]) {
-			expect(RECURRING_ITEMS.has(item)).toBe(true);
-		}
-		expect(RECURRING_ITEMS.has("近鐵 80000系")).toBe(false);
-		expect(RECURRING_ITEMS.has("上月美金透支")).toBe(true);
-		expect(RECURRING_ITEMS.has("上月新臺幣透支")).toBe(true);
 	});
 
 	it("exports the summary row labels", () => {
@@ -116,16 +101,9 @@ describe("conventions", () => {
 		expect(LUNCH_SECTION_LABEL).toBe("午餐預算");
 		expect(LUNCH_SECTION_LEGACY_LABEL).toBe("中餐預算");
 		expect(LUNCH_TOTAL_LABEL).toBe("總和");
-		expect(LUNCH_DEFAULT_ITEM).toBe("中餐");
 		expect(LUNCH_ADJUST_LABEL).toBe("午餐超支或回補");
 		expect(LUNCH_COLS).toEqual({ date: 15, item: 16, amount: 17, paidMethod: 18 });
 		expect(LUNCH_COLS.paidMethod).toBe(18); // S — 支付方式
-	});
-
-	it("keeps 沛還 and 薪水 as recurring income, ad-hoc rows are not", () => {
-		expect(RECURRING_INCOME.has("沛還")).toBe(true);
-		expect(RECURRING_INCOME.has("薪水")).toBe(true);
-		expect(RECURRING_INCOME.has("多一個月薪水")).toBe(false);
 	});
 
 	it("maps the monthly-tab columns (類別-column layout)", () => {
@@ -145,10 +123,9 @@ describe("conventions", () => {
 		expect(MONTH_COLS.paidMethod).toBe(6); // G — 支付方式
 	});
 
-	it("documents the 類別 tags seen in the sheet", () => {
-		for (const tag of ["訂閱", "吃喝", "交通", "生活用品", "娛樂", "購物", "其他", "透支", "學貸"]) {
-			expect(KNOWN_TAGS).toContain(tag);
-		}
+	it("lists the nine budget categories, each one a block", () => {
+		expect([...KNOWN_TAGS].sort()).toEqual(["中餐", "交通", "其他", "吃喝", "娛樂", "學貸", "生活用品", "訂閱", "購物"].sort());
+		expect(KNOWN_TAGS).not.toContain("透支");
 	});
 
 	it("converts calendar dates to Sheets serials", () => {
@@ -192,51 +169,47 @@ describe("conventions", () => {
 	it("conventions text mentions the anchors Claude needs", () => {
 		for (const needle of [
 			"花費總額",
-			"GOOGLEFINANCE",
-			"上月透支",
 			"上月美金透支",
 			"上月新臺幣透支",
-			"insert",
-			"0.22",
 			"分類總花費",
 			"電子產品",
 			"機票住宿",
 			"find_cells",
 			"expect_empty",
 			"日期",
-			"類別",
-			"新臺幣支付",
-			"支付幣別",
 			"本月美金收支狀況",
 			"本月新臺幣收支狀況",
-			"本月底美金餘額",
-			"本月底新臺幣餘額",
-			"保守預計本月底新臺幣餘額",
 			"學貸",
 			"set_income",
 			"幣別",
 			"乾坤大挪移",
 			"add_transfer",
 			"當筆總額外花費",
-			"中餐預算",
-			"午餐預算",
-			"add_lunch",
-			"午餐超支或回補",
 			"編列預算",
-			"信用卡帳單對帳區",
-			"支付方式",
-			"本月需繳款",
-			"本月需繳",
-			"結帳日前",
-			"小計",
-			"set_expense_date",
 		]) {
 			expect(CONVENTIONS_TEXT).toContain(needle);
 		}
 	});
 
+	it("describes old-layout months as read-only history that month_summary still reads", () => {
+		const old = CONVENTIONS_TEXT.slice(CONVENTIONS_TEXT.indexOf("OLD MONTHS"));
+		expect(CONVENTIONS_TEXT).toContain("OLD MONTHS");
+		expect(old).toContain("read-only");
+		expect(old).toContain("month_summary");
+		expect(old).toContain("N 月 DEP");
+	});
+
+	it("no longer offers the removed tools or the old write paths", () => {
+		for (const gone of ["add_lunch", "set_expense_date", "adjust_balance", "replace_old_layout", "card is refused", "wires the NTD side"]) {
+			expect(CONVENTIONS_TEXT).not.toContain(gone);
+		}
+		// The card buckets survive only as part of the old months' read-only description.
+		const beforeOld = CONVENTIONS_TEXT.slice(0, CONVENTIONS_TEXT.indexOf("OLD MONTHS"));
+		expect(beforeOld).not.toContain("信用卡帳單對帳區");
+	});
+
 	it("describes budget months", () => {
-		for (const needle of ["BUDGET MONTHS", "本月匯率", "Budget Based", "replace_old_layout", "N 月 DEP", "幣別"]) {
+		for (const needle of ["MONTHLY TABS", "本月匯率", "Budget Based", "幣別"]) {
 			expect(CONVENTIONS_TEXT).toContain(needle);
 		}
 	});
@@ -280,32 +253,5 @@ describe("conventions", () => {
 		// The monthly tab's 花費總額 must NOT match — different anchor, different layout.
 		expect("花費總額").not.toContain(TRIP_TOTAL_LABEL);
 		expect(TRIP_MAX_BLOCK_ROWS).toBe(30);
-	});
-
-	it("exports the 信用卡帳單對帳區 registry and block geometry", () => {
-		expect(CREDIT_SECTION_LABEL).toBe("信用卡帳單對帳區");
-		expect(CREDIT_CARDS.map((c) => c.name)).toEqual([
-			"國泰 CUBE",
-			"CHASE Amazon",
-			"CHASE Freedom",
-			"Apple Card",
-		]);
-		// 國泰 CUBE bills TWD; the US cards bill USD.
-		expect(CREDIT_CARDS.filter((c) => c.billingCurrency === "TWD").map((c) => c.name)).toEqual(["國泰 CUBE"]);
-		// Only CHASE Amazon's 繳款日 pays the statement closed the SAME month.
-		expect(CREDIT_CARDS.filter((c) => c.statementLag === 0).map((c) => c.name)).toEqual(["CHASE Amazon"]);
-		// Only Apple Card's statement includes the 結帳日 itself (calendar-month cycle).
-		expect(CREDIT_CARDS.filter((c) => c.inclusiveClose).map((c) => c.name)).toEqual(["Apple Card"]);
-		expect(CREDIT_BLOCK_COLS).toEqual([7, 11]); // H and L
-		expect(CREDIT_BLOCK_WIDTH).toBe(3);
-		expect(CREDIT_SUBTOTAL_LABEL).toBe("小計");
-	});
-
-	it("addMonthsClamped bumps a serial by months, clamping the day and wrapping the year", () => {
-		expect(addMonthsClamped(dateSerial(2026, 7, 19), 1)).toBe(dateSerial(2026, 8, 19));
-		expect(addMonthsClamped(dateSerial(2026, 7, 31), 1)).toBe(dateSerial(2026, 8, 31));
-		expect(addMonthsClamped(dateSerial(2026, 8, 31), 1)).toBe(dateSerial(2026, 9, 30));
-		expect(addMonthsClamped(dateSerial(2026, 1, 31), 1)).toBe(dateSerial(2026, 2, 28));
-		expect(addMonthsClamped(dateSerial(2026, 12, 15), 1)).toBe(dateSerial(2027, 1, 15));
 	});
 });

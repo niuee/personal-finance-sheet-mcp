@@ -3,14 +3,11 @@ import { dateSerial } from "../src/conventions";
 import type { BudgetMonthSummary } from "../src/budget-ops";
 import {
 	addExpense,
-	addLunch,
 	addTransfer,
-	adjustBalance,
 	cellData,
 	deleteExpense,
 	getCategories,
 	monthSummary,
-	setExpenseDate,
 	setIncome,
 	startMonth,
 } from "../src/finance-ops";
@@ -158,12 +155,18 @@ describe("addExpense on budget months", () => {
 		expect(JSON.stringify((noRule.batchUpdate as any).mock.calls[0][0])).not.toContain("copyPaste");
 	});
 
-	it("refuses card and a missing tag on budget months, writing nothing", async () => {
+	it("refuses a missing tag on budget months, writing nothing", async () => {
 		const client = budgetClient({ "11 月": budgetGrid() });
-		await expect(addExpense(client, { item: "x", amount: 1, currency: "TWD", tag: "購物", card: "現金", month: 11 })).rejects.toThrow(
-			/budget month/,
-		);
 		await expect(addExpense(client, { item: "x", amount: 1, currency: "TWD", month: 11 })).rejects.toThrow(/tag.*中餐/);
+		expect(client.batchUpdate).not.toHaveBeenCalled();
+	});
+
+	it("rejects a TWD-priced expense paid in USD before reading or writing anything", async () => {
+		const client = budgetClient({ "11 月": budgetGrid() });
+		await expect(
+			addExpense(client, { item: "x", amount: 100, currency: "TWD", paidWith: "USD", tag: "購物", month: 11 }),
+		).rejects.toThrow("not representable");
+		expect(client.readRange).not.toHaveBeenCalled();
 		expect(client.batchUpdate).not.toHaveBeenCalled();
 	});
 
@@ -372,37 +375,75 @@ describe("monthSummary and getCategories on budget months", () => {
 	});
 
 	it("get_categories lists the blocks on a budget month", async () => {
-		const client = { ...budgetClient({ "11 月": budgetGrid() }), getDataValidation: vi.fn() } as unknown as SheetsClient;
+		const client = budgetClient({ "11 月": budgetGrid() });
 		expect(await getCategories(client, 11)).toEqual({
 			tab: "11 月",
 			source: "BUDGET_BLOCKS",
 			categories: ["中餐", "購物", "吃喝", "生活用品", "訂閱", "交通", "娛樂", "學貸", "其他"],
 		});
-		expect((client as any).getDataValidation).not.toHaveBeenCalled();
+	});
+
+	it("set_income, delete_expense and get_categories refuse a truncated read, writing nothing", async () => {
+		const truncated = () => {
+			const client = budgetClient({ "11 月": budgetGrid() });
+			(client.readRange as any).mockResolvedValue({ range: "x", values: budgetGrid(), truncated: true });
+			return client;
+		};
+		const ops: Array<(c: SheetsClient) => Promise<unknown>> = [
+			(c) => setIncome(c, { item: "沛還", amount: 700, currency: "USD", month: 11 }),
+			(c) => deleteExpense(c, { item: "Claude", month: 11 }),
+			(c) => getCategories(c, 11),
+		];
+		for (const op of ops) {
+			const client = truncated();
+			await expect(op(client)).rejects.toThrow(/truncated/);
+			expect(client.batchUpdate).not.toHaveBeenCalled();
+		}
 	});
 });
 
-describe("old-layout-only tools refuse budget months", () => {
-	it("add_lunch points at add_expense with tag 中餐", async () => {
-		const client = budgetClient({ "11 月": budgetGrid() });
-		await expect(addLunch(client, { amount: 120, month: 11 })).rejects.toThrow("11 月 is a budget month — lunches are entries in the 午餐 block");
+describe("old-layout months are read-only", () => {
+	const READ_ONLY = "9 月 is on the old layout, which is read-only now — month_summary still reads it; no tool writes to it.";
+	const oldClient = () => budgetClient({ "9 月": oldMonthGrid() });
+
+	it("add_expense refuses and writes nothing", async () => {
+		const client = oldClient();
+		await expect(addExpense(client, { item: "晚餐", amount: 200, currency: "TWD", tag: "吃喝", month: 9 })).rejects.toThrow(READ_ONLY);
 		expect(client.batchUpdate).not.toHaveBeenCalled();
 	});
 
-	it("set_expense_date has no card buckets to date into", async () => {
-		const client = budgetClient({ "11 月": budgetGrid() });
-		await expect(setExpenseDate(client, { item: "Netflix", date: "11/2", month: 11 })).rejects.toThrow(
-			"11 月 is a budget month — it has no card statement buckets",
-		);
+	it("delete_expense refuses and writes nothing", async () => {
+		const client = oldClient();
+		await expect(deleteExpense(client, { item: "Google Cloud", month: 9 })).rejects.toThrow(READ_ONLY);
 		expect(client.batchUpdate).not.toHaveBeenCalled();
 	});
 
-	it("adjust_balance has no bank-balance sections", async () => {
-		const client = budgetClient({ "11 月": budgetGrid() });
-		await expect(adjustBalance(client, { currency: "TWD", actual: 1000, month: 11 })).rejects.toThrow(
-			"11 月 is a budget month — it has no bank-balance sections to reconcile.",
-		);
+	it("set_income refuses a month on the 本月…收支狀況 layout it used to accept, writing nothing", async () => {
+		const client = oldClient();
+		await expect(setIncome(client, { item: "沛還", amount: 700, currency: "USD", month: 9 })).rejects.toThrow(READ_ONLY);
 		expect(client.batchUpdate).not.toHaveBeenCalled();
+	});
+
+	it("add_transfer (usd) refuses and writes nothing", async () => {
+		const client = oldClient();
+		await expect(addTransfer(client, { ntd: 30000, usd: 900, fee: 15, month: 9 })).rejects.toThrow(READ_ONLY);
+		expect(client.batchUpdate).not.toHaveBeenCalled();
+	});
+
+	it("get_categories refuses after the one layout read", async () => {
+		const client = oldClient();
+		await expect(getCategories(client, 9)).rejects.toThrow(READ_ONLY);
+		expect(client.readRange).toHaveBeenCalledTimes(1);
+	});
+
+	it("month_summary still reads an old-layout month", async () => {
+		const s = (await monthSummary(budgetClient({ "9 月": oldMonthGrid() }), 9)) as any;
+		expect(s.layout).toBeUndefined();
+		expect(s.tab).toBe("9 月");
+		expect(s.incomes).toEqual([
+			{ item: "沛還", currency: "USD", amount: 700 },
+			{ item: "薪水", currency: "TWD", amount: 65271 },
+		]);
 	});
 });
 
@@ -426,22 +467,19 @@ describe("startMonth from the Budget Based template", () => {
 			write(3, 4, "=IF(-('10 月'!D44) > 0, -('10 月'!D44), 0)"),
 			write(22, 2, rateFormula(2026, 11)),
 		]);
-		expect(r).toMatchObject({ tab: "11 月", layout: "budget", template: "Budget Based", carriesFrom: "10 月", replacedTab: null });
+		expect(r).toMatchObject({ tab: "11 月", layout: "budget", template: "Budget Based", carriesFrom: "10 月" });
+		expect(r).not.toHaveProperty("replacedTab");
 		expect((r as any).startingEntries["訂閱"]).toEqual(["ElevenLabs", "iCloud", "Google One", "Netflix", "ChatGPT", "Claude"]);
 	});
 
 	it("a failed read writes nothing — no half-built month", async () => {
-		const client = budgetClient({ "Budget Based": budgetGrid(), "10 月": oldMonthGrid(), "11 月": oldMonthGrid() }, [
-			"Budget Based",
-			"10 月",
-			"11 月",
-		]);
+		const client = budgetClient({ "Budget Based": budgetGrid(), "10 月": oldMonthGrid() }, ["Budget Based", "10 月"]);
 		const real = (client.readRange as any).getMockImplementation();
 		(client.readRange as any).mockImplementation(async (range: string) => {
 			if (range.startsWith("'10 月'")) throw new Error("Sheets API error (503)");
 			return real(range);
 		});
-		await expect(startMonth(client, 11, { ...NOW, replaceOldLayout: true })).rejects.toThrow(/503/);
+		await expect(startMonth(client, 11, NOW)).rejects.toThrow(/503/);
 		expect(client.batchUpdate).not.toHaveBeenCalled();
 	});
 
@@ -459,40 +497,17 @@ describe("startMonth from the Budget Based template", () => {
 		expect((client.batchUpdate as any).mock.calls[0][0]).toEqual(expect.arrayContaining([write(22, 2, rateFormula(2027, 1))]));
 	});
 
-	it("existing old-layout 11 月: refuses without the flag; renames to 11 月 DEP with it", async () => {
-		const tabs = ["Budget Based", "10 月", "11 月"];
-		const plain = budgetClient({ "Budget Based": budgetGrid(), "10 月": oldMonthGrid(), "11 月": budgetGrid() }, tabs);
-		await expect(startMonth(plain, 11, NOW)).rejects.toThrow(/already exists/);
-		expect(plain.batchUpdate).not.toHaveBeenCalled();
-
-		const client = budgetClient({ "Budget Based": budgetGrid(), "10 月": oldMonthGrid(), "11 月": budgetGrid() }, tabs);
-		(client.readRange as any).mockResolvedValueOnce({ range: "x", values: oldMonthGrid(), truncated: false }); // the old 11 月
-		const r = await startMonth(client, 11, { ...NOW, replaceOldLayout: true });
-		const calls = (client.batchUpdate as any).mock.calls.map((c: any) => c[0]);
-		expect(calls).toHaveLength(1);
-		expect(calls[0][0]).toEqual({ updateSheetProperties: { properties: { sheetId: 111, title: "11 月 DEP" }, fields: "title" } });
-		expect(calls[0][1]).toEqual({ duplicateSheet: { sourceSheetId: 900, insertSheetIndex: 0, newSheetName: "11 月", newSheetId: 555 } });
-		expect(r).toMatchObject({ replacedTab: "11 月 DEP" });
+	it("refuses an existing month, old layout or budget, writing nothing", async () => {
+		for (const existing of [oldMonthGrid(), budgetGrid()]) {
+			const client = budgetClient({ "Budget Based": budgetGrid(), "10 月": oldMonthGrid(), "11 月": existing }, ["Budget Based", "10 月", "11 月"]);
+			await expect(startMonth(client, 11, NOW)).rejects.toThrow('Tab "11 月" already exists — refusing to overwrite it.');
+			expect(client.batchUpdate).not.toHaveBeenCalled();
+		}
 	});
 
-	it("never replaces a budget month or an existing DEP", async () => {
-		const budgetTwice = budgetClient({ "Budget Based": budgetGrid(), "11 月": budgetGrid() }, ["Budget Based", "11 月"]);
-		await expect(startMonth(budgetTwice, 11, { ...NOW, replaceOldLayout: true })).rejects.toThrow(/already a budget month/);
-		expect(budgetTwice.batchUpdate).not.toHaveBeenCalled();
-
-		const withDep = budgetClient({ "Budget Based": budgetGrid(), "11 月": oldMonthGrid() }, ["Budget Based", "11 月", "11 月 DEP"]);
-		await expect(startMonth(withDep, 11, { ...NOW, replaceOldLayout: true })).rejects.toThrow(/11 月 DEP/);
-		expect(withDep.batchUpdate).not.toHaveBeenCalled();
-	});
-
-	it("old path still runs without the template; the flag without the template throws", async () => {
-		const client = budgetClient({ "9 月": oldMonthGrid(), "8 月": [], "10 月": oldMonthGrid() }, ["9 月", "8 月"]);
-		await startMonth(client, 10);
-		expect((client.batchUpdate as any).mock.calls[0][0]).toEqual([
-			{ duplicateSheet: { sourceSheetId: 111, insertSheetIndex: 0, newSheetName: "10 月" } },
-		]);
-		const flagged = budgetClient({ "9 月": oldMonthGrid() }, ["9 月", "8 月"]);
-		await expect(startMonth(flagged, 10, { replaceOldLayout: true })).rejects.toThrow(/Budget Based/);
-		expect(flagged.batchUpdate).not.toHaveBeenCalled();
+	it("refuses without the Budget Based template instead of duplicating the previous month, writing nothing", async () => {
+		const client = budgetClient({ "9 月": oldMonthGrid(), "10 月": oldMonthGrid() }, ["9 月"]);
+		await expect(startMonth(client, 10)).rejects.toThrow('No "Budget Based" template tab — start_month builds every month from it.');
+		expect(client.batchUpdate).not.toHaveBeenCalled();
 	});
 });

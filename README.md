@@ -9,13 +9,13 @@ A personal [Model Context Protocol](https://modelcontextprotocol.io/introduction
 - **append_rows** — append new rows below the existing data in a tab.
 - **update_range** — overwrite cells in a range with new values. `expect_empty:true` refuses the write if any target cell is currently non-empty (for append-like writes); the response always includes `previousValues` (what was overwritten, with formulas) so a mistake can be reverted.
 - **add_tab** — create a new empty tab.
-- **add_expense** — log an expense into a monthly tab (defaults to the current month); a card param routes it into the 信用卡帳單對帳區.
-- **set_expense_date** — date an existing expense row (dropping a card row into its 對帳區 bucket), growing the bucket when full.
-- **delete_expense** — remove an expense row from a monthly tab entirely (scoped to columns A-G, leaving the neighbouring blocks in place); returns the deleted cells. On budget months it removes a block entry; `tag` narrows the search to one block.
-
-Every write to a monthly tab (add_expense, add_lunch, set_expense_date, delete_expense, set_income, adjust_balance, add_transfer) also audits ALL 信用卡帳單對帳區 buckets and grows any whose mirror has outgrown its spill area — so rows typed straight into the UI, which trigger no tool write of their own, are healed by the next tool write of any kind.
+- **add_expense** — log an expense into its category block on a month tab (defaults to the current month); `tag` picks the block.
+- **delete_expense** — remove a block entry entirely (the entries below it in that block move up); `tag` narrows the search to one block. Returns the deleted cells.
+- **set_income** — add or update an income row (薪水, 沛還, …) on a month tab.
+- **add_transfer** — log a 乾坤大挪移 currency transfer: NTD→USD into a month tab's log, or NTD→JPY into a trip tab's log, with the rate pinned at entry.
 - **month_summary** — get a month's numbers as clean JSON.
-- **start_month** — open a new month by duplicating the previous month's tab, rolls the 信用卡帳單對帳區 forward, and pads every card bucket's spill area to 20 blank rows of headroom. When a `Budget Based` tab exists it builds a budget month by copying that template instead; `replace_old_layout` rebuilds an existing old-layout month and keeps the old tab as `N 月 DEP`.
+- **get_categories** — list a month's category blocks (the tags `add_expense` accepts).
+- **start_month** — open a new month by copying the `Budget Based` template tab.
 - **add_trip_entry** — log a purchase into a trip tab's mosaic category block, discovering the block by title and choosing between jpy (¥-priced) or twd (NTD-direct) rows.
 - **trip_budget_status** — read a trip tab's 目前實際開銷 budget-vs-actual summary: per-分類 spent / budget / remaining (NTD and JPY) plus totals.
 - **get_sheet_conventions** — read how the spreadsheet is organized.
@@ -23,11 +23,11 @@ Every write to a monthly tab (add_expense, add_lunch, set_expense_date, delete_e
 - **delete_rows** — delete rows outright (the row goes, everything below moves up), optionally scoped to a column band so the blocks beside it stay put; returns `deletedValues` and refuses when a formula points straight at a deleted cell (`force` overrides).
 - **find_cells** — find cells containing a text and get their exact A1 addresses, across one tab or every tab; the alternative to reading big ranges and counting rows.
 
-### Budget months
+### Month tabs
 
-From 11 月 2026 on, month tabs use a budget layout. Every category has a USD and an NTD side: two budget rows per category (`<類別>美金預算`, `<類別>新臺幣預算`), and a block per category where its expenses are logged, topped by a 美金 row and a 新臺幣 row of 編列預算 / 總和 / 剩餘 (USD in USD, NTD in NTD), above an open-ended list. A single 本月匯率 cell below the budget list does every conversion (live until the 1st, then locked to the 1st's rate). Then come the income list, a 本月美金收支狀況 line (in USD) and a 本月新臺幣收支狀況 line built the same way (income − last month's overdraft − that currency's budget rows + that currency's overspend, 本月美金超支 / 本月新臺幣超支), and a 乾坤大挪移 log after the last block. `start_month` builds these months by copying the `Budget Based` template tab.
+From 10 月 2026 on, month tabs use a budget layout. Every category has a USD and an NTD side: two budget rows per category (`<類別>美金預算`, `<類別>新臺幣預算`), and a block per category where its expenses are logged, topped by a 美金 row and a 新臺幣 row of 編列預算 / 總和 / 剩餘 (USD in USD, NTD in NTD), above an open-ended list. A single 本月匯率 cell below the budget list does every conversion (live until the 1st, then locked to the 1st's rate). Then come the income list, a 本月美金收支狀況 line (in USD) and a 本月新臺幣收支狀況 line built the same way (income − last month's overdraft − that currency's budget rows + that currency's overspend, 本月美金超支 / 本月新臺幣超支), and a 乾坤大挪移 log after the last block. `start_month` builds these months by copying the `Budget Based` template tab.
 
-On budget months `add_expense` (tag required, card refused), `delete_expense`, `set_income`, `add_transfer`, `month_summary` (returns `layout: "budget"`) and `get_categories` (returns the blocks) work; `add_lunch`, `set_expense_date` and `adjust_balance` refuse, since budget months have no lunch log, card buckets or bank-balance sections. 5 月–10 月 keep the old layout and every tool behaves there as before.
+5 月–9 月 2026 and the `N 月 DEP` copies are on the old layout (one expense list, a lunch log, card statement buckets and bank-balance blocks). They are read-only history: every write tool refuses them, and `month_summary` still reads 5 月–9 月.
 
 ## Auth architecture
 

@@ -162,12 +162,29 @@ export function legacyBudgetGrid(): unknown[][] {
 	return g;
 }
 
-/** An old-layout previous month (10 月 flavour): only the two 收支狀況 rows matter here. */
+/**
+ * An old-layout month (10 月 DEP flavour, FORMULA render): an expense list
+ * ending at 花費總額, the income list, both 收支狀況 rows (D43 / D44 — the
+ * carries start_month points at), the 本月美金收入 SUMIF and an empty
+ * 乾坤大挪移 log at H51. Everything the old write paths used to accept.
+ */
 export function oldMonthGrid(): unknown[][] {
 	const g: unknown[][] = [];
 	g[0] = ["10 月花費"];
+	g[1] = ["日期", "項目", "類別", "美金", "新臺幣", "支付幣別", "支付方式"];
+	g[2] = ["", "上月美金透支", "透支", "=IF(-('9 月'!D76) > 0, -('9 月'!D76), 0)", '=D3*GOOGLEFINANCE("CURRENCY:USDTWD")', "USD"];
+	g[3] = ["", "上月新臺幣透支", "透支", "", "=IF(-('9 月'!D77) > 0, -('9 月'!D77), 0)", "TWD"];
+	g[4] = ["", "Google Cloud", "訂閱", 11.53, '=D5*GOOGLEFINANCE("CURRENCY:USDTWD")', "USD"];
 	g[34] = ["", "", "", "花費總額", "=SUM(E3:E34)"];
-	g[42] = ["", "本月美金收支狀況", "", "=D50-D51"];
-	g[43] = ["", "本月新臺幣收支狀況", "", "=D55-D56+D57"];
+	g[36] = ["", "總預算"];
+	g[37] = ["", "項目", "幣別", "金額"];
+	g[38] = ["", "沛還", "USD", 700];
+	g[39] = ["", "薪水", "TWD", 65271];
+	g[42] = ["", "本月美金收支狀況", "", "=D51-D52"];
+	g[43] = ["", "本月新臺幣收支狀況", "", "=D56-D57+D58"];
+	g[49] = ["", "銀行餘額"];
+	g[50] = ["", "本月美金收入", "", '=SUMIF(C38:C41,"USD",D38:D41)', "", "", "", "乾坤大挪移"];
+	g[51] = ["", "本月美金支出", "", '=SUMIF(F3:F34,"USD",D3:D34)', "", "", "", "日期", "新臺幣", "當下美金", "實際美金", "匯差", "手續費", "當筆總額外花費"];
+	g[53] = ["", "", "", "", "", "", "", "總和", "=sum(I53)", "=sum(J53)", "=sum(K53)", "=sum(L53)", "=sum(M53)", "=sum(N53)"];
 	return g;
 }

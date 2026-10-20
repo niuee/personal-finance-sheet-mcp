@@ -81,7 +81,7 @@ describe("budget-month layout", () => {
 	});
 
 	it("rateYear picks the nearest occurrence, so rebuilding a just-ended month keeps its year", () => {
-		expect(rateYear(11, new Date("2026-12-15T04:00:00Z"))).toBe(2026); // start_month(11, replace_old_layout) run in December
+		expect(rateYear(11, new Date("2026-12-15T04:00:00Z"))).toBe(2026); // November built late, in December
 		expect(rateYear(12, new Date("2027-01-10T04:00:00Z"))).toBe(2026);
 		expect(rateYear(4, new Date("2026-10-20T04:00:00Z"))).toBe(2027); // six months either way → the coming one
 	});

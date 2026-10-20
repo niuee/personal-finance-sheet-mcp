@@ -1,6 +1,7 @@
 # Budget-based month tabs — Design
 
 > **Superseded in part (2026-10-20):** blocks, the budget list and the 超支 rows are now per currency — see `2026-10-20-per-currency-budget-blocks-design.md`.
+> **Superseded in part (2026-10-20, later):** 10 月 moved to the budget layout too, and the old layout is now read-only — see `2026-10-20-october-budget-migration-design.md`.
 
 **Date:** 2026-10-19 (updated 2026-10-20)
 **Status:** Draft, awaiting approval
