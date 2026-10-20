@@ -136,7 +136,7 @@ const monthParam = z.number().int().min(1).max(12);
 export function registerTailoredTools(server: McpServer, client: SheetsClient): void {
 	server.tool(
 		"add_expense",
-		"Log an expense into a monthly tab (defaults to the current month). Writes into the expense window at its date-sorted position (after the last row dated on-or-before it; dateless rows sort last) so 花費總額 picks it up and a hand date-sort of the list survives; converts USD via GOOGLEFINANCE, and tags the row's 類別 cell. Use this instead of append_rows/update_range for monthly expenses.",
+		"Log an expense into a monthly tab (defaults to the current month). Writes into the expense window at its date-sorted position (after the last row dated on-or-before it; dateless rows sort last) so 花費總額 picks it up and a hand date-sort of the list survives; converts USD via GOOGLEFINANCE, and tags the row's 類別 cell. Use this instead of append_rows/update_range for monthly expenses. On BUDGET MONTHS (from 11 月 2026) the expense goes into its category block instead: tag is required and picks the block (中餐 or 午餐 → the 午餐 block), card is refused, and a USD-priced expense paid from the NTD account (currency USD + paid_with TWD) is written as 幣別 TWD with 金額 = amount × 本月匯率.",
 		{
 			item: z.string().min(1).describe("Expense name, e.g. 晚餐 or Netflix"),
 			amount: z.number().describe("The amount, in the given currency"),

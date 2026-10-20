@@ -88,6 +88,8 @@ import {
 	USD_START_BALANCE_LABEL,
 } from "./conventions";
 import type { SheetsClient } from "./sheets-client";
+import { isBudgetMonth } from "./budget-layout";
+import { addBudgetExpense } from "./budget-ops";
 
 /** Re-target a single-row formula: "=E5*0.22" from row 5 to row 9 → "=E9*0.22". */
 export function adaptRowFormula(formula: string, fromRow: number, toRow: number): string {
@@ -605,7 +607,7 @@ function norm(v: unknown): string {
  * and the fresh cells copy the neighbouring row's format like
  * inheritFromBefore did.
  */
-function bandInsert(sheetId: number, row: number, count: number, startCol: number, endCol: number): object {
+export function bandInsert(sheetId: number, row: number, count: number, startCol: number, endCol: number): object {
 	return {
 		insertRange: {
 			range: {
@@ -1134,7 +1136,7 @@ export function quoteTab(tab: string): string {
 	return `'${tab.replace(/'/g, "''")}'`;
 }
 
-function assertNotTruncated(truncated: boolean, tab: string, range: string): void {
+export function assertNotTruncated(truncated: boolean, tab: string, range: string): void {
 	if (truncated) {
 		throw new Error(
 			`Refusing to operate on ${tab}: reading ${range} was truncated at the size cap, so row positions cannot be trusted.`,
@@ -1260,6 +1262,9 @@ export async function addExpense(client: SheetsClient, p: AddExpenseParams) {
 
 	const { values, truncated } = await client.readRange(`${quoteTab(tab)}!${FULL_GRID_READ}`, "FORMULA");
 	assertNotTruncated(truncated, tab, FULL_GRID_READ);
+	// Budget months hand off. The cast keeps this op's declared (old-layout)
+	// result type for its typed callers; the tool layer only serializes it.
+	if (isBudgetMonth(values)) return (await addBudgetExpense(client, tab, p, dateSerialValue)) as never;
 
 	const { totalRow, start: windowStart, end: windowEnd } = findExpenseWindow(values, tab);
 
@@ -1399,7 +1404,7 @@ export interface AddTransferParams {
 	month?: number;
 }
 
-function round2(n: number): number {
+export function round2(n: number): number {
 	return Math.round(n * 100) / 100;
 }
 
