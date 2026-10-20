@@ -11,6 +11,7 @@ import {
 	ADJUSTED_REAL_USD_END_LABEL,
 	ADJUSTED_USD_END_BALANCE_LABELS,
 	BANK_BLOCK_LABEL,
+	BUDGET_SUM_LABEL,
 	BUDGET_HEADER_LABEL,
 	CREDIT_BLOCK_COLS,
 	CREDIT_BLOCK_WIDTH,
@@ -47,10 +48,13 @@ import {
 	NTD_SPENDING_LABEL,
 	NTD_START_BALANCE_LABEL,
 	OVERDRAFT_LABEL,
+	OVERSPEND_LABEL,
+	OVERSPEND_NET_LABEL,
 	parseDateInput,
 	PREV_NTD_OVERDRAFT_LABEL,
 	PREV_USD_OVERDRAFT_LABEL,
 	previousMonth,
+	RATE_LABEL,
 	REAL_NTD_CARD_PAYMENT_LABEL,
 	REAL_NTD_CASH_SPENDING_LABEL,
 	REAL_NTD_END_BALANCE_LABEL,
@@ -68,6 +72,7 @@ import {
 	serialToIso,
 	todaySerial,
 	TOTAL_ROW_LABEL,
+	TOTAL_SPENDING_LABEL,
 	TRANSFER_COLS,
 	TRANSFER_JPY_COLS,
 	TRANSFER_SECTION_LABEL,
@@ -88,7 +93,7 @@ import {
 	USD_START_BALANCE_LABEL,
 } from "./conventions";
 import type { SheetsClient } from "./sheets-client";
-import { isBudgetMonth } from "./budget-layout";
+import { findBudgetIncomeSumifWindow, isBudgetMonth } from "./budget-layout";
 import { addBudgetExpense, deleteBudgetExpense } from "./budget-ops";
 
 /** Re-target a single-row formula: "=E5*0.22" from row 5 to row 9 → "=E9*0.22". */
@@ -1018,6 +1023,11 @@ const NON_INCOME_LABELS = new Set<string>([
 	...ADJUSTED_USD_END_BALANCE_LABELS,
 	ADJUSTED_REAL_NTD_END_LABEL,
 	ADJUSTED_REAL_USD_END_LABEL,
+	RATE_LABEL,
+	BUDGET_SUM_LABEL,
+	OVERSPEND_LABEL,
+	OVERSPEND_NET_LABEL,
+	TOTAL_SPENDING_LABEL,
 ]);
 
 /**
@@ -1051,7 +1061,10 @@ export async function setIncome(client: SheetsClient, p: SetIncomeParams) {
 			`${tab} still has the old 剩餘 income layout (6月 2026 and earlier) — those tabs are frozen history; edit them by hand if you must.`,
 		);
 	}
-	const sumifWin = findIncomeSumifWindow(values, tab);
+	// Budget months have no 本月美金收入 row: their income window is the one
+	// the 本月美金收支狀況 SUMIF covers.
+	const budget = isBudgetMonth(values);
+	const sumifWin = budget ? findBudgetIncomeSumifWindow(values, tab) : findIncomeSumifWindow(values, tab);
 
 	const cellStr = (r: number, c: number) => String(values[r - 1]?.[c] ?? "");
 	let targetRow: number | null = null;
@@ -1116,7 +1129,8 @@ export async function setIncome(client: SheetsClient, p: SetIncomeParams) {
 
 	// Any tool write is a chance to heal 對帳區 buckets that hand-entered card
 	// rows overflowed — ahead of the income band insert, like every audit.
-	const audit = auditCreditBuckets(values, tab, sheetId);
+	// Budget months have no 對帳區.
+	const audit = budget ? { requests: [], warning: undefined, grown: [] } : auditCreditBuckets(values, tab, sheetId);
 
 	await client.batchUpdate([...audit.requests, ...requests]);
 	return {

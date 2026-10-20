@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { dateSerial } from "../src/conventions";
-import { addExpense, cellData, deleteExpense } from "../src/finance-ops";
+import { addExpense, cellData, deleteExpense, setIncome } from "../src/finance-ops";
 import type { SheetsClient } from "../src/sheets-client";
 import { budgetGrid } from "./budget-fixtures";
 
@@ -127,5 +127,57 @@ describe("deleteExpense on budget months", () => {
 
 	it("throws when no entry matches", async () => {
 		await expect(deleteExpense(budgetClient({ "11 月": budgetGrid() }), { item: "Nope", month: 11 })).rejects.toThrow(/No "Nope"/);
+	});
+});
+
+describe("setIncome on budget months", () => {
+	it("updates 沛還 in place on a budget month", async () => {
+		const client = budgetClient({ "11 月": budgetGrid() });
+		const r = await setIncome(client, { item: "沛還", amount: 800, currency: "USD", month: 11 });
+		expect((client.batchUpdate as any).mock.calls[0][0]).toEqual([
+			{
+				updateCells: {
+					start: { sheetId: 111, rowIndex: 28, columnIndex: 2 },
+					rows: [{ values: [cellData("USD"), cellData(800)] }],
+					fields: "userEnteredValue",
+				},
+			},
+		]);
+		expect(r).toMatchObject({ row: 29, action: "updated" });
+	});
+
+	it("fills the first empty income row, then grows B–D only when the window is full", async () => {
+		const g = budgetGrid();
+		g[29] = ["", "獎金", "TWD", 1000];
+		g[30] = ["", "股息", "USD", 5];
+		const client = budgetClient({ "11 月": g });
+		await setIncome(client, { item: "發票中獎", amount: 200, currency: "TWD", month: 11 });
+		expect((client.batchUpdate as any).mock.calls[0][0][0]).toEqual({
+			insertRange: {
+				range: { sheetId: 111, startRowIndex: 30, endRowIndex: 31, startColumnIndex: 1, endColumnIndex: 4 },
+				shiftDimension: "ROWS",
+			},
+		});
+	});
+
+	it("writes a new income into the first empty row of the window", async () => {
+		const client = budgetClient({ "11 月": budgetGrid() });
+		const r = await setIncome(client, { item: "獎金", amount: 1000, currency: "TWD", month: 11 });
+		expect((client.batchUpdate as any).mock.calls[0][0]).toEqual([
+			{
+				updateCells: {
+					start: { sheetId: 111, rowIndex: 29, columnIndex: 1 },
+					rows: [{ values: [cellData("獎金"), cellData("TWD"), cellData(1000)] }],
+					fields: "userEnteredValue",
+				},
+			},
+		]);
+		expect(r).toMatchObject({ row: 30, action: "inserted" });
+	});
+
+	it("refuses layout labels like 本月匯率", async () => {
+		await expect(setIncome(budgetClient({ "11 月": budgetGrid() }), { item: "本月匯率", amount: 1, currency: "TWD", month: 11 })).rejects.toThrow(
+			/layout label/,
+		);
 	});
 });
