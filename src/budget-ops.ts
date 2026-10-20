@@ -113,13 +113,41 @@ export async function addBudgetExpense(
 	const amount: number | string = convertedAtMonthRate ? `=${p.amount}*$C$${findRateRow(values, tab)}` : p.amount;
 	const currency: "USD" | "TWD" = convertedAtMonthRate ? "TWD" : p.currency;
 
-	// 幣別 is a dropdown, but the template's rule only covers its own rows and
-	// a value write carries no rule. Copy it from the nearest entry above that
-	// has it onto every row from there down to the new one, so rows logged
-	// before this fix heal too. No rule anywhere above → leave the column as is.
+	// 幣別 is a dropdown, but a value write carries no rule. Copy it onto the
+	// new row from the nearest entry above in this block that has it (healing
+	// the rows in between). With none above, take any other 幣別 dropdown on
+	// the tab — this block's below first, then the closest one in another
+	// block — and copy it onto this block's whole column down to the new row.
+	// No dropdown anywhere → leave the column as is.
 	const currencyCol = block.startCol + 3;
-	const ruled = await client.dataValidationRows(tab, colLetter(currencyCol), block.headerRow + 1, row);
-	const ruleSrcRow = ruled.includes(row) ? null : (ruled.filter((r) => r < row).pop() ?? null);
+	const currencyCols = blocks.map((b) => b.startCol + 3);
+	const bottom = Math.max(row, values.length);
+	const ruled = (
+		await client.dataValidationCells(
+			tab,
+			`${colLetter(Math.min(...currencyCols))}${block.headerRow + 1}:${colLetter(Math.max(...currencyCols))}${bottom}`,
+		)
+	).filter((c) => currencyCols.includes(c.col));
+	let ruleSource: { row: number; col: number } | null = null;
+	let fillFrom = row;
+	if (!ruled.some((c) => c.col === currencyCol && c.row === row)) {
+		const above = ruled.filter((c) => c.col === currencyCol && c.row < row).sort((a, b) => b.row - a.row);
+		if (above.length > 0) {
+			ruleSource = above[0]!;
+			fillFrom = ruleSource.row + 1;
+		} else {
+			const elsewhere = [...ruled].sort(
+				(a, b) =>
+					Number(a.col !== currencyCol) - Number(b.col !== currencyCol) ||
+					Math.abs(a.row - row) - Math.abs(b.row - row) ||
+					a.col - b.col,
+			);
+			if (elsewhere.length > 0) {
+				ruleSource = elsewhere[0]!;
+				fillFrom = block.headerRow + 1;
+			}
+		}
+	}
 
 	const sheetId = await client.getSheetId(tab);
 	const requests: object[] = [
@@ -131,12 +159,17 @@ export async function addBudgetExpense(
 			},
 		},
 	];
-	if (ruleSrcRow !== null) {
-		const column = { startColumnIndex: currencyCol, endColumnIndex: currencyCol + 1 };
+	if (ruleSource !== null) {
 		requests.push({
 			copyPaste: {
-				source: { sheetId, startRowIndex: ruleSrcRow - 1, endRowIndex: ruleSrcRow, ...column },
-				destination: { sheetId, startRowIndex: ruleSrcRow, endRowIndex: row, ...column },
+				source: {
+					sheetId,
+					startRowIndex: ruleSource.row - 1,
+					endRowIndex: ruleSource.row,
+					startColumnIndex: ruleSource.col,
+					endColumnIndex: ruleSource.col + 1,
+				},
+				destination: { sheetId, startRowIndex: fillFrom - 1, endRowIndex: row, startColumnIndex: currencyCol, endColumnIndex: currencyCol + 1 },
 				pasteType: "PASTE_DATA_VALIDATION",
 			},
 		});

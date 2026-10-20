@@ -105,20 +105,23 @@ export class SheetsClient {
 		return null;
 	}
 
-	/** 1-indexed rows of `{col}{startRow}:{col}{endRow}` in `tab` whose cell carries a data-validation rule (any kind). */
-	async dataValidationRows(tab: string, col: string, startRow: number, endRow: number): Promise<number[]> {
-		const range = `${this.quoteTab(tab)}!${col}${startRow}:${col}${endRow}`;
+	/** Every cell of `range` (A1, e.g. "K7:AY40") in `tab` that carries a data-validation rule (any kind): 1-indexed row, 0-indexed column. */
+	async dataValidationCells(tab: string, range: string): Promise<Array<{ row: number; col: number }>> {
+		const a1 = `${this.quoteTab(tab)}!${range}`;
 		const data = await this.request(
-			`?ranges=${encodeURIComponent(range)}&fields=sheets.data(startRow,rowData.values.dataValidation)`,
+			`?ranges=${encodeURIComponent(a1)}&fields=sheets.data(startRow,startColumn,rowData.values.dataValidation)`,
 		);
-		const rows: number[] = [];
+		const cells: Array<{ row: number; col: number }> = [];
 		for (const grid of data.sheets?.[0]?.data ?? []) {
-			const first = (grid.startRow ?? 0) + 1;
+			const firstRow = (grid.startRow ?? 0) + 1;
+			const firstCol = grid.startColumn ?? 0;
 			(grid.rowData ?? []).forEach((row: any, i: number) => {
-				if (row.values?.[0]?.dataValidation?.condition?.type) rows.push(first + i);
+				(row.values ?? []).forEach((cell: any, j: number) => {
+					if (cell?.dataValidation?.condition?.type) cells.push({ row: firstRow + i, col: firstCol + j });
+				});
 			});
 		}
-		return rows;
+		return cells;
 	}
 
 	async appendRows(tab: string, rows: unknown[][]): Promise<{ updatedRange: string; updatedRows: number }> {

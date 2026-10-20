@@ -33,7 +33,7 @@ function budgetClient(grids: Record<string, unknown[][]>, tabs?: string[]): Shee
 			reqs[0]?.duplicateSheet ? { replies: [{ duplicateSheet: { properties: { sheetId: 555 } } }] } : { replies: [{}] },
 		),
 		listTabs: vi.fn(async () => (tabs ?? Object.keys(grids)).map((title) => ({ title, rowCount: 1000, columnCount: 62 }))),
-		dataValidationRows: vi.fn(async () => []),
+		dataValidationCells: vi.fn(async () => []),
 	} as unknown as SheetsClient;
 }
 
@@ -97,11 +97,13 @@ describe("addExpense on budget months", () => {
 
 	it("copies the 幣別 dropdown from the nearest entry above, filling the rows added without it", async () => {
 		const client = budgetClient({ "11 月": budgetGrid() });
-		// 訂閱 (幣別 in AE) holds entries in rows 7-12; only the template's rows 7-10 carry the dropdown.
-		(client.dataValidationRows as any).mockResolvedValueOnce([7, 8, 9, 10]);
+		// 訂閱 (幣別 in AE = col 30) holds entries in rows 7-12; only the template's rows 7-10 carry the dropdown.
+		// 中餐's K7 has one too, but the block's own dropdown wins.
+		(client.dataValidationCells as any).mockResolvedValueOnce([7, 8, 9, 10].map((row) => ({ row, col: 30 })).concat([{ row: 7, col: 10 }]));
 		const r = await addExpense(client, { item: "Spotify", amount: 149, currency: "TWD", tag: "訂閱", month: 11 });
 		expect(r).toMatchObject({ row: 13 });
-		expect(client.dataValidationRows).toHaveBeenCalledWith("11 月", "AE", 7, 13);
+		// One read over every block's 幣別 column (K…AY), from the first entry row to the tab's last row.
+		expect(client.dataValidationCells).toHaveBeenCalledWith("11 月", "K7:AY40");
 		expect((client.batchUpdate as any).mock.calls[0][0]).toContainEqual({
 			copyPaste: {
 				source: { sheetId: 111, startRowIndex: 9, endRowIndex: 10, startColumnIndex: 30, endColumnIndex: 31 },
@@ -111,9 +113,43 @@ describe("addExpense on budget months", () => {
 		});
 	});
 
+	it("with no dropdown above in its own block, copies one from another block's 幣別", async () => {
+		// 娛樂 (幣別 in AO = col 40) is empty, so its first entry lands on row 7; 訂閱's AE7 and AE12 carry the dropdown.
+		const client = budgetClient({ "11 月": budgetGrid() });
+		(client.dataValidationCells as any).mockResolvedValueOnce([
+			{ row: 7, col: 30 },
+			{ row: 12, col: 30 },
+		]);
+		await addExpense(client, { item: "Switch 遊戲", amount: 1490, currency: "TWD", tag: "娛樂", month: 11 });
+		expect((client.batchUpdate as any).mock.calls[0][0]).toContainEqual({
+			copyPaste: {
+				source: { sheetId: 111, startRowIndex: 6, endRowIndex: 7, startColumnIndex: 30, endColumnIndex: 31 },
+				destination: { sheetId: 111, startRowIndex: 6, endRowIndex: 7, startColumnIndex: 40, endColumnIndex: 41 },
+				pasteType: "PASTE_DATA_VALIDATION",
+			},
+		});
+	});
+
+	it("a block with no dropdown at all gets one from another block on every row down to the new entry", async () => {
+		// 訂閱's rows 7-12 have none; only 其他's AY7 (col 50) does → AE7:AE13 all get it.
+		const client = budgetClient({ "11 月": budgetGrid() });
+		(client.dataValidationCells as any).mockResolvedValueOnce([{ row: 7, col: 50 }]);
+		await addExpense(client, { item: "Spotify", amount: 149, currency: "TWD", tag: "訂閱", month: 11 });
+		expect((client.batchUpdate as any).mock.calls[0][0]).toContainEqual({
+			copyPaste: {
+				source: { sheetId: 111, startRowIndex: 6, endRowIndex: 7, startColumnIndex: 50, endColumnIndex: 51 },
+				destination: { sheetId: 111, startRowIndex: 6, endRowIndex: 13, startColumnIndex: 30, endColumnIndex: 31 },
+				pasteType: "PASTE_DATA_VALIDATION",
+			},
+		});
+	});
+
 	it("leaves the 幣別 dropdown alone when the target row already has it, or when the block has none", async () => {
 		const withRule = budgetClient({ "11 月": budgetGrid() });
-		(withRule.dataValidationRows as any).mockResolvedValueOnce([7, 8]);
+		(withRule.dataValidationCells as any).mockResolvedValueOnce([
+			{ row: 7, col: 15 },
+			{ row: 8, col: 15 },
+		]);
 		await addExpense(withRule, { item: "Kato 500系", amount: 8940, currency: "TWD", tag: "購物", month: 11 });
 		expect(JSON.stringify((withRule.batchUpdate as any).mock.calls[0][0])).not.toContain("copyPaste");
 
