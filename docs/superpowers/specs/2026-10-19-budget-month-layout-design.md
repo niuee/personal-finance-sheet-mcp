@@ -1,6 +1,6 @@
 # Budget-based month tabs — Design
 
-**Date:** 2026-10-19
+**Date:** 2026-10-19 (updated 2026-10-20)
 **Status:** Draft, awaiting approval
 
 ## Context
@@ -15,8 +15,10 @@ reference for everything below.
 
 The MCP tools only understand the old layout (expense list in A–G,
 銀行餘額, 帳戶實際數字對應, 信用卡帳單對帳區, 午餐預算 log). This design
-makes the monthly tools work on budget months and leaves 5 月–11 月,
-which stay on the old layout, working exactly as today.
+makes the monthly tools work on budget months. 11 月 2026 is the first
+budget month: the existing old-layout 11 月 and 12 月 are rebuilt from the
+template (see *Rollout*). 5 月–10 月 stay on the old layout and keep working
+exactly as today.
 
 ## Decisions already made (Vincent's)
 
@@ -42,8 +44,20 @@ which stay on the old layout, working exactly as today.
    are **dropped** from budget months.
 10. 乾坤大挪移 (NTD→USD transfers) stays, to the right of the last block,
     built the same way as a block (total on top, list grows down).
-11. `start_month` must create budget months from this layout and set up
-    本月匯率.
+11. `start_month` builds every budget month by **copying the "Budget
+    Based" tab, which is the template**. It does not copy the previous
+    month.
+12. The template's block entries are the **starting entries** every month
+    begins with. They were agreed item by item (see *Template contents*).
+    Every budget covers its category's starting entries, so no category
+    starts the month over budget.
+13. Each budget line has its own currency (its 支付幣別). A USD budget line
+    is entered in USD and converted at 本月匯率. Today 學貸 ($429.93) and
+    其他 ($15) are USD; the rest are NTD.
+14. 11 月 and 12 月 become budget months too. `start_month` rebuilds them
+    from the template, the old versions are kept as **"11 月 DEP"** and
+    **"12 月 DEP"**, and their planned one-off entries are re-added to the
+    new tabs.
 
 ## The budget-month layout
 
@@ -63,7 +77,7 @@ this codebase, never by fixed rows.
 | B15 / C15 / D15 | **本月匯率** label, the rate, a "← 月初更新" note |
 | B26 | 總預算 (income section title) |
 | B27:D27 | Income header 項目 / 幣別 / 金額 |
-| B28:D31 | Income rows (薪水 TWD today; 沛還 USD goes here too). D32/D33 read C28:C31 / D28:D31 |
+| B28:D31 | Income rows: 薪水 TWD 65,271 (row 28), 沛還 USD 700 (row 29). D32/D33 read C28:C31 / D28:D31 |
 | B32 / D32 | 本月美金收支狀況 (decision 6) |
 | B33 / D33 | 本月新臺幣收支狀況 (decision 7) |
 | B35 / D35 | 本月超支 = sum of the negative block 剩餘 |
@@ -96,18 +110,46 @@ category, as the old 午餐預算 / 中餐預算 anchors already do.
 formulas are the same as today's `add_transfer` writes (rate pinned at
 entry). The tab is 62 columns wide (to BJ).
 
+## Template contents
+
+The "Budget Based" tab is the template. Its entries have no 日期, like
+recurring rows today. Agreed with Vincent on 2026-10-20 and already
+written into the tab:
+
+| Block | Budget (支付幣別) | Starting entries |
+|---|---|---|
+| 生活用品 | 31,261 (TWD) | 基本生活費 30,000 TWD; 電話費 1,261 TWD |
+| 訂閱 | 13,000 (TWD) | ElevenLabs 6.00, iCloud 9.99, Google One 7.99, Netflix 26.99, ChatGPT 20.40 (all USD); Claude `=200*$C$15` TWD (USD-priced, paid from the NTD account) |
+| 學貸 | 429.93 (USD) | ECSI Loan 148.50 USD; Fed Loan 281.43 USD |
+| 交通 | 1,000 (TWD) | 公車儲值 1,000 TWD |
+| 其他 | 15 (USD) | 每月銀行管理 15.00 USD |
+| 中餐 (午餐 block) | 3,900 (TWD) | none |
+| 吃喝, 購物, 娛樂 | 0 (TWD) | none |
+
+- **Income:** 薪水 TWD 65,271 and 沛還 USD 700.
+- **Left out on purpose:**
+  - Google Cloud, Cursor, GitHub Action Minutes, 荒野亂鬥月票: Vincent removed them.
+  - 婚紗存錢, 額外支出, Cloudflare Domain: one-offs.
+- **Starting position:** with the template as is, 本月超支 is 0 and
+  本月美金收支狀況 is +$183.70.
+- **Changing the starting entries:** Vincent edits the template tab by
+  hand. Every month created afterwards picks the change up.
+
 ## Goals
 
 - `start_month` creates budget months (see below).
 - `add_expense`, `delete_expense`, `set_income`, `add_transfer`,
   `month_summary` and `get_categories` work on budget months.
-- Old-layout months (5 月–11 月) keep working exactly as today, with
-  every existing test still passing.
+- Old-layout months (5 月–10 月, plus the 11 月 DEP / 12 月 DEP copies)
+  keep working exactly as today, with every existing test still passing.
 - `get_sheet_conventions` and the README describe the budget layout.
 
 ## Non-goals
 
-- Migrating 5 月–11 月 to the budget layout.
+- Migrating 5 月–10 月 to the budget layout.
+- Converting an old month's entries automatically. 11 月 and 12 月 are
+  rebuilt from the template, and their few planned one-offs are re-added
+  by hand with `add_expense` (see *Rollout*).
 - Card reconciliation, bank balances or reconciliation adjustments in
   budget months.
 - A tool to change budget amounts. Budgets are edited by hand in the
@@ -130,7 +172,8 @@ entry). The tab is 62 columns wide (to BJ).
 A month tab is a budget month when its column B contains 本月匯率. *(My
 call; the builder may pick another anchor unique to the layout.)* Every
 monthly tool checks this first and branches. Old-layout code paths stay
-as they are.
+as they are. The template tab carries the same anchor, but tools only
+ever open "N 月" tabs, so they never treat it as a month.
 
 ## Tool behavior on budget months
 
@@ -190,32 +233,47 @@ amount }`; 本月美金收支狀況; 本月新臺幣收支狀況; 本月超支; 
 (from the block titles, 午餐 reported as 中餐 to match the budget list)
 instead of reading a 類別 dropdown, which budget tabs don't have.
 
-## start_month on budget months
+## start_month
 
-When the previous month is a budget month:
+`start_month(month, replace_old_layout?)` builds every budget month from
+the template.
 
-1. Duplicate it, as today. Refuse if the new tab already exists, as today.
+**Which path.** When a tab named "Budget Based" exists, `start_month`
+always takes the template path below. When it doesn't, it runs today's
+old-layout steps unchanged. That old path stays so the existing tests
+(whose fixtures have no template tab) keep passing. *(My call. A date
+cutoff can't work because tab names carry no year.)*
+
+**When "N 月" already exists:**
+- **Default:** refuse, as today.
+- **With `replace_old_layout: true`** and an old-layout "N 月": first
+  rename it to "N 月 DEP", then build. *(My call: an explicit flag, so a
+  mistyped month can never move a month in use out of the way.)*
+- **Always refuse** to replace a budget-layout tab.
+- **Always refuse** when "N 月 DEP" already exists.
+- **Renaming a tab:** Sheets rewrites every reference to the renamed tab.
+  For example, references to '11 月' become '11 月 DEP', including the
+  template's own placeholder carries. That's harmless, because step 3
+  below rewires the new tab's carries.
+
+**Steps:**
+1. Duplicate the "Budget Based" tab as "N 月". Put it at the front, where
+   new months go today.
 2. Write the title `N 月花費`.
-3. Point 上月美金透支 (D) and 上月新臺幣透支 (E) at the previous tab's
+3. Point 上月美金透支 (D) and 上月新臺幣透支 (E) at the previous month's
    本月美金收支狀況 / 本月新臺幣收支狀況 value cells, found by label, with
    the same `=IF(-(cell) > 0, -(cell), 0)` shape as today's carries.
+   - Both layouts use the same labels in column B with values in D, so
+     this works whether the previous month is old layout (10 月) or a
+     budget month.
+   - If the previous month is missing, the carry is 0.
 4. Write the 本月匯率 formula (below) for the new month.
-5. **Entries:**
-   - In every block, keep the entries whose 項目 is in `RECURRING_ITEMS`
-     and clear their 日期.
-   - Delete every other entry, bottom-up, with block-scoped
-     `deleteRange`s.
-   - The 午餐 block is always emptied. Lunch entries reuse the names
-     中餐 / 午餐, and `RECURRING_ITEMS` lists 中餐 for the old budget row.
-6. **乾坤大挪移:** clear every entry row's cells; don't delete them.
-7. **Income:** keep 薪水 and 沛還 (`RECURRING_INCOME`) and clear the
-   other income rows' cells instead of deleting them, so the window keeps
-   its size. *(My call.)*
-8. Budgets, block formulas and everything else carry over through the
-   duplication.
+5. Nothing to clear. The template holds only starting entries, the
+   starting income rows and an empty 乾坤大挪移.
 
-Return what was kept and what was cleared, per block, like today's
-`kept` / `cleared`.
+Return the new tab's name, the template it came from, the previous month
+the carries point at, the DEP tab created (if any), and the starting
+entries per block.
 
 ## Rate formula
 
@@ -240,32 +298,34 @@ Return what was kept and what was cleared, per block, like today's
 - **No IFERROR fallback.** If Google's historical lookup fails, the error
   should show rather than quietly fall back to a drifting live rate.
   *(My call.)*
-- The "Budget Based" tab's C15 holds a typed placeholder (32.4607) today.
+- **The template's own C15** holds a typed placeholder (32.4607). Every
+  built month gets the formula instead.
 
-## Open question: the first budget month (Vincent's call)
+## Rollout
 
-The template is December (titled 12 月花費, carries wired to 11 月), but
-an old-layout **"12 月"** tab already exists, and 11 月 is old layout, so
-`start_month(12)` can't duplicate a budget month.
+After the tools are deployed:
 
-Proposal: Vincent renames the old "12 月" to "12 月 DEP" (the 6 月 DEP
-precedent) and renames "Budget Based" to "12 月", by hand. The first
-budget month is then created without any tool code, and from 1 月 on
-`start_month` just duplicates the previous budget month.
-
-For this one-off, 本月匯率 in 12 月 would be set to the formula by hand
-(or by a one-line `update_range`).
-
-`start_month` picks its path from the **previous tab's layout**, with no
-date rule:
-- **Previous month is a budget month:** run the budget steps above.
-- **Previous month is old layout:** run today's old-layout steps,
-  unchanged.
-
-After the renames, 12 月 is a budget month, so 1 月 onward takes the
-budget path. The old path stays only so the existing old-layout tests keep
-passing unchanged. *(My call. A date cutoff can't work because tab names
-carry no year.)*
+1. **Build 11 月.** Run `start_month(11, replace_old_layout: true)`. The
+   old tab becomes "11 月 DEP", and the new 11 月's carries point at 10 月
+   (old layout).
+2. **Re-add 11 月's planned one-offs** with `add_expense`, copied from
+   11 月 DEP:
+   - 燙頭髮: NTD 3,400, 生活用品, 11/09
+   - GTA 6 Ultimate Edition 預購: USD 99.99, 娛樂, 11/18
+   - Kato 10-1794, 10-1795 500系 全編成: NTD 8,940, 購物
+   - Kato 10-2218 北越急行 683系8000番台 <スノーラビットエクスプレス> 9両セット: NTD 6,150, 購物
+   - Tomix 98662 JR 500-7000系山陽新幹線（ハローキティ新幹線）セット: NTD 6,544, 購物
+3. **Build 12 月.** Run `start_month(12, replace_old_layout: true)`. Its
+   carries point at the new 11 月.
+4. **Re-add 12 月's planned one-offs:**
+   - Tomix 98359, 98360, 98361 JR EF81・24系トワイライトエクスプレス: NTD 5,110, 購物
+   - Tomix 98744 小田急ロマンスカー70000形GSE(第2編成)セット: NTD 4,140, 購物
+5. **Check both months** with `month_summary` against 11 月 DEP / 12 月 DEP.
+   The expected differences are:
+   - the new budget-based 收支狀況 logic
+   - the dropped card and bank sections
+   - the one-offs showing as overspend in 購物, 娛樂 and 生活用品, where
+     the budgets cover only the starting entries
 
 ## Left to the builder
 
@@ -292,8 +352,14 @@ carry no year.)*
   - `add_transfer` placement
   - `month_summary` fields
   - `get_categories`
-  - every `start_month` step, checking that every insert/delete is
-    band-scoped
+  - `start_month`'s template path:
+    - it copies the template, not the previous month
+    - carries against an old-layout previous month and a budget one
+    - the rate formula and its year rule
+    - `replace_old_layout`: renames to DEP, and refuses on a budget tab,
+      on an existing DEP, and without the flag
+    - the old path still runs when there's no "Budget Based" tab
+  - checking that every insert/delete on a budget tab is band-scoped
 - All existing old-layout tests keep passing unchanged.
 - After deploy, a manual check on the real budget month:
   1. `month_summary`
