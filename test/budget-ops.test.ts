@@ -158,12 +158,18 @@ describe("addExpense on budget months", () => {
 		expect(JSON.stringify((noRule.batchUpdate as any).mock.calls[0][0])).not.toContain("copyPaste");
 	});
 
-	it("refuses card and a missing tag on budget months, writing nothing", async () => {
+	it("refuses a missing tag on budget months, writing nothing", async () => {
 		const client = budgetClient({ "11 月": budgetGrid() });
-		await expect(addExpense(client, { item: "x", amount: 1, currency: "TWD", tag: "購物", card: "現金", month: 11 })).rejects.toThrow(
-			/budget month/,
-		);
 		await expect(addExpense(client, { item: "x", amount: 1, currency: "TWD", month: 11 })).rejects.toThrow(/tag.*中餐/);
+		expect(client.batchUpdate).not.toHaveBeenCalled();
+	});
+
+	it("rejects a TWD-priced expense paid in USD before reading or writing anything", async () => {
+		const client = budgetClient({ "11 月": budgetGrid() });
+		await expect(
+			addExpense(client, { item: "x", amount: 100, currency: "TWD", paidWith: "USD", tag: "購物", month: 11 }),
+		).rejects.toThrow("not representable");
+		expect(client.readRange).not.toHaveBeenCalled();
 		expect(client.batchUpdate).not.toHaveBeenCalled();
 	});
 
@@ -403,6 +409,52 @@ describe("old-layout-only tools refuse budget months", () => {
 			"11 月 is a budget month — it has no bank-balance sections to reconcile.",
 		);
 		expect(client.batchUpdate).not.toHaveBeenCalled();
+	});
+});
+
+describe("old-layout months are read-only", () => {
+	const READ_ONLY = "9 月 is on the old layout, which is read-only now — month_summary still reads it; no tool writes to it.";
+	const oldClient = () =>
+		({ ...budgetClient({ "9 月": oldMonthGrid() }), getDataValidation: vi.fn(async () => null) }) as unknown as SheetsClient;
+
+	it("add_expense refuses and writes nothing", async () => {
+		const client = oldClient();
+		await expect(addExpense(client, { item: "晚餐", amount: 200, currency: "TWD", tag: "吃喝", month: 9 })).rejects.toThrow(READ_ONLY);
+		expect(client.batchUpdate).not.toHaveBeenCalled();
+	});
+
+	it("delete_expense refuses and writes nothing", async () => {
+		const client = oldClient();
+		await expect(deleteExpense(client, { item: "Google Cloud", month: 9 })).rejects.toThrow(READ_ONLY);
+		expect(client.batchUpdate).not.toHaveBeenCalled();
+	});
+
+	it("set_income refuses a month on the 本月…收支狀況 layout it used to accept, writing nothing", async () => {
+		const client = oldClient();
+		await expect(setIncome(client, { item: "沛還", amount: 700, currency: "USD", month: 9 })).rejects.toThrow(READ_ONLY);
+		expect(client.batchUpdate).not.toHaveBeenCalled();
+	});
+
+	it("add_transfer (usd) refuses and writes nothing", async () => {
+		const client = oldClient();
+		await expect(addTransfer(client, { ntd: 30000, usd: 900, fee: 15, month: 9 })).rejects.toThrow(READ_ONLY);
+		expect(client.batchUpdate).not.toHaveBeenCalled();
+	});
+
+	it("get_categories refuses instead of reading the old 類別 dropdown", async () => {
+		const client = oldClient();
+		await expect(getCategories(client, 9)).rejects.toThrow(READ_ONLY);
+		expect((client as any).getDataValidation).not.toHaveBeenCalled();
+	});
+
+	it("month_summary still reads an old-layout month", async () => {
+		const s = (await monthSummary(budgetClient({ "9 月": oldMonthGrid() }), 9)) as any;
+		expect(s.layout).toBeUndefined();
+		expect(s.tab).toBe("9 月");
+		expect(s.incomes).toEqual([
+			{ item: "沛還", currency: "USD", amount: 700 },
+			{ item: "薪水", currency: "TWD", amount: 65271 },
+		]);
 	});
 });
 

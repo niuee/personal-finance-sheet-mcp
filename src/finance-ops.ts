@@ -98,7 +98,7 @@ import {
 	USD_START_BALANCE_LABEL,
 } from "./conventions";
 import type { SheetsClient } from "./sheets-client";
-import { findBudgetIncomeSumifWindow, isBudgetMonth } from "./budget-layout";
+import { assertBudgetMonth, findBudgetIncomeSumifWindow, isBudgetMonth } from "./budget-layout";
 import {
 	addBudgetExpense,
 	addBudgetTransfer,
@@ -1047,10 +1047,9 @@ const NON_INCOME_LABELS = new Set<string>([
 ]);
 
 /**
- * Upsert an income row on a monthly tab: update the row whose 項目 matches,
- * or insert a new ad-hoc row inside the income SUMIF window (so the
- * 本月美金收入 / 本月新臺幣收入 SUMIFs auto-extend). Old-layout tabs
- * (6月 2026 and earlier) are frozen history and refused.
+ * Upsert an income row on a budget month: update the row whose 項目 matches,
+ * or insert a new ad-hoc row inside the income SUMIF window (so both
+ * 收支狀況 SUMIFs auto-extend). Old-layout months are refused.
  */
 export async function setIncome(client: SheetsClient, p: SetIncomeParams) {
 	const item = p.item.trim();
@@ -1059,28 +1058,19 @@ export async function setIncome(client: SheetsClient, p: SetIncomeParams) {
 	}
 	const tab = p.month !== undefined ? monthTabName(p.month) : currentMonthTab();
 
-	// FULL_GRID_READ, not a shallow window: the budget block sits below the
-	// expense list, which grows all month — by late month 總預算 lands past
-	// row 60 and a shallow read misses every income anchor.
 	const { values, truncated } = await client.readRange(`${quoteTab(tab)}!${FULL_GRID_READ}`, "FORMULA");
 	assertNotTruncated(truncated, tab, FULL_GRID_READ);
+	assertBudgetMonth(values, tab);
 	const sheetId = await client.getSheetId(tab);
 
 	const win = findIncomeWindow(values);
 	if (win === null) {
 		throw new Error(
-			`Could not locate the income list in ${tab} (no "${BUDGET_HEADER_LABEL}" + "${MONTH_USD_NET_LABEL}"/"${REMAINDER_LABEL}" anchors in column ${colLetter(MONTH_COLS.budgetLabel)}) — the tab may predate the budget block.`,
+			`Could not locate the income list in ${tab} (no "${BUDGET_HEADER_LABEL}" + "${MONTH_USD_NET_LABEL}" anchors in column ${colLetter(MONTH_COLS.budgetLabel)}).`,
 		);
 	}
-	if (!win.current) {
-		throw new Error(
-			`${tab} still has the old 剩餘 income layout (6月 2026 and earlier) — those tabs are frozen history; edit them by hand if you must.`,
-		);
-	}
-	// Budget months have no 本月美金收入 row: their income window is the one
-	// the 本月美金收支狀況 SUMIF covers.
-	const budget = isBudgetMonth(values);
-	const sumifWin = budget ? findBudgetIncomeSumifWindow(values, tab) : findIncomeSumifWindow(values, tab);
+	// The rows the 本月美金收支狀況 SUMIF covers — the only place a new income row counts.
+	const sumifWin = findBudgetIncomeSumifWindow(values, tab);
 
 	const cellStr = (r: number, c: number) => String(values[r - 1]?.[c] ?? "");
 	let targetRow: number | null = null;
@@ -1111,10 +1101,10 @@ export async function setIncome(client: SheetsClient, p: SetIncomeParams) {
 		action = "inserted";
 		// First row whose income cells (B–D) are all empty inside the SUMIF
 		// window (a row outside it would never count as income) — only the
-		// list's own columns matter; the 乾坤大挪移/對帳區 (H–N) and lunch log
-		// (P–S) sit beside these rows in the full-width read. Else insert at
-		// the window's LAST row — strictly inside every range spanning the
-		// window, so the income SUMIFs auto-extend.
+		// list's own columns matter; the category blocks sit beside these rows
+		// in the full-width read. Else insert at the window's LAST row —
+		// strictly inside every range spanning the window, so the SUMIFs
+		// auto-extend.
 		for (let r = sumifWin.start; r <= sumifWin.end; r++) {
 			const row = (values[r - 1] ?? []).slice(MONTH_COLS.item, MONTH_COLS.budgetValue + 1);
 			if (!row.some((c) => c !== "" && c != null)) {
@@ -1130,8 +1120,7 @@ export async function setIncome(client: SheetsClient, p: SetIncomeParams) {
 			}
 			targetRow = sumifWin.end;
 			// Band-scoped to the list's own columns (B–D): a whole-row insert
-			// would tear the 乾坤大挪移/對帳區 grids (H–N) and the lunch log
-			// (P–S) sitting beside the income list at these rows.
+			// would tear the budget list and the blocks sharing these rows.
 			requests.push(bandInsert(sheetId, targetRow, 1, MONTH_COLS.item, MONTH_COLS.budgetValue + 1));
 		}
 		requests.push({
@@ -1143,23 +1132,8 @@ export async function setIncome(client: SheetsClient, p: SetIncomeParams) {
 		});
 	}
 
-	// Any tool write is a chance to heal 對帳區 buckets that hand-entered card
-	// rows overflowed — ahead of the income band insert, like every audit.
-	// Budget months have no 對帳區.
-	const audit = budget ? { requests: [], warning: undefined, grown: [] } : auditCreditBuckets(values, tab, sheetId);
-
-	await client.batchUpdate([...audit.requests, ...requests]);
-	return {
-		tab,
-		row: targetRow,
-		action,
-		item,
-		amount: p.amount,
-		currency: p.currency,
-		previous,
-		bucketWarning: audit.warning,
-		bucketsGrown: audit.grown.length > 0 ? audit.grown : undefined,
-	};
+	await client.batchUpdate(requests);
+	return { tab, row: targetRow, action, item, amount: p.amount, currency: p.currency, previous };
 }
 
 export function quoteTab(tab: string): string {
@@ -1258,162 +1232,26 @@ export interface AddExpenseParams {
 	month?: number;
 	/** M/D, MM/DD, YYYY/M/D, or YYYY-MM-DD; omitted = leave the 日期 cell blank. */
 	date?: string;
-	/** Per-row 類別 tag written into column C; omitted = leave the cell blank. */
+	/** The category block the entry goes into (中餐 or 午餐 → the 午餐 block); required on a budget month. */
 	tag?: string;
-	/** Which real account paid the row (支付幣別, column F); defaults to the card's billing currency when `card` is set, else to `currency`. */
+	/** Which real account paid — the entry's 幣別; defaults to `currency`. */
 	paidWith?: "TWD" | "USD";
-	/** 支付方式 (column G) — a CREDIT_CARDS name or a NON_CARD_PAYMENT_METHODS option (現金/沛); omitted = cell left blank. */
-	card?: string;
 }
 
+/** add_expense: append the entry to its category block on a budget month. Old-layout months are refused. */
 export async function addExpense(client: SheetsClient, p: AddExpenseParams) {
 	const tab = p.month !== undefined ? monthTabName(p.month) : currentMonthTab();
 	// Parse before any read/write so a bad date fails closed.
 	const dateSerialValue = p.date !== undefined ? parseDateInput(p.date) : null;
-	// `card` stays undefined for the non-card options (現金/沛): they carry no
-	// billing currency and no 對帳區 bucket, so every card-only branch below
-	// (billing checks, paidWith default, bucket guard) skips on it.
-	const card = p.card !== undefined ? CREDIT_CARDS.find((c) => c.name === p.card) : undefined;
-	if (p.card !== undefined && card === undefined && !NON_CARD_PAYMENT_METHODS.includes(p.card)) {
+	if (p.currency === "TWD" && (p.paidWith ?? p.currency) === "USD") {
 		throw new Error(
-			`Unknown 支付方式 "${p.card}" — the column's dropdown holds: ${[...CREDIT_CARDS.map((c) => c.name), ...NON_CARD_PAYMENT_METHODS].join(", ")}.`,
+			"A TWD-priced expense paid from the USD account is not representable: its 金額 would be NTD under a USD 幣別. Log it in USD (currency USD, paid_with USD) instead.",
 		);
 	}
-	if (card !== undefined && card.billingCurrency === "USD" && p.currency !== "USD") {
-		throw new Error(
-			`${card.name} bills in USD and its 對帳區 buckets pull the 美金 column (D), which is blank on TWD-priced rows — log the expense in USD.`,
-		);
-	}
-	const paidWith = p.paidWith ?? card?.billingCurrency ?? p.currency;
-	if (p.currency === "TWD" && paidWith === "USD") {
-		throw new Error(
-			"A TWD-priced expense paid from the USD account is not representable: 本月美金支出 sums the USD column (D), which is blank on TWD-priced rows. Log it in USD (currency USD, paid_with USD) instead.",
-		);
-	}
-
 	const { values, truncated } = await client.readRange(`${quoteTab(tab)}!${FULL_GRID_READ}`, "FORMULA");
 	assertNotTruncated(truncated, tab, FULL_GRID_READ);
-	// Budget months hand off. The cast keeps this op's declared (old-layout)
-	// result type for its typed callers; the tool layer only serializes it.
-	if (isBudgetMonth(values)) return (await addBudgetExpense(client, tab, p, dateSerialValue)) as never;
-
-	const { totalRow, start: windowStart, end: windowEnd } = findExpenseWindow(values, tab);
-
-	// Date-sorted position: after the last row dated <= the new date; a
-	// dateless row lands after everything — the order an ascending UI date
-	// sort produces. Never above the 上月…透支 carry rows.
-	let targetRow = expensePositionFor(values, windowStart, windowEnd, totalRow, dateSerialValue);
-	const scanEnd = Math.min(windowEnd, totalRow - 1);
-
-	const sheetId = await client.getSheetId(tab);
-	const requests: object[] = [];
-	const targetIsEmpty = targetRow <= scanEnd && !(values[targetRow - 1] ?? []).some((c) => c !== "" && c != null);
-	const inserted = !targetIsEmpty;
-	let moveToRow: number | null = null;
-	if (inserted) {
-		if (windowEnd <= windowStart) {
-			throw new Error(`The expense window =SUM(${TWD_COL}${windowStart}:${TWD_COL}${windowEnd}) in ${tab} is too small to insert into safely.`);
-		}
-		// An insert AT the window's first row would shift the SUM range down
-		// instead of extending it. Dead branch on real tabs (the carry rows
-		// clamp positions past it) — kept as a safety rail.
-		targetRow = Math.max(targetRow, windowStart + 1);
-		if (targetRow > windowEnd) {
-			// Belongs after the window's last row, where an insert would fall
-			// outside every range. Insert at the last row (auto-extends), then
-			// move the new row below the shifted old last row.
-			targetRow = windowEnd;
-			moveToRow = windowEnd + 1;
-		}
-		requests.push({
-			insertDimension: {
-				range: { sheetId, dimension: "ROWS", startIndex: targetRow - 1, endIndex: targetRow },
-				inheritFromBefore: true,
-			},
-		});
-	}
-
-	const tagCell = cellData(p.tag ?? null);
-	const cardCell = cellData(p.card ?? null);
-	const rowCells =
-		p.currency === "USD"
-			? [cellData(p.item), tagCell, cellData(p.amount), cellData(`=${USD_COL}${targetRow}*GOOGLEFINANCE("CURRENCY:USDTWD")`), cellData(paidWith), cardCell]
-			: [cellData(p.item), tagCell, cellData(null), cellData(p.amount), cellData(paidWith), cardCell];
-	requests.push({
-		updateCells: {
-			start: { sheetId, rowIndex: targetRow - 1, columnIndex: MONTH_COLS.item },
-			rows: [{ values: rowCells }],
-			fields: "userEnteredValue",
-		},
-	});
-	if (dateSerialValue !== null) {
-		requests.push({
-			updateCells: {
-				start: { sheetId, rowIndex: targetRow - 1, columnIndex: MONTH_COLS.date },
-				rows: [
-					{
-						values: [
-							{
-								userEnteredValue: { numberValue: dateSerialValue },
-								userEnteredFormat: { numberFormat: { type: "DATE", pattern: "mm/dd" } },
-							},
-						],
-					},
-				],
-				fields: "userEnteredValue,userEnteredFormat.numberFormat",
-			},
-		});
-	}
-
-	// A dateless card row is not mirrored into a bucket, so the pending-entry
-	// guard only runs once both a REAL card and a date are on the row (現金/沛
-	// rows have no bucket at all). Every OTHER write still audits the whole
-	// section: hand-entered rows (typed straight into the UI) trigger no
-	// growth themselves, so each tool write is the next chance to heal an
-	// overflowed bucket. The guard's requests go FIRST, in the read's
-	// coordinates: the expense row's whole-row insert then shifts the grown
-	// section — and the 本月結帳日 references inside any mirror the guard
-	// rewrote — down with everything else.
-	const guard =
-		card !== undefined && dateSerialValue !== null
-			? creditBucketGuard(values, tab, sheetId, card.name, dateSerialValue)
-			: auditCreditBuckets(values, tab, sheetId);
-	requests.unshift(...guard.requests);
-
-	if (moveToRow !== null) {
-		requests.push({
-			moveDimension: {
-				// Never move a row past a range's end: Sheets executes a move
-				// as delete + reinsert, and a reinsert past the (shrunk) end
-				// falls OUTSIDE — the window ranges would shrink and orphan
-				// the row (verified live). To put the new row last, move the
-				// shifted old last row UP over it instead: both endpoints stay
-				// strictly inside, so the range adjustments cancel.
-				source: { sheetId, dimension: "ROWS", startIndex: targetRow, endIndex: targetRow + 1 },
-				destinationIndex: targetRow - 1,
-			},
-		});
-	}
-
-	// The expense lands inside the 花費總額 SUM window, so the total picks it up
-	// automatically (an insert at the window's edge auto-extends the range).
-	await client.batchUpdate(requests);
-	return {
-		tab,
-		row: moveToRow ?? targetRow,
-		inserted,
-		item: p.item,
-		amount: p.amount,
-		currency: p.currency,
-		paidWith,
-		date: p.date ?? null,
-		tag: p.tag ?? null,
-		card: p.card ?? null,
-		bucket: guard.bucket,
-		bucketRowsAdded: guard.rowsAdded,
-		bucketWarning: guard.warning,
-		bucketsGrown: guard.grown.length > 0 ? guard.grown : undefined,
-	};
+	assertBudgetMonth(values, tab);
+	return addBudgetExpense(client, tab, p, dateSerialValue);
 }
 
 export interface AddTransferParams {
@@ -1598,9 +1436,14 @@ export async function addTransfer(client: SheetsClient, p: AddTransferParams): P
 	// Parse before any read/write so a bad date fails closed.
 	const dateSerialValue = p.date !== undefined ? parseDateInput(p.date) : todaySerial();
 
+	if (currency === "usd") {
+		const month = await client.readRange(`${quoteTab(tab)}!${FULL_GRID_READ}`, "FORMULA");
+		assertNotTruncated(month.truncated, tab, FULL_GRID_READ);
+		assertBudgetMonth(month.values, tab);
+		return addBudgetTransfer(client, tab, p, dateSerialValue);
+	}
 	const { values, truncated } = await client.readRange(`${quoteTab(tab)}!${cfg.gridRead}`, "FORMULA");
 	assertNotTruncated(truncated, tab, cfg.gridRead);
-	if (currency === "usd" && isBudgetMonth(values)) return addBudgetTransfer(client, tab, p, dateSerialValue);
 	const { headerRow, totalRow } = findTransferSection(values, tab, cfg);
 
 	// First row between the header and 總和 that is empty across the section's columns.
@@ -1616,21 +1459,10 @@ export async function addTransfer(client: SheetsClient, p: AddTransferParams): P
 	const sheetId = await client.getSheetId(tab);
 	const inserted = targetRow === null;
 	let finalTotalRow = totalRow;
-	// A usd transfer writes a month tab — audit the 對帳區 below the transfer
-	// block while we're here, healing buckets hand-entered card rows overflowed
-	// (jpy targets a trip tab, which has no section; its month-tab wiring runs
-	// its own audit). It rides the FIRST batch, ahead of the section's own
-	// insert, so it works in the read's coordinates: a later batch would see
-	// a grid that insert had already shifted, and any mirror formula the
-	// audit rewrote would carry pre-shift references.
-	const audit = currency === "usd" ? auditCreditBuckets(values, tab, sheetId) : null;
-	const scratchRequests: object[] = [...(audit?.requests ?? [])];
+	const scratchRequests: object[] = [];
 	if (targetRow === null) {
-		// Insert directly above 總和; the ledger's +K/−I/+N references shift with it.
-		// Band-scoped for both hosts: trip tabs are a mosaic of column bands, and
-		// on a monthly tab a whole-row insert would tear the 銀行餘額 stack (B–D)
-		// and lunch log (P–S) that sit beside the H–N section (the 對帳區 below
-		// it shares the band and shifts along, references adjusting).
+		// Insert directly above 總和, band-scoped: a trip tab is a mosaic of
+		// column bands, and a whole-row insert would tear the blocks beside it.
 		targetRow = totalRow;
 		finalTotalRow = totalRow + 1;
 		scratchRequests.push(bandInsert(sheetId, targetRow, 1, cfg.cols.date, cfg.cols.extra + 1));
@@ -1648,8 +1480,8 @@ export async function addTransfer(client: SheetsClient, p: AddTransferParams): P
 	}
 
 	// Cells created by insertRange (or never-formatted empties at the sheet
-	// bottom) carry no format — stamp them before the value writes, jpy only
-	// (mirrors addTripEntry's formatCell, finance-ops.ts:1913-1928).
+	// bottom) carry no format — stamp them before the value writes (mirrors
+	// addTripEntry's formatCell).
 	const formatRepeat = (col: number, format: object, width: number) => ({
 		repeatCell: {
 			range: { sheetId, startRowIndex: r - 1, endRowIndex: r, startColumnIndex: col, endColumnIndex: col + width },
@@ -1657,15 +1489,12 @@ export async function addTransfer(client: SheetsClient, p: AddTransferParams): P
 			fields: "userEnteredFormat.numberFormat",
 		},
 	});
-	const jpyFormatRequests =
-		currency !== "jpy"
-			? []
-			: [
-					formatRepeat(cfg.cols.date, { numberFormat: { type: "DATE", pattern: "mm/dd" } }, 1),
-					formatRepeat(cfg.cols.spot, { numberFormat: { type: "CURRENCY", pattern: "[$¥]#,##0" } }, 2), // C:D
-					formatRepeat(cfg.cols.ntd, { numberFormat: { type: "CURRENCY", pattern: "[$NTD ]#,##0" } }, 1), // B
-					formatRepeat(cfg.cols.spread, { numberFormat: { type: "CURRENCY", pattern: "[$NTD ]#,##0" } }, 3), // E:G
-				];
+	const jpyFormatRequests = [
+		formatRepeat(cfg.cols.date, { numberFormat: { type: "DATE", pattern: "mm/dd" } }, 1),
+		formatRepeat(cfg.cols.spot, { numberFormat: { type: "CURRENCY", pattern: "[$¥]#,##0" } }, 2), // C:D
+		formatRepeat(cfg.cols.ntd, { numberFormat: { type: "CURRENCY", pattern: "[$NTD ]#,##0" } }, 1), // B
+		formatRepeat(cfg.cols.spread, { numberFormat: { type: "CURRENCY", pattern: "[$NTD ]#,##0" } }, 3), // E:G
+	];
 
 	await client.batchUpdate([
 		...jpyFormatRequests,
@@ -1713,31 +1542,22 @@ export async function addTransfer(client: SheetsClient, p: AddTransferParams): P
 		fee: p.fee,
 		extraCost: round2(spread + p.fee),
 	};
-	if (currency === "jpy") {
-		const monthNum = Number(serialToIso(dateSerialValue).slice(5, 7));
-		const monthTab = monthTabName(monthNum);
-		let wired: boolean;
-		try {
-			wired = await wireJpyTransferIntoMonth(client, monthTab, tab, r);
-		} catch (e) {
-			throw new Error(
-				`The transfer row ${tab}!${colLetter(cfg.cols.date)}${r} was already written, but wiring it into ${monthTab} failed: ${e instanceof Error ? e.message : String(e)} — fix the three bank formulas by hand (−新臺幣 into 本月底/保守預計, +手續費 into 本月新臺幣支出) or delete the row and retry.`,
-			);
-		}
-		return {
-			...base,
-			jpy: received,
-			spotJpy: round2(p.ntd / rate),
-			wiredMonthTab: wired ? monthTab : null,
-			...(wired ? {} : { wiringNote: `${monthTab} is a budget month — the JPY transfer's NTD side was not linked into it.` }),
-		};
+	const monthNum = Number(serialToIso(dateSerialValue).slice(5, 7));
+	const monthTab = monthTabName(monthNum);
+	let wired: boolean;
+	try {
+		wired = await wireJpyTransferIntoMonth(client, monthTab, tab, r);
+	} catch (e) {
+		throw new Error(
+			`The transfer row ${tab}!${colLetter(cfg.cols.date)}${r} was already written, but wiring it into ${monthTab} failed: ${e instanceof Error ? e.message : String(e)} — fix the three bank formulas by hand (−新臺幣 into 本月底/保守預計, +手續費 into 本月新臺幣支出) or delete the row and retry.`,
+		);
 	}
 	return {
 		...base,
-		usd: received,
-		spotUsd: round2(p.ntd / rate),
-		bucketWarning: audit?.warning,
-		bucketsGrown: audit !== null && audit.grown.length > 0 ? audit.grown : undefined,
+		jpy: received,
+		spotJpy: round2(p.ntd / rate),
+		wiredMonthTab: wired ? monthTab : null,
+		...(wired ? {} : { wiringNote: `${monthTab} is a budget month — the JPY transfer's NTD side was not linked into it.` }),
 	};
 }
 
@@ -2104,41 +1924,13 @@ export async function monthSummary(client: SheetsClient, month?: number) {
 	};
 }
 
-/** Probe window for the 類別 dropdown: rows 3-4 are the 上月…透支 carries, so scan a few rows deep. */
-const TAG_VALIDATION_ROWS = { start: 3, end: 15 } as const;
-
-/** The live 類別 tag list, read from the dropdown (data validation) on a monthly tab's 類別 column. */
+/** get_categories: a budget month's category blocks. Old-layout months are refused. */
 export async function getCategories(client: SheetsClient, month?: number) {
 	const tab = month !== undefined ? monthTabName(month) : currentMonthTab();
-	// Layout first: a budget month has no 類別 dropdown — its categories are its blocks.
 	const { values, truncated } = await client.readRange(`${quoteTab(tab)}!${FULL_GRID_READ}`, "FORMULA");
 	assertNotTruncated(truncated, tab, FULL_GRID_READ);
-	if (isBudgetMonth(values)) return (await budgetCategories(client, tab)) as never;
-	const rule = await client.getDataValidation(
-		tab,
-		TAG_VALIDATION_ROWS.start,
-		TAG_VALIDATION_ROWS.end,
-		colLetter(MONTH_COLS.tag),
-	);
-	if (!rule) {
-		throw new Error(
-			`No data validation found on the 類別 column of "${tab}" — the tab may predate the 類別 dropdown.`,
-		);
-	}
-	if (rule.type === "ONE_OF_LIST") {
-		return { tab, categories: [...new Set(rule.values)], source: "ONE_OF_LIST" as const };
-	}
-	if (rule.type === "ONE_OF_RANGE") {
-		const range = (rule.values[0] ?? "").replace(/^=/, "");
-		const { values } = await client.readRange(range);
-		const categories = [
-			...new Set(
-				values.flat().filter((v): v is string => typeof v === "string" && v.trim() !== ""),
-			),
-		];
-		return { tab, categories, source: "ONE_OF_RANGE" as const };
-	}
-	throw new Error(`類別 column validation on "${tab}" is ${rule.type}, not a dropdown list.`);
+	assertBudgetMonth(values, tab);
+	return budgetCategories(client, tab);
 }
 
 /** A month's carry: the previous month's negative 本月…收支狀況 (column D of `row`) becomes this month's shortfall; a positive month carries 0. */
@@ -3148,109 +2940,19 @@ export interface DeleteExpenseParams {
 	month?: number;
 	/** 1-indexed sheet row, to disambiguate duplicate 項目 names. */
 	row?: number;
-	/** Budget months only: the category block to search (old-layout months ignore it). */
+	/** The category block to search; every block has entries on the same sheet rows. */
 	tag?: string;
 }
 
 /**
- * Remove an expense row from a monthly tab entirely — the row goes, the rows
- * below move up, and no blank gap is left behind (blanking the cells with
- * update_range leaves one). The delete is scoped to the expense list's own
- * columns (A–G), like startMonth's one-off clearing: a whole-row delete would
- * rip through the 乾坤大挪移 / 午餐預算 / 信用卡帳單對帳區 blocks that share
- * these sheet rows. 花費總額 and the 支出 SUMIF windows shrink with the row,
- * and every 對帳區 mirror drops it on its own — the section is audited against
- * the post-delete grid so the buckets stay right for the rows that remain.
+ * delete_expense: remove a block entry from a budget month — a delete scoped
+ * to that block's columns, so only its entries below move up. Old-layout
+ * months are refused.
  */
 export async function deleteExpense(client: SheetsClient, p: DeleteExpenseParams) {
 	const tab = p.month !== undefined ? monthTabName(p.month) : currentMonthTab();
-	const item = p.item.trim();
-
 	const { values, truncated } = await client.readRange(`${quoteTab(tab)}!${FULL_GRID_READ}`, "FORMULA");
 	assertNotTruncated(truncated, tab, FULL_GRID_READ);
-	if (isBudgetMonth(values)) return (await deleteBudgetExpense(client, tab, p)) as never;
-	const { totalRow, start: windowStart, end: windowEnd } = findExpenseWindow(values, tab);
-
-	const candidates: number[] = [];
-	for (let r = windowStart; r <= Math.min(windowEnd, totalRow - 1); r++) {
-		if (String(values[r - 1]?.[MONTH_COLS.item] ?? "").trim() === item) candidates.push(r);
-	}
-	if (candidates.length === 0) {
-		throw new Error(`No "${item}" row inside the expense window of ${tab}.`);
-	}
-	let row: number;
-	if (p.row !== undefined) {
-		if (!candidates.includes(p.row)) {
-			throw new Error(
-				`Row ${p.row} is not one of the "${item}" rows inside the expense window of ${tab} (rows ${candidates.join(", ")}).`,
-			);
-		}
-		row = p.row;
-	} else if (candidates.length === 1) {
-		row = candidates[0] as number;
-	} else {
-		// A delete is not reversible by re-running it: never guess which of
-		// several same-named rows the caller meant.
-		throw new Error(`Multiple "${item}" rows match (rows ${candidates.join(", ")}) — pass row to pick one.`);
-	}
-
-	if (CARRY_ROW_LABELS.includes(item)) {
-		throw new Error(
-			`"${item}" is the formula-owned carry row: it is rebuilt by start_month and the 銀行餘額 ledger adds its cell back by name, so deleting it breaks both. A positive month already carries 0 — leave the row alone.`,
-		);
-	}
-	if (windowEnd <= windowStart) {
-		throw new Error(
-			`The expense window =SUM(${TWD_COL}${windowStart}:${TWD_COL}${windowEnd}) in ${tab} is a single row — deleting it would leave 花費總額 with a broken range.`,
-		);
-	}
-	const broken = findBrokenRefs(values, EXPENSE_BAND, row, row);
-	if (broken.length > 0) {
-		throw new Error(
-			`Refusing to delete row ${row} ("${item}") of ${tab}: ${broken.length} formula(s) point straight at its cells and would turn into #REF! — ${describeBrokenRefs(broken)}. Re-point them first (the 午餐預算 block's 編列預算 points at the 中餐 row this way).`,
-		);
-	}
-
-	const deleted = (values[row - 1] ?? []).slice(EXPENSE_BAND.startCol, EXPENSE_BAND.endCol);
-	const sheetId = await client.getSheetId(tab);
-	const requests: object[] = [
-		{
-			deleteRange: {
-				range: {
-					sheetId,
-					startRowIndex: row - 1,
-					endRowIndex: row,
-					startColumnIndex: EXPENSE_BAND.startCol,
-					endColumnIndex: EXPENSE_BAND.endCol,
-				},
-				shiftDimension: "ROWS",
-			},
-		},
-	];
-
-	// Audit the 對帳區 against the grid as it will look AFTER the delete: the
-	// row's own card charge is gone, so it must not be counted into a bucket's
-	// required rows, while every OTHER bucket still gets its usual chance to
-	// heal (hand-entered rows grow nothing on their own). The row is blanked
-	// in place rather than removed: the delete is band-scoped to A–G, so the
-	// section's rows (H–N) keep their coordinates — and the audit's requests
-	// still go ahead of it, like every audit precedes the batch's structural
-	// edits.
-	const after = values.slice();
-	const blanked = [...(values[row - 1] ?? [])];
-	for (let c = EXPENSE_BAND.startCol; c < EXPENSE_BAND.endCol; c++) blanked[c] = "";
-	after[row - 1] = blanked;
-	const guard = auditCreditBuckets(after, tab, sheetId);
-	requests.unshift(...guard.requests);
-
-	await client.batchUpdate(requests);
-	return {
-		tab,
-		row,
-		item,
-		deleted,
-		card: String(values[row - 1]?.[MONTH_COLS.paidMethod] ?? "").trim() || null,
-		bucketWarning: guard.warning,
-		bucketsGrown: guard.grown.length > 0 ? guard.grown : undefined,
-	};
+	assertBudgetMonth(values, tab);
+	return deleteBudgetExpense(client, tab, p);
 }

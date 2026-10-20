@@ -93,11 +93,6 @@ export async function addBudgetExpense(
 	p: AddExpenseParams,
 	dateSerialValue: number | null,
 ): Promise<BudgetExpenseResult> {
-	if (p.card !== undefined) {
-		throw new Error(
-			`${tab} is a budget month — it has no card reconciliation, so 支付方式 (card) is not accepted. Log the expense without card.`,
-		);
-	}
 	const values = await readBudgetGrid(client, tab, "FORMULA");
 	const blocks = findBudgetBlocks(values, tab);
 	if (p.tag === undefined || p.tag.trim() === "") {

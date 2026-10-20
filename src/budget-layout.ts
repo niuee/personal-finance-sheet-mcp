@@ -99,6 +99,13 @@ export function isBudgetMonth(values: unknown[][]): boolean {
 	return findRowByValue(values, MONTH_COLS.budgetLabel, RATE_LABEL) !== null;
 }
 
+/** Every write tool's first check: old-layout months are read-only history (month_summary still reads them). */
+export function assertBudgetMonth(values: unknown[][], tab: string): void {
+	if (!isBudgetMonth(values)) {
+		throw new Error(`${tab} is on the old layout, which is read-only now — month_summary still reads it; no tool writes to it.`);
+	}
+}
+
 /** Every block's header, title and category, left to right. Throws on a header without a title and on a duplicate category. */
 export function scanBudgetBlockHeaders(values: unknown[][], tab: string): BudgetBlockHeader[] {
 	const headers: BudgetBlockHeader[] = [];
