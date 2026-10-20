@@ -1,10 +1,11 @@
 /**
  * Pure finders for budget-month tabs (from 11 月 2026): the budget list and
  * income on the left (A–F), one block per category to the right (H…AY), and
- * the 乾坤大挪移 log after the last block (BA–BG). Every block keeps its 總和
- * ABOVE an open-ended entry list, so nothing ever has to grow a block — and
- * nothing but entries may be written below one. Everything is located by its
- * labels, never by fixed rows.
+ * the 乾坤大挪移 log after the last block (BA–BG). Every block keeps its money
+ * ABOVE an open-ended entry list — a 美金 row and a 新臺幣 row, each with
+ * 編列預算 / 總和 / 剩餘 — so nothing ever has to grow a block, and nothing
+ * but entries may be written below one. Everything is located by its labels,
+ * never by fixed rows.
  *
  * Only function declarations are exported: finance-ops imports this module
  * and this module imports finance-ops' helpers, so nothing here may read an
@@ -13,12 +14,15 @@
 
 import {
 	AMOUNT_HEADER_LABEL,
+	BLOCK_NTD_ROW_LABEL,
+	BLOCK_USD_ROW_LABEL,
 	BUDGET_ALLOCATED_LABEL,
 	BUDGET_BLOCK_TITLE_SUFFIX,
 	BUDGET_CATEGORY_ALIASES,
 	CURRENCY_HEADER_LABEL,
 	DATE_HEADER_LABEL,
 	INCOME_HEADER_LABEL,
+	MIGRATE_BUDGET_SPLIT_TOOL,
 	MONTH_COLS,
 	MONTH_USD_NET_LABELS,
 	RATE_LABEL,
@@ -37,16 +41,29 @@ export const BUDGET_SUM_VALUE_COL = 4;
 /** Blocks start at column H or further right; A–F is the budget list / income side. */
 const BLOCK_MIN_COL = 7;
 
-export interface BudgetBlock {
+/** A block's anchors, whatever shape its money rows are in. */
+export interface BudgetBlockHeader {
 	/** The budget list's 類別 (午餐支出 → 中餐). */
 	category: string;
 	title: string;
 	/** 0-indexed 日期 column; +1 項目, +2 金額, +3 幣別. */
 	startCol: number;
-	/** Row holding 編列預算 (startCol) and 剩餘 (startCol+2). */
-	budgetRow: number;
-	/** Row holding "總和" (startCol+1) and the block total (startCol+2). */
-	totalRow: number;
+	/** Row of the "…支出" title. */
+	titleRow: number;
+	/** Row of the 日期/項目/金額/幣別 header; entries start below it. */
+	headerRow: number;
+}
+
+export interface BudgetBlock {
+	/** The budget list's 類別 (午餐支出 → 中餐). */
+	category: string;
+	title: string;
+	/** 0-indexed 日期 column; +1 項目, +2 金額, +3 幣別. In the money rows: the label, then +1 編列預算, +2 總和, +3 剩餘. */
+	startCol: number;
+	/** Row of the 美金 money (all in USD). */
+	usdRow: number;
+	/** Row of the 新臺幣 money (all in NTD). */
+	ntdRow: number;
 	/** Row of the 日期/項目/金額/幣別 header; entries start below it. */
 	headerRow: number;
 }
@@ -83,9 +100,9 @@ export function isBudgetMonth(values: unknown[][]): boolean {
 	return findRowByValue(values, MONTH_COLS.budgetLabel, RATE_LABEL) !== null;
 }
 
-/** Every category block, left to right. Throws on a torn block or a duplicate category. */
-export function findBudgetBlocks(values: unknown[][], tab: string): BudgetBlock[] {
-	const blocks: BudgetBlock[] = [];
+/** Every block's header, title and category, left to right. Throws on a header without a title and on a duplicate category. */
+export function scanBudgetBlockHeaders(values: unknown[][], tab: string): BudgetBlockHeader[] {
+	const headers: BudgetBlockHeader[] = [];
 	for (let r = 1; r <= values.length; r++) {
 		const row = values[r - 1] ?? [];
 		for (let c = BLOCK_MIN_COL; c + 3 < row.length; c++) {
@@ -97,7 +114,6 @@ export function findBudgetBlocks(values: unknown[][], tab: string): BudgetBlock[
 			) {
 				continue;
 			}
-			const where = `${colLetter(c)}${r}`;
 			let titleRow: number | null = null;
 			for (let t = r - 1; t >= 1; t--) {
 				if (text(values, t, c).endsWith(BUDGET_BLOCK_TITLE_SUFFIX)) {
@@ -106,30 +122,48 @@ export function findBudgetBlocks(values: unknown[][], tab: string): BudgetBlock[
 				}
 			}
 			if (titleRow === null) {
-				throw new Error(`The budget block whose header sits at ${where} in ${tab} has no "…${BUDGET_BLOCK_TITLE_SUFFIX}" title above it.`);
-			}
-			let budgetRow: number | null = null;
-			let totalRow: number | null = null;
-			for (let t = titleRow + 1; t < r; t++) {
-				if (text(values, t, c) === BUDGET_ALLOCATED_LABEL) budgetRow = t + 1;
-				if (text(values, t, c + 1) === TRANSFER_TOTAL_LABEL) totalRow = t;
-			}
-			if (budgetRow === null || budgetRow >= r) {
-				throw new Error(`The budget block whose header sits at ${where} in ${tab} is missing its ${BUDGET_ALLOCATED_LABEL} row.`);
-			}
-			if (totalRow === null) {
-				throw new Error(`The budget block whose header sits at ${where} in ${tab} is missing its ${TRANSFER_TOTAL_LABEL} row.`);
+				throw new Error(
+					`The budget block whose header sits at ${colLetter(c)}${r} in ${tab} has no "…${BUDGET_BLOCK_TITLE_SUFFIX}" title above it.`,
+				);
 			}
 			const title = text(values, titleRow, c);
 			const stem = title.slice(0, -BUDGET_BLOCK_TITLE_SUFFIX.length);
 			const category = BUDGET_CATEGORY_ALIASES[stem] ?? stem;
-			if (blocks.some((b) => b.category === category)) {
+			if (headers.some((h) => h.category === category)) {
 				throw new Error(`Two budget blocks in ${tab} hold the category "${category}".`);
 			}
-			blocks.push({ category, title, startCol: c, budgetRow, totalRow, headerRow: r });
+			headers.push({ category, title, startCol: c, titleRow, headerRow: r });
 		}
 	}
-	return blocks.sort((a, b) => a.startCol - b.startCol);
+	return headers.sort((a, b) => a.startCol - b.startCol);
+}
+
+/** True when a block still has the single-currency shape: 編列預算 labelled in its first column. */
+export function isLegacyBudgetBlock(values: unknown[][], h: BudgetBlockHeader): boolean {
+	for (let t = h.titleRow + 1; t < h.headerRow; t++) {
+		if (text(values, t, h.startCol) === BUDGET_ALLOCATED_LABEL) return true;
+	}
+	return false;
+}
+
+/** Every category block, left to right. Throws on a torn block, a duplicate category, or a tab still in the single-currency shape. */
+export function findBudgetBlocks(values: unknown[][], tab: string): BudgetBlock[] {
+	return scanBudgetBlockHeaders(values, tab).map((h) => {
+		if (isLegacyBudgetBlock(values, h)) {
+			throw new Error(`${tab} still has the old single-currency budget blocks — run ${MIGRATE_BUDGET_SPLIT_TOOL} on it first.`);
+		}
+		const where = `${colLetter(h.startCol)}${h.headerRow}`;
+		let usdRow: number | null = null;
+		let ntdRow: number | null = null;
+		for (let t = h.titleRow + 1; t < h.headerRow; t++) {
+			const label = text(values, t, h.startCol);
+			if (label === BLOCK_USD_ROW_LABEL) usdRow = t;
+			if (label === BLOCK_NTD_ROW_LABEL) ntdRow = t;
+		}
+		if (usdRow === null) throw new Error(`The budget block whose header sits at ${where} in ${tab} is missing its ${BLOCK_USD_ROW_LABEL} row.`);
+		if (ntdRow === null) throw new Error(`The budget block whose header sits at ${where} in ${tab} is missing its ${BLOCK_NTD_ROW_LABEL} row.`);
+		return { category: h.category, title: h.title, startCol: h.startCol, usdRow, ntdRow, headerRow: h.headerRow };
+	});
 }
 
 /** The block for a 類別 tag (trimmed; 午餐 means 中餐). Throws with the available categories when none matches. */

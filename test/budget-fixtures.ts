@@ -17,54 +17,34 @@ const chr = (n: number) => String.fromCharCode(65 + n);
 /** 0-indexed column → letters (BG = 58). */
 const L = (c: number) => (c < 26 ? chr(c) : chr(Math.floor(c / 26) - 1) + chr(c % 26));
 
-/** The "Budget Based" template as a FORMULA render (row = index+1), with its starting entries. */
-export function budgetGrid(): unknown[][] {
+type Put = (row: number, col: number, v: unknown) => void;
+
+/** `put` sets one cell; `row` sets cells from column A without touching the rest of that row (block entries share rows with the left side). */
+function grid(): { g: unknown[][]; put: Put; row: (r: number, cells: unknown[]) => void } {
 	const g: unknown[][] = [];
-	const put = (row: number, col: number, v: unknown) => {
-		(g[row - 1] ??= [])[col] = v;
+	const put: Put = (r, col, v) => {
+		(g[r - 1] ??= [])[col] = v;
 	};
+	return { g, put, row: (r, cells) => cells.forEach((v, c) => put(r, c, v)) };
+}
+
+/** What both template shapes share: title, header, carries, income, block titles/headers/entries, 乾坤大挪移. `rate` is the 本月匯率 cell. */
+function shared(put: Put, row: (r: number, cells: unknown[]) => void, rate: string): void {
 	put(1, 0, "11 月花費");
 	["日期", "項目", "類別", "美金", "新臺幣", "支付幣別"].forEach((v, c) => put(2, c, v));
-	g[2] = ["", "上月美金透支", "透支", "=IF(-('10 月'!D43) > 0, -('10 月'!D43), 0)", "=D3*$C$15", "USD"];
-	g[3] = ["", "上月新臺幣透支", "透支", "", "=IF(-('10 月'!D44) > 0, -('10 月'!D44), 0)", "TWD"];
-	g[4] = ["", "生活用品預算", "生活用品", "", 31261, "TWD"];
-	g[5] = ["", "吃喝預算", "吃喝", "", "=D6*$C$15", "TWD"];
-	g[6] = ["", "購物預算", "購物", "", 0, "TWD"];
-	g[7] = ["", "訂閱預算", "訂閱", "", 10700, "TWD"];
-	g[8] = ["", "訂閱預算", "訂閱", 71.37, "=D9*$C$15", "USD"];
-	g[9] = ["", "交通預算", "交通", "", 1000, "TWD"];
-	g[10] = ["", "娛樂預算", "娛樂", "", 0, "TWD"];
-	g[11] = ["", "學貸預算", "學貸", "=281.43 + 148.5", "=D12*$C$15", "USD"];
-	g[12] = ["", "其他預算", "其他", 15, "=D13*$C$15", "USD"];
-	g[13] = ["", "中餐預算", "中餐", "", 3900, "TWD"];
-	g[14] = ["", "本月匯率", 32.4607, "預算總額", "=SUM(E5:E14)"];
+	row(3, ["", "上月美金透支", "透支", "=IF(-('10 月'!D43) > 0, -('10 月'!D43), 0)", `=D3*${rate}`, "USD"]);
+	row(4, ["", "上月新臺幣透支", "透支", "", "=IF(-('10 月'!D44) > 0, -('10 月'!D44), 0)", "TWD"]);
 	put(26, 1, "總預算");
-	g[26] = ["", "項目", "幣別", "金額"];
-	g[27] = ["", "薪水", "TWD", 65271];
-	g[28] = ["", "沛還", "USD", 700];
+	row(27, ["", "項目", "幣別", "金額"]);
+	row(28, ["", "薪水", "TWD", 65271]);
+	row(29, ["", "沛還", "USD", 700]);
 	put(32, 1, "本月美金收支狀況");
-	put(32, 3, '=SUMIF(C28:C31,"USD",D28:D31)-D3-SUMIF(F5:F14,"USD",D5:D14)+D34');
 	put(33, 1, "本月新臺幣收支狀況");
-	put(33, 3, '=SUMIF(C28:C31,"TWD",D28:D31)-E4-SUMIF(F5:F14,"TWD",E5:E14)+D35-BF5');
 	put(34, 1, "本月美金超支");
-	put(34, 3, '=MIN(0,ROUND(SUMIFS($D$3:$D$23,$B$3:$B$23,"訂閱預算",$F$3:$F$23,"USD")-SUMIF(AE7:AE,"USD",AD7:AD),2))');
 	put(35, 1, "本月新臺幣超支");
-	put(35, 3, '=MIN(0,SUMIFS($E$3:$E$23,$B$3:$B$23,"中餐預算",$F$3:$F$23,"TWD")-SUMIF(K7:K,"<>USD",J7:J))');
-	put(36, 1, "本月超支");
-	put(37, 1, "本月超支（加上回補）");
 	put(40, 1, "總支出");
 	for (const [cat, c] of Object.entries(BLOCK_START)) {
 		put(2, c, TITLES[cat as keyof typeof BLOCK_START]);
-		put(3, c, "編列預算");
-		put(3, c + 2, "剩餘 (負數會加回去支出）");
-		put(4, c, `=SUMIF($B$3:$B$23,"${cat}預算",$E$3:$E$23)`);
-		put(4, c + 2, `=${L(c)}4-${L(c + 2)}5`);
-		put(5, c + 1, "總和");
-		put(
-			5,
-			c + 2,
-			`=SUMIF(${L(c + 3)}7:${L(c + 3)},"<>USD",${L(c + 2)}7:${L(c + 2)})+SUMIF(${L(c + 3)}7:${L(c + 3)},"USD",${L(c + 2)}7:${L(c + 2)})*$C$15`,
-		);
 		["日期", "項目", "金額", "幣別"].forEach((v, i) => put(6, c + i, v));
 		put(7, c + 3, "TWD");
 		put(8, c + 3, "TWD");
@@ -77,7 +57,7 @@ export function budgetGrid(): unknown[][] {
 			["Google One", 7.99, "USD"],
 			["Netflix", 26.99, "USD"],
 			["ChatGPT", 20.4, "USD"],
-			["Claude", "=200*$C$15", "TWD"],
+			["Claude", `=200*${rate}`, "TWD"],
 		] as const
 	).forEach(([item, amt, cur], i) => {
 		put(7 + i, sub + 1, item);
@@ -92,6 +72,93 @@ export function budgetGrid(): unknown[][] {
 	put(5, 52, "總和");
 	for (let i = 1; i <= 6; i++) put(5, 52 + i, `=SUM(${L(52 + i)}7:${L(52 + i)})`);
 	["日期", "新臺幣", "當下美金", "實際美金", "匯差", "手續費", "當筆總額外花費"].forEach((v, i) => put(6, 52 + i, v));
+}
+
+/** The budget list's categories, top to bottom, with their USD and NTD budgets. */
+const LIST: ReadonlyArray<readonly [string, number | string, number]> = [
+	["生活用品", 0, 31261],
+	["吃喝", 0, 0],
+	["購物", 0, 0],
+	["訂閱", 71.37, 10700],
+	["交通", 0, 1000],
+	["娛樂", 0, 0],
+	["學貸", "=281.43 + 148.5", 0],
+	["其他", 15, 0],
+	["中餐", 0, 3900],
+];
+
+/** Sums one cell per block: `cell(amountCol, currencyCol, remainingCol)` → "K4" etc. */
+function perBlock(f: (c: number) => string, join: string): string {
+	return Object.values(BLOCK_START).map(f).join(join);
+}
+
+/** The "Budget Based" template as a FORMULA render (row = index+1), in the per-currency layout: 18 budget rows, a 美金 and a 新臺幣 row per block, the rate at row 23. */
+export function budgetGrid(): unknown[][] {
+	const { g, put, row } = grid();
+	shared(put, row, "$C$23");
+	LIST.forEach(([cat, usd, ntd], i) => {
+		const r = 5 + 2 * i;
+		row(r, ["", `${cat}美金預算`, cat, usd, `=D${r}*$C$23`, "USD"]);
+		row(r + 1, ["", `${cat}新臺幣預算`, cat, "", ntd, "TWD"]);
+	});
+	row(23, ["", "本月匯率", 32.4607, "預算總額", "=SUM(E5:E22)"]);
+	put(32, 3, '=SUMIF(C28:C31,"USD",D28:D31)-D3-SUMIF(F5:F22,"USD",D5:D22)+D34');
+	put(33, 3, '=SUMIF(C28:C31,"TWD",D28:D31)-E4-SUMIF(F5:F22,"TWD",E5:E22)+D35-BF5');
+	put(34, 3, `=${perBlock((c) => `MIN(0,${L(c + 3)}4)`, "+")}`);
+	put(35, 3, `=${perBlock((c) => `MIN(0,${L(c + 3)}5)`, "+")}`);
+	put(36, 1, "本月美金超支（加上回補）");
+	put(36, 3, `=${perBlock((c) => `${L(c + 3)}4`, "+")}`);
+	put(37, 1, "本月新臺幣超支（加上回補）");
+	put(37, 3, `=${perBlock((c) => `${L(c + 3)}5`, "+")}`);
+	put(40, 3, `=SUM(${perBlock((c) => `${L(c + 2)}4`, ",")})*$C$23+SUM(${perBlock((c) => `${L(c + 2)}5`, ",")})+BF5`);
+	for (const [cat, c] of Object.entries(BLOCK_START)) {
+		const [amt, cur, budget, total] = [L(c + 2), L(c + 3), L(c + 1), L(c + 2)];
+		["", "編列預算", "總和", "剩餘"].forEach((v, i) => put(3, c + i, v));
+		put(4, c, "美金");
+		put(4, c + 1, `=SUMIF($B$5:$B$22,"${cat}美金預算",$D$5:$D$22)`);
+		put(4, c + 2, `=SUMIF(${cur}7:${cur},"USD",${amt}7:${amt})`);
+		put(4, c + 3, `=ROUND(${budget}4-${total}4,2)`);
+		put(5, c, "新臺幣");
+		put(5, c + 1, `=SUMIF($B$5:$B$22,"${cat}新臺幣預算",$E$5:$E$22)`);
+		put(5, c + 2, `=SUMIF(${cur}7:${cur},"<>USD",${amt}7:${amt})`);
+		put(5, c + 3, `=${budget}5-${total}5`);
+	}
+	return g;
+}
+
+/** The template as it was before the per-currency split (rate at row 15, one mixed 編列預算/總和/剩餘 per block) — what migrate_budget_split starts from. */
+export function legacyBudgetGrid(): unknown[][] {
+	const { g, put, row } = grid();
+	shared(put, row, "$C$15");
+	row(5, ["", "生活用品預算", "生活用品", "", 31261, "TWD"]);
+	row(6, ["", "吃喝預算", "吃喝", "", "=D6*$C$15", "TWD"]);
+	row(7, ["", "購物預算", "購物", "", 0, "TWD"]);
+	row(8, ["", "訂閱預算", "訂閱", "", 10700, "TWD"]);
+	row(9, ["", "訂閱預算", "訂閱", 71.37, "=D9*$C$15", "USD"]);
+	row(10, ["", "交通預算", "交通", "", 1000, "TWD"]);
+	row(11, ["", "娛樂預算", "娛樂", "", 0, "TWD"]);
+	row(12, ["", "學貸預算", "學貸", "=281.43 + 148.5", "=D12*$C$15", "USD"]);
+	row(13, ["", "其他預算", "其他", 15, "=D13*$C$15", "USD"]);
+	row(14, ["", "中餐預算", "中餐", "", 3900, "TWD"]);
+	row(15, ["", "本月匯率", 32.4607, "預算總額", "=SUM(E5:E14)"]);
+	put(32, 3, '=SUMIF(C28:C31,"USD",D28:D31)-D3-SUMIF(F5:F14,"USD",D5:D14)+D34');
+	put(33, 3, '=SUMIF(C28:C31,"TWD",D28:D31)-E4-SUMIF(F5:F14,"TWD",E5:E14)+D35-BF5');
+	put(34, 3, '=MIN(0,ROUND(SUMIFS($D$3:$D$23,$B$3:$B$23,"訂閱預算",$F$3:$F$23,"USD")-SUMIF(AE7:AE,"USD",AD7:AD),2))');
+	put(35, 3, '=MIN(0,SUMIFS($E$3:$E$23,$B$3:$B$23,"中餐預算",$F$3:$F$23,"TWD")-SUMIF(K7:K,"<>USD",J7:J))');
+	put(36, 1, "本月超支");
+	put(37, 1, "本月超支（加上回補）");
+	for (const [cat, c] of Object.entries(BLOCK_START)) {
+		put(3, c, "編列預算");
+		put(3, c + 2, "剩餘 (負數會加回去支出）");
+		put(4, c, `=SUMIF($B$3:$B$23,"${cat}預算",$E$3:$E$23)`);
+		put(4, c + 2, `=${L(c)}4-${L(c + 2)}5`);
+		put(5, c + 1, "總和");
+		put(
+			5,
+			c + 2,
+			`=SUMIF(${L(c + 3)}7:${L(c + 3)},"<>USD",${L(c + 2)}7:${L(c + 2)})+SUMIF(${L(c + 3)}7:${L(c + 3)},"USD",${L(c + 2)}7:${L(c + 2)})*$C$15`,
+		);
+	}
 	return g;
 }
 

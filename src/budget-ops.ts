@@ -23,8 +23,7 @@ import {
 	MONTH_USD_NET_LABELS,
 	monthTabName,
 	NTD_OVERSPEND_LABEL,
-	OVERSPEND_LABEL,
-	OVERSPEND_NET_LABEL,
+	NTD_OVERSPEND_NET_LABEL,
 	PREV_NTD_OVERDRAFT_LABEL,
 	PREV_USD_OVERDRAFT_LABEL,
 	previousMonth,
@@ -32,6 +31,7 @@ import {
 	serialToIso,
 	TOTAL_SPENDING_LABEL,
 	USD_OVERSPEND_LABEL,
+	USD_OVERSPEND_NET_LABEL,
 } from "./conventions";
 import type { AddExpenseParams, AddTransferParams, AddTransferResult, DeleteExpenseParams } from "./finance-ops";
 import {
@@ -285,21 +285,28 @@ export async function addBudgetTransfer(
 	};
 }
 
+/** One currency's money in a block: USD on the 美金 row, NTD on the 新臺幣 row. */
+export interface BudgetMoney {
+	編列預算: number | null;
+	總和: number | null;
+	剩餘: number | null;
+}
+
 export interface BudgetMonthSummary {
 	tab: string;
 	layout: "budget";
 	本月匯率: number | null;
 	上月美金透支: number | null;
 	上月新臺幣透支: number | null;
-	budgets: Array<{ category: string; 編列預算: number | null; 總和: number | null; 剩餘: number | null }>;
+	budgets: Array<{ category: string; 美金: BudgetMoney; 新臺幣: BudgetMoney }>;
 	預算總額: number | null;
 	incomes: Array<{ item: string; currency: string | null; amount: number | null }>;
 	本月美金收支狀況: number | null;
 	本月新臺幣收支狀況: number | null;
 	本月美金超支: number | null;
 	本月新臺幣超支: number | null;
-	本月超支: number | null;
-	"本月超支（加上回補）": number | null;
+	"本月美金超支（加上回補）": number | null;
+	"本月新臺幣超支（加上回補）": number | null;
 	總支出: number | null;
 	乾坤大挪移: { 新臺幣: number | null; 實際美金: number | null; 手續費: number | null; 當筆總額外花費: number | null } | null;
 }
@@ -341,20 +348,22 @@ export async function budgetMonthSummary(client: SheetsClient, tab: string): Pro
 		本月匯率: at(findRowByValue(values, MONTH_COLS.budgetLabel, RATE_LABEL), RATE_VALUE_COL),
 		上月美金透支: at(findRowByValue(values, MONTH_COLS.item, PREV_USD_OVERDRAFT_LABEL), MONTH_COLS.usd),
 		上月新臺幣透支: at(findRowByValue(values, MONTH_COLS.item, PREV_NTD_OVERDRAFT_LABEL), MONTH_COLS.twd),
-		budgets: findBudgetBlocks(values, tab).map((b) => ({
-			category: b.category,
-			編列預算: at(b.budgetRow, b.startCol),
-			總和: at(b.totalRow, b.startCol + 2),
-			剩餘: at(b.budgetRow, b.startCol + 2),
-		})),
+		budgets: findBudgetBlocks(values, tab).map((b) => {
+			const money = (row: number): BudgetMoney => ({
+				編列預算: at(row, b.startCol + 1),
+				總和: at(row, b.startCol + 2),
+				剩餘: at(row, b.startCol + 3),
+			});
+			return { category: b.category, 美金: money(b.usdRow), 新臺幣: money(b.ntdRow) };
+		}),
 		預算總額: at(findRowByValue(values, MONTH_COLS.totalLabel, BUDGET_SUM_LABEL), BUDGET_SUM_VALUE_COL),
 		incomes,
 		本月美金收支狀況: byLabel(MONTH_USD_NET_LABELS),
 		本月新臺幣收支狀況: byLabel(MONTH_NTD_NET_LABELS),
 		本月美金超支: byLabel([USD_OVERSPEND_LABEL]),
 		本月新臺幣超支: byLabel([NTD_OVERSPEND_LABEL]),
-		本月超支: byLabel([OVERSPEND_LABEL]),
-		"本月超支（加上回補）": byLabel([OVERSPEND_NET_LABEL]),
+		"本月美金超支（加上回補）": byLabel([USD_OVERSPEND_NET_LABEL]),
+		"本月新臺幣超支（加上回補）": byLabel([NTD_OVERSPEND_NET_LABEL]),
 		總支出: byLabel([TOTAL_SPENDING_LABEL]),
 		乾坤大挪移: transfer,
 	};

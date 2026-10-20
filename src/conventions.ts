@@ -79,6 +79,19 @@ export const OVERSPEND_NET_LABEL = "本月超支（加上回補）";
 export const NTD_OVERSPEND_LABEL = "本月新臺幣超支";
 /** The overspend paid in USD, in USD: each category's USD entries past its USD budget lines (≤ 0). 本月美金收支狀況 adds it. */
 export const USD_OVERSPEND_LABEL = "本月美金超支";
+/** Every block's 美金 剩餘 added up, unspent budget included. */
+export const USD_OVERSPEND_NET_LABEL = "本月美金超支（加上回補）";
+/** Every block's 新臺幣 剩餘 added up, unspent budget included. */
+export const NTD_OVERSPEND_NET_LABEL = "本月新臺幣超支（加上回補）";
+/** Budget-list labels are `<類別>美金預算` / `<類別>新臺幣預算`: one USD and one NTD row per category. */
+export const BUDGET_USD_LINE_SUFFIX = "美金預算";
+export const BUDGET_NTD_LINE_SUFFIX = "新臺幣預算";
+/** A block's money rows, labelled in its first column; 編列預算 / 總和 / 剩餘 sit in the next three. */
+export const BLOCK_USD_ROW_LABEL = "美金";
+export const BLOCK_NTD_ROW_LABEL = "新臺幣";
+export const BLOCK_REMAINING_LABEL = "剩餘";
+/** The one-off tool that moves a tab from single-currency blocks to per-currency ones. */
+export const MIGRATE_BUDGET_SPLIT_TOOL = "migrate_budget_split";
 export const TOTAL_SPENDING_LABEL = "總支出";
 /** start_month's replace_old_layout keeps the old tab as `N 月 DEP`. */
 export const DEP_SUFFIX = " DEP";
