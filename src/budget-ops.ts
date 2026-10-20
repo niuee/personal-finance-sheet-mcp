@@ -17,7 +17,6 @@
 import {
 	BUDGET_SUM_LABEL,
 	BUDGET_TEMPLATE_TAB,
-	DEP_SUFFIX,
 	MONTH_COLS,
 	MONTH_NTD_NET_LABELS,
 	MONTH_USD_NET_LABELS,
@@ -56,7 +55,6 @@ import {
 	findBudgetTransferSection,
 	findRateRow,
 	firstEmptyEntryRow,
-	isBudgetMonth,
 	rateFormula,
 	rateYear,
 	RATE_VALUE_COL,
@@ -412,22 +410,19 @@ export interface StartBudgetMonthResult {
 	template: typeof BUDGET_TEMPLATE_TAB;
 	/** The previous month the carries point at; null when that tab doesn't exist (both carries 0). */
 	carriesFrom: string | null;
-	/** "N 月 DEP" when an old-layout "N 月" was moved out of the way. */
-	replacedTab: string | null;
 	rateFormula: string;
 	/** Each block's starting entries (項目), as copied from the template. */
 	startingEntries: Record<string, string[]>;
 }
 
 /**
- * start_month when the "Budget Based" template exists: copy it as "N 月",
- * then write the title, both carries (against the previous month's
- * 收支狀況 cells, whatever its layout) and the self-locking 本月匯率 formula.
- * An existing old-layout "N 月" is renamed "N 月 DEP" first — only when
- * asked; a budget month is never replaced.
+ * start_month: copy the "Budget Based" template as "N 月", then write the
+ * title, both carries (against the previous month's 收支狀況 cells, whatever
+ * its layout) and the self-locking 本月匯率 formula. An existing "N 月" is
+ * never replaced.
  *
- * Every read happens first, then ONE batchUpdate does the rename, the
- * duplicate (with a pre-chosen sheetId) and the writes into the copy. Sheets
+ * Every read happens first, then ONE batchUpdate does the duplicate (with a
+ * pre-chosen sheetId) and the writes into the copy. Sheets
  * applies a batch atomically, so a failure anywhere leaves the spreadsheet
  * untouched and a re-run starts clean — never a half-built month.
  */
@@ -435,28 +430,12 @@ export async function startBudgetMonth(
 	client: SheetsClient,
 	month: number,
 	tabTitles: string[],
-	opts: { replaceOldLayout: boolean; now: Date; newSheetId?: number },
+	opts: { now: Date; newSheetId?: number },
 ): Promise<StartBudgetMonthResult> {
 	const newTab = monthTabName(month);
 	const prevTab = monthTabName(previousMonth(month));
-	const depTab = `${newTab}${DEP_SUFFIX}`;
-
-	let replacedTab: string | null = null;
 	if (tabTitles.includes(newTab)) {
-		if (!opts.replaceOldLayout) {
-			throw new Error(
-				`Tab "${newTab}" already exists — refusing to overwrite it. To rebuild an old-layout month from the "${BUDGET_TEMPLATE_TAB}" template, pass replace_old_layout (the old tab is kept as "${depTab}").`,
-			);
-		}
-		const { values, truncated } = await client.readRange(`${quoteTab(newTab)}!${FULL_GRID_READ}`, "FORMULA");
-		assertNotTruncated(truncated, newTab, FULL_GRID_READ);
-		if (isBudgetMonth(values)) {
-			throw new Error(`"${newTab}" is already a budget month — start_month never replaces a budget month.`);
-		}
-		if (tabTitles.includes(depTab)) {
-			throw new Error(`"${depTab}" already exists — rename or delete it before rebuilding "${newTab}".`);
-		}
-		replacedTab = depTab;
+		throw new Error(`Tab "${newTab}" already exists — refusing to overwrite it.`);
 	}
 
 	// The copy is identical to the template, so the template's rows are the copy's rows.
@@ -489,10 +468,6 @@ export async function startBudgetMonth(
 
 	const templateId = await client.getSheetId(BUDGET_TEMPLATE_TAB);
 	const requests: object[] = [];
-	if (replacedTab !== null) {
-		const oldSheetId = await client.getSheetId(newTab);
-		requests.push({ updateSheetProperties: { properties: { sheetId: oldSheetId, title: replacedTab }, fields: "title" } });
-	}
 	// A pre-chosen id lets the writes below target the copy inside the same batch.
 	const sheetId = opts.newSheetId ?? 1 + Math.floor(Math.random() * 2_000_000_000);
 	requests.push({
@@ -519,7 +494,6 @@ export async function startBudgetMonth(
 		layout: "budget",
 		template: BUDGET_TEMPLATE_TAB,
 		carriesFrom,
-		replacedTab,
 		rateFormula: formula,
 		startingEntries,
 	};

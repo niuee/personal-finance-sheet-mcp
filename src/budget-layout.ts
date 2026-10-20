@@ -269,9 +269,9 @@ export function findRateRow(values: unknown[][], tab: string): number {
 /**
  * The year a month tab belongs to: the occurrence of `month` nearest to the
  * current Taipei month. Months are usually created ahead of time (January
- * built in December is next year's), but replace_old_layout also rebuilds
- * months that already started or just ended (November rebuilt in December
- * is this year's). Six months either way resolves to the coming one.
+ * built in December is next year's), but a month built late — after it
+ * started, or just after it ended (November built in December) — is this
+ * year's. Six months either way resolves to the coming one.
  */
 export function rateYear(month: number, now: Date = new Date()): number {
 	const parts = new Intl.DateTimeFormat("en-US", { timeZone: SHEET_TIMEZONE, year: "numeric", month: "numeric" }).formatToParts(now);

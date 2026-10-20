@@ -9,8 +9,8 @@ export const TOTAL_ROW_LABEL = "花費總額";
 
 /**
  * The first cell of every 日期/項目/金額-style header row on the sheet — the
- * 乾坤大挪移 log, the 午餐預算 log, and each 對帳區 bucket all start their
- * header with it. The finders SCAN for it rather than assuming it sits a
+ * budget blocks, the 乾坤大挪移 logs and the old months' 午餐預算 log all
+ * start their header with it. The finders SCAN for it rather than assuming it sits a
  * fixed number of rows under its section title: a hand-inserted row, or a
  * neighbouring section's band insert, can open a blank row between a title
  * and its header at any time.
@@ -87,31 +87,15 @@ export const NTD_OVERSPEND_NET_LABEL = "本月新臺幣超支（加上回補）"
 export const BLOCK_USD_ROW_LABEL = "美金";
 export const BLOCK_NTD_ROW_LABEL = "新臺幣";
 export const TOTAL_SPENDING_LABEL = "總支出";
-/** start_month's replace_old_layout keeps the old tab as `N 月 DEP`. */
-export const DEP_SUFFIX = " DEP";
 /** Block titles whose category differs from the title stem: the 午餐支出 block holds the 中餐 budget. */
 export const BUDGET_CATEGORY_ALIASES: Readonly<Record<string, string>> = { 午餐: "中餐" };
 
 /**
- * Labels for the 銀行餘額 block — the month's per-currency money flow, for
- * reality-checking the real USD and NTD bank accounts. All labels live in
- * column B with their values in column D. Since the 調整 layout (2026-07,
- * present on 6月 on) BOTH currencies chain month to month: each 本月初…餘額
- * points at the previous month's 調整後(的)本月底…餘額 (start_month rewires
- * them). On tabs predating the 調整 rows, only NTD chained (to the raw
- * 本月底新臺幣餘額) and 本月初美金餘額 stayed 0 — the USD shortfall carried
- * through the 上月美金透支 expense row instead. 本月底美金餘額 = 初 + 收入 −
- * 支出 + 實際美金總和 + 上月美金透支的D格; 本月底新臺幣餘額 = 初 + 收入 −
- * 支出 − 轉出新臺幣總和 + 午餐超支或回補 + 上月新臺幣透支的E格;
- * 保守預計本月底新臺幣餘額 is the same but counts the lunch leftover only
- * when it is negative (an overspend). The +carry terms (2026-07-07, all of
- * 6-9月) undo a double-subtraction: the 支出 SUMIFs deliberately include the
- * 上月…透支 rows (the 收支狀況 budget view must cover them), but with the
- * openings now CHAINED the shortfall already arrives through the negative
- * opening balance — without the add-back it would hit the ledger twice. Each 調整後 row =
- * its raw 本月底 row + the currency's 餘額調整 cell in the 帳戶實際數字對應
- * block (shared with that block's own 調整後 rows). The NTD title carries a
- * 的 (調整後的…) on every tab; the USD one only on 6月 — finders accept both.
+ * Labels of an OLD-LAYOUT month's 銀行餘額 block (labels in column B,
+ * values in column D): the month's per-currency money flow, opening and
+ * closing balances, and their 調整後 rows. Old-layout months are read-only;
+ * these stay so month_summary can read them and set_income can refuse them
+ * as income items.
  */
 export const USD_INCOME_LABEL = "本月美金收入";
 export const USD_SPENDING_LABEL = "本月美金支出";
@@ -131,28 +115,11 @@ export const ADJUSTED_USD_END_BALANCE_LABELS = [ADJUSTED_USD_END_BALANCE_LABEL, 
 export const BANK_BLOCK_LABEL = "銀行餘額";
 
 /**
- * 帳戶實際數字對應 — the real-account reconciliation block below the 銀行餘額
- * block (labels in column B, values in column D), from 7月 2026 on. Where
- * 銀行餘額 books every expense when it is INCURRED, this block mirrors what
- * the real bank accounts see: cash rows (支付方式 = 現金) when they happen
- * plus credit-card bills when they are PAID (the cards' 本月需繳款 cells).
- * Per currency: 本月初…真實餘額 points at the previous month's
- * 調整後本月底…真實餘額 (the raw 本月底…真實餘額 on tabs predating the 調整
- * rows) — start_month rewires BOTH currencies; 本月…現金支出 = SUMIFS over
- * the expense window keyed on 支付幣別 + 支付方式="現金" (the NTD one adds the
- * transfer block's M總和 fees); 本月新臺幣信用卡繳費 = the TWD-billed card's
- * 本月需繳款, 本月美金信用卡繳費 = the three US cards'; 本月底…真實餘額 =
- * 初 + 收入 − 現金支出 − 信用卡繳費, minus I總和 (NTD sent) on the NTD side
- * and plus K總和 (USD received) on the USD side.
- *
- * Below each currency's 本月底…真實餘額 sit the 調整 rows (from 2026-07):
- * …餘額調整 is the ONLY hand/tool-owned cell — the delta between what the
- * formulas compute and what the real bank account shows (actual − 本月底…
- * 真實餘額; adjust_balance writes it, overwriting any previous value) — and
- * 調整後本月底…真實餘額 = 本月底…真實餘額 + 調整. The same 調整 cell also
- * feeds the 銀行餘額 view's 調整後 row, so one reconciliation moves both
- * views. start_month resets both 調整 cells to 0 on the new tab (the
- * duplicate would otherwise inherit last month's delta).
+ * Labels of an OLD-LAYOUT month's 帳戶實際數字對應 block (labels in column
+ * B, values in column D), which reconciled the real bank accounts: cash rows
+ * when they happened, card bills when they were paid, and a hand-set
+ * …餘額調整 per currency. Read-only now; kept so set_income refuses them as
+ * income items.
  */
 export const REAL_SECTION_LABEL = "帳戶實際數字對應";
 export const REAL_NTD_START_BALANCE_LABEL = "本月初新臺幣真實餘額";
@@ -167,33 +134,6 @@ export const NTD_ADJUSTMENT_LABEL = "新臺幣餘額調整";
 export const USD_ADJUSTMENT_LABEL = "美金餘額調整";
 export const ADJUSTED_REAL_NTD_END_LABEL = "調整後本月底新臺幣真實餘額";
 export const ADJUSTED_REAL_USD_END_LABEL = "調整後本月底美金真實餘額";
-
-/** Items start_month keeps when opening a new month; everything else is a one-off. */
-export const RECURRING_ITEMS = new Set<string>([
-	OVERDRAFT_LABEL,
-	PREV_USD_OVERDRAFT_LABEL,
-	PREV_NTD_OVERDRAFT_LABEL,
-	"Google Cloud",
-	"ElevenLabs",
-	"iCloud",
-	"Google One",
-	"Netflix",
-	"ECSI Loan",
-	"Fed Loan",
-	"Cursor",
-	"每月銀行管理",
-	"電話費",
-	"公車儲值",
-	"中餐",
-	"荒野亂鬥月票",
-	"ChatGPT",
-	"GitHub Action Minutes",
-	"Claude",
-	"基本生活費",
-]);
-
-/** Income rows start_month keeps; every other income row is ad-hoc and cleared. */
-export const RECURRING_INCOME = new Set<string>([REPAYMENT_LABEL, SALARY_LABEL]);
 
 export function monthTabName(month: number): string {
 	if (!Number.isInteger(month) || month < 1 || month > 12) {
@@ -232,42 +172,17 @@ export const MONTH_COLS = {
 } as const;
 
 /**
- * 乾坤大挪移 — the NTD→USD transfer log, present on monthly tabs from 7月
- * 2026 (start_month copies it forward). Title in column H, a header row
- * below it, data rows, then a 總和 row (label in H, =SUM per column I–N).
- * The 銀行餘額 block wires to the 總和 row: 本月底美金餘額 +K (USD
- * received), 本月底新臺幣餘額 −I (NTD sent), 本月新臺幣支出 +M (手續費 only
- * — the fee is charged externally, on top of the NTD sent; the 匯差 is
- * already inside the −I principal, so counting it in 支出 would double
- * it). The principal is a transfer, not income/spending.
+ * 乾坤大挪移 — a currency-transfer log: NTD→USD on budget months (BA–BG,
+ * 總和 on top of an open-ended list), NTD→JPY on trip tabs (A–G, 總和 below
+ * the entries). Only the 手續費 is spending; the principal is a transfer.
  */
 export const TRANSFER_SECTION_LABEL = "乾坤大挪移";
 export const TRANSFER_TOTAL_LABEL = "總和";
 
-/** 0-indexed columns of the 乾坤大挪移 section (H–N, one right of the original G–M since the 支付方式 column landed in G). */
-export const TRANSFER_COLS = {
-	/** H — 日期; also the column of the section title and the 總和 label. */
-	date: 7,
-	/** I — 新臺幣 debited from the bank. */
-	ntd: 8,
-	/** J — 當下美金 = 新臺幣 / spot rate, pinned at entry time. */
-	spotUsd: 9,
-	/** K — 實際美金: the USD that actually arrived. */
-	actualUsd: 10,
-	/** L — 匯差 in NTD = (當下美金 − 實際美金) × the pinned rate. */
-	spread: 11,
-	/** M — 手續費 in NTD. */
-	fee: 12,
-	/** N — 當筆總額外花費 = 匯差 + 手續費. */
-	extra: 13,
-} as const;
-
 /**
  * 乾坤大挪移（日幣）— the NTD→JPY transfer log on TRIP tabs (from the
  * 2026/07/25 京都東京 trip on), columns A–G below all trip content. Same
- * anatomy as the USD section; the JPY received is trip cash and has no
- * bank ledger — only the NTD side wires into the monthly 銀行餘額 block,
- * per entry (see addTransfer).
+ * anatomy as the USD log; the JPY received is trip cash and joins no month.
  */
 export const TRANSFER_JPY_COLS = {
 	/** A — 日期; also the column of the section title and the 總和 label. */
@@ -298,16 +213,11 @@ export const TRANSFER_JPY_HEADERS = [
 ] as const;
 
 /**
- * 午餐預算 (originally titled 中餐預算) — the lunch-budget log (columns P–R), present on monthly tabs from
- * 7月 2026 (start_month copies it forward and clears its data rows). The
- * recurring 中餐 row in the expense list IS the month's lunch budget; actual
- * lunches are logged here, never in the expense list. Title in P; two rows
- * below it a values row (P=編列預算 pointing at the 中餐 expense cell,
- * R=剩餘 = 編列預算 − 總和); then a 日期/項目/金額 header, data rows, and a
- * 總和 row (label in Q, =SUM in R). The 銀行餘額 block wires to the leftover:
- * 午餐超支或回補 = the 剩餘 cell, feeding 本月底新臺幣餘額 (and, only when
- * negative, 保守預計本月底新臺幣餘額) — unspent budget flows back to the
- * bank, an overdraft (negative 剩餘) deducts more.
+ * 午餐預算 (originally titled 中餐預算) — the lunch-budget log of OLD-LAYOUT
+ * months (7 月–9 月 2026, read-only now; month_summary still reports it).
+ * Title in P; two rows below it a values row (P=編列預算, R=剩餘 = 編列預算
+ * − 總和); then a 日期/項目/金額 header, data rows, and a 總和 row (label in
+ * Q, =SUM in R). 午餐超支或回補 in the 銀行餘額 block = the 剩餘 cell.
  */
 export const LUNCH_SECTION_LABEL = "午餐預算";
 /** The section's original title (7月 2026 setup) — the finders accept both. */
@@ -315,7 +225,6 @@ export const LUNCH_SECTION_LEGACY_LABEL = "中餐預算";
 export const LUNCH_TOTAL_LABEL = "總和";
 /** The label above the values row; its own row + 1 holds the 編列預算/剩餘 values. */
 export const LUNCH_BUDGET_LABEL = "編列預算";
-export const LUNCH_DEFAULT_ITEM = "中餐";
 export const LUNCH_ADJUST_LABEL = "午餐超支或回補";
 
 /** 0-indexed columns of the 午餐預算 section (P–S, one right of the original O–Q since the 支付方式 column landed in G). */
@@ -326,83 +235,9 @@ export const LUNCH_COLS = {
 	item: 16,
 	/** R — 金額; also the 剩餘 value and the 總和 =SUM cell. */
 	amount: 17,
-	/** S — 支付方式, the card that paid the lunch (a TWD-billed CREDIT_CARDS name) or 現金/blank for cash. */
+	/** S — 支付方式, the card that paid the lunch, or 現金/blank for cash. */
 	paidMethod: 18,
 } as const;
-
-/**
- * 信用卡帳單對帳區 — per-card statement reconciliation blocks in a 2×2 grid
- * (columns H–J and L–N) below the 乾坤大挪移 block, from 7月 2026 on. Each
- * block: card name, 本月結帳日/本月繳款日 dates, then 本月需繳款 — computed
- * directly across two months, with no 本期帳單總額 row in between: for
- * CHASE Amazon (statementLag 0) it's this tab's 結帳日前小計 + the previous
- * tab's 結帳日後小計; for the other three (statementLag 1) it's the previous
- * tab's 結帳日前小計 + the tab-before-that's 結帳日後小計 (omitted when that
- * tab doesn't exist). Then 結帳日前 and 結帳日後 buckets: each a label row, a
- * 日期/項目/金額 header row, a mirror formula that spills matching rows
- * date-sorted, and a 小計 row (label in the block's 2nd column, =SUMIFS in
- * the 3rd) keyed on the expense list's 支付方式 column (G) and 日期 vs 結帳日.
- * NOTHING in a block sits at a fixed distance from anything else: each
- * bucket's spill area grows with that card's charge count, so every anchor —
- * the date rows, 本月需繳款, both bucket labels, both 日期 headers, both 小計
- * rows — is located by scanning for its label inside the block's own row span
- * (its title row down to the next card title in the SAME column band, or the
- * end of the grid). The two bands (H–J, L–N) stack independently.
- * The boundary is per-card (`inclusiveClose`): for most cards 結帳日前 is
- * strictly 日期 < 結帳日 — a row dated ON the 結帳日 belongs to 結帳日後,
- * the next statement — but Apple Card's statement is the calendar month
- * (closes on the month's LAST day, that day included), so its 結帳日前 is
- * 日期 <= 結帳日. Everything except the two date cells is formula-owned.
- */
-export interface CreditCard {
-	/** Exact string used in column G, the block title, and the FILTER/SUMIFS conditions. */
-	name: string;
-	/** Which expense column the card's statements bill in: USD → D (美金), TWD → E (新臺幣). */
-	billingCurrency: "USD" | "TWD";
-	/** Which two months' buckets 本月需繳款 wires to: 0 = this tab's 結帳日前 + prev tab's 結帳日後, 1 = prev tab's 結帳日前 + prev-prev tab's 結帳日後. */
-	statementLag: 0 | 1;
-	/** Whether a row dated exactly ON the 結帳日 belongs to the statement closing that day (結帳日前, <= / >) instead of the next one (結帳日後, < / >=). Must mirror the card's sheet FILTER/SUMIFS conditions. */
-	inclusiveClose: boolean;
-}
-
-export const CREDIT_CARDS: readonly CreditCard[] = [
-	{ name: "國泰 CUBE", billingCurrency: "TWD", statementLag: 1, inclusiveClose: false },
-	{ name: "CHASE Amazon", billingCurrency: "USD", statementLag: 0, inclusiveClose: false },
-	{ name: "CHASE Freedom", billingCurrency: "USD", statementLag: 1, inclusiveClose: false },
-	{ name: "Apple Card", billingCurrency: "USD", statementLag: 1, inclusiveClose: true },
-];
-
-/**
- * The 支付方式 dropdown (expense column G, lunch column S) holds the four
- * CREDIT_CARDS names plus these non-card options. 現金 = the money left a
- * real bank account directly (cash, debit, auto-pay) — the 帳戶實際數字對應
- * block's 現金支出 SUMIFS key on it. 沛 = 沛 paid, no tracked account was
- * hit. Non-card rows have no 對帳區 bucket, so the bucket room guard never
- * runs for them.
- */
-export const CASH_METHOD_LABEL = "現金";
-export const PEI_METHOD_LABEL = "沛";
-export const NON_CARD_PAYMENT_METHODS: readonly string[] = [CASH_METHOD_LABEL, PEI_METHOD_LABEL];
-
-export const CREDIT_SECTION_LABEL = "信用卡帳單對帳區";
-export const CREDIT_CLOSE_LABEL = "本月結帳日";
-export const CREDIT_PAY_LABEL = "本月繳款日";
-export const CREDIT_DUE_LABEL = "本月需繳款";
-export const CREDIT_PRE_LABEL = "結帳日前";
-export const CREDIT_POST_LABEL = "結帳日後";
-export const CREDIT_SUBTOTAL_LABEL = "小計";
-/** 0-indexed start columns of the two block columns in the 2×2 card grid (H and L). */
-export const CREDIT_BLOCK_COLS = [7, 11] as const;
-/** A block is 3 columns wide: labels/日期, 項目, values/金額. */
-export const CREDIT_BLOCK_WIDTH = 3;
-
-/** Serial date + N months, day clamped to the target month's length (7/31 → 8/31 → 9/30). */
-export function addMonthsClamped(serial: number, months: number): number {
-	const d = new Date(serial * 86_400_000 + Date.UTC(1899, 11, 30));
-	const lastDay = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + months + 1, 0)).getUTCDate();
-	const t = Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + months, Math.min(d.getUTCDate(), lastDay));
-	return Math.round((t - Date.UTC(1899, 11, 30)) / 86_400_000);
-}
 
 /** Sheets date serial: days since 1899-12-30. */
 export function dateSerial(year: number, month: number, day: number): number {
