@@ -31,6 +31,7 @@ import {
 	RATE_LABEL,
 	serialToIso,
 	TOTAL_SPENDING_LABEL,
+	USD_OVERSPEND_LABEL,
 } from "./conventions";
 import type { AddExpenseParams, AddTransferParams, AddTransferResult, DeleteExpenseParams } from "./finance-ops";
 import {
@@ -295,6 +296,7 @@ export interface BudgetMonthSummary {
 	incomes: Array<{ item: string; currency: string | null; amount: number | null }>;
 	本月美金收支狀況: number | null;
 	本月新臺幣收支狀況: number | null;
+	本月美金超支: number | null;
 	本月新臺幣超支: number | null;
 	本月超支: number | null;
 	"本月超支（加上回補）": number | null;
@@ -349,6 +351,7 @@ export async function budgetMonthSummary(client: SheetsClient, tab: string): Pro
 		incomes,
 		本月美金收支狀況: byLabel(MONTH_USD_NET_LABELS),
 		本月新臺幣收支狀況: byLabel(MONTH_NTD_NET_LABELS),
+		本月美金超支: byLabel([USD_OVERSPEND_LABEL]),
 		本月新臺幣超支: byLabel([NTD_OVERSPEND_LABEL]),
 		本月超支: byLabel([OVERSPEND_LABEL]),
 		"本月超支（加上回補）": byLabel([OVERSPEND_NET_LABEL]),

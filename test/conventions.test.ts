@@ -45,6 +45,7 @@ import {
 	TRIP_MAX_BLOCK_ROWS,
 	TRIP_TOTAL_LABEL,
 	USD_END_BALANCE_LABEL,
+	USD_OVERSPEND_LABEL,
 	USD_PAYMENT_LABEL,
 	USD_START_BALANCE_LABEL,
 } from "../src/conventions";
@@ -242,6 +243,11 @@ describe("conventions", () => {
 
 	it("says add_expense carries the 幣別 dropdown onto new entries", () => {
 		expect(CONVENTIONS_TEXT).toContain("add_expense copies the 幣別 dropdown rule onto the new row");
+	});
+
+	it("says the USD line mirrors the NTD line: budget lines plus its own overspend", () => {
+		expect(USD_OVERSPEND_LABEL).toBe("本月美金超支");
+		expect(CONVENTIONS_TEXT).toContain("本月美金收支狀況 (USD income − 上月美金透支 − the USD budget lines + 本月美金超支)");
 	});
 
 	it("says the NTD line subtracts the NTD-paid overspend", () => {

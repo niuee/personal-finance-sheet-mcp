@@ -34,15 +34,20 @@ exactly as today.
 5. 本月匯率 is a formula that shows today's live rate until the 1st of the
    month, then locks to the 1st's rate (see *Rate formula*).
 6. **本月美金收支狀況** = the USD account's own month, in USD: USD income −
-   上月美金透支 − every block entry marked USD. No conversion.
+   上月美金透支 − the budget lines whose 支付幣別 is USD (their USD amounts
+   in column D) + **本月美金超支**. No conversion. 本月美金超支 is decision
+   7's 本月新臺幣超支 for USD: each category's USD entries set against its
+   USD budget lines, counted only when over, summed (≤ 0, rounded to the
+   cent). *(Changed 2026-10-20 so both lines are built the same way: until
+   then this line subtracted every USD entry, so unspent USD budget showed
+   up as surplus while unspent NTD budget stayed reserved.)*
 7. **本月新臺幣收支狀況** = TWD income − 上月新臺幣透支 − the budget lines
    whose 支付幣別 is TWD + **本月新臺幣超支** − the 乾坤大挪移 手續費 total.
    沛還 (USD) stays on the USD side only. 本月新臺幣超支 is the overspend
    paid in NTD: for each category, its TWD entries (a blank 幣別 counts as
    TWD) set against its TWD budget lines, counted only when over, summed —
-   so it is ≤ 0 and adding it lowers the line.
-   USD overspend stays out of it because decision 6 already subtracts
-   every USD entry. *(Added 2026-10-20, after 11 月's train-set purchases
+   so it is ≤ 0 and adding it lowers the line. USD overspend has its own
+   row (decision 6). *(Added 2026-10-20, after 11 月's train-set purchases
    went past budget without reaching the NTD line.)*
 8. 上月新臺幣透支 carries the previous month's negative 本月新臺幣收支狀況,
    the same way 上月美金透支 carries the USD side.
@@ -88,11 +93,12 @@ this codebase, never by fixed rows.
 | B26 | 總預算 (income section title) |
 | B27:D27 | Income header 項目 / 幣別 / 金額 |
 | B28:D31 | Income rows: 薪水 TWD 65,271 (row 28), 沛還 USD 700 (row 29). D32/D33 read C28:C31 / D28:D31 |
-| B32 / D32 | 本月美金收支狀況 (decision 6) |
-| B33 / D33 | 本月新臺幣收支狀況 (decision 7): `=SUMIF(C28:C31,"TWD",D28:D31)-E4-SUMIF(F5:F14,"TWD",E5:E14)+D34-BF5` |
-| B34 / D34 | 本月新臺幣超支 (decision 7): one `MIN(0, SUMIFS(E, B, "<類別>預算", F, "TWD") − SUMIF(block 幣別, "<>USD", block 金額))` per block, summed |
-| B35 / D35 | 本月超支 = sum of the negative block 剩餘 |
-| B36 / D36 | 本月超支（加上回補） = sum of every block 剩餘 |
+| B32 / D32 | 本月美金收支狀況 (decision 6): `=SUMIF(C28:C31,"USD",D28:D31)-D3-SUMIF(F5:F14,"USD",D5:D14)+D34` |
+| B33 / D33 | 本月新臺幣收支狀況 (decision 7): `=SUMIF(C28:C31,"TWD",D28:D31)-E4-SUMIF(F5:F14,"TWD",E5:E14)+D35-BF5` |
+| B34 / D34 | 本月美金超支 (decision 6): one `MIN(0, ROUND(SUMIFS(D, B, "<類別>預算", F, "USD") − SUMIF(block 幣別, "USD", block 金額), 2))` per block, summed |
+| B35 / D35 | 本月新臺幣超支 (decision 7): one `MIN(0, SUMIFS(E, B, "<類別>預算", F, "TWD") − SUMIF(block 幣別, "<>USD", block 金額))` per block, summed |
+| B36 / D36 | 本月超支 = sum of the negative block 剩餘 |
+| B37 / D37 | 本月超支（加上回補） = sum of every block 剩餘 |
 | B40 / D40 | 總支出 = sum of the nine block 總和 + 乾坤大挪移 手續費 total |
 
 **Category blocks (H–AY).** Nine blocks, 4 columns each plus a spacer
@@ -209,8 +215,9 @@ to drop into), `adjust_balance` (no bank-balance blocks), and
   as plain text.)*
 - Entries are appended, not date-sorted. *(My call: blocks are short and
   the 總和 doesn't care about order.)*
-- 幣別 means **the currency of the account that paid**, because
-  本月美金收支狀況 treats every USD entry as USD-account spending. A
+- 幣別 means **the currency of the account that paid**, because each
+  收支狀況 line weighs its own currency's entries against its own
+  currency's budget lines (USD entries → 本月美金超支, TWD → 本月新臺幣超支). A
   USD-priced expense paid from the NTD account (today's `currency: USD,
   paid_with: TWD`, e.g. Claude $200 on 國泰 CUBE) is written as 幣別 TWD
   with 金額 `=<usd>*$C$15` (the 本月匯率 cell, found by label). *(My
@@ -244,7 +251,7 @@ transfers into budget months can be designed when a trip needs it.)*
 **`month_summary`.** Returns `layout: "budget"` and, read by labels:
 本月匯率; 上月美金透支 and 上月新臺幣透支; per block `{ category,
 編列預算, 總和, 剩餘 }`; 預算總額; the income list `{ item, currency,
-amount }`; 本月美金收支狀況; 本月新臺幣收支狀況; 本月新臺幣超支; 本月超支;
+amount }`; 本月美金收支狀況; 本月新臺幣收支狀況; 本月美金超支; 本月新臺幣超支; 本月超支;
 本月超支（加上回補）;
 總支出; and the 乾坤大挪移 totals. The old-layout shape is unchanged.
 

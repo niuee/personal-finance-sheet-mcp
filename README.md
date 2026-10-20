@@ -25,7 +25,7 @@ Every write to a monthly tab (add_expense, add_lunch, set_expense_date, delete_e
 
 ### Budget months
 
-From 11 月 2026 on, month tabs use a budget layout: a budget list (one line per category and currency), one block per category where that category's expenses are logged (編列預算 / 總和 / 剩餘, with the 總和 above an open-ended list), a single 本月匯率 cell every conversion uses (live until the 1st, then locked to the 1st's rate), the income list, a 本月美金收支狀況 line for the USD account in USD, a 本月新臺幣收支狀況 line (which also counts 本月新臺幣超支, the overspend paid in NTD), and a 乾坤大挪移 log after the last block. `start_month` builds these months by copying the `Budget Based` template tab.
+From 11 月 2026 on, month tabs use a budget layout: a budget list (one line per category and currency), one block per category where that category's expenses are logged (編列預算 / 總和 / 剩餘, with the 總和 above an open-ended list), a single 本月匯率 cell every conversion uses (live until the 1st, then locked to the 1st's rate), the income list, a 本月美金收支狀況 line (in USD) and a 本月新臺幣收支狀況 line built the same way — income − last month's overdraft − that currency's budget lines + that currency's overspend (本月美金超支 / 本月新臺幣超支) — and a 乾坤大挪移 log after the last block. `start_month` builds these months by copying the `Budget Based` template tab.
 
 On budget months `add_expense` (tag required, card refused), `delete_expense`, `set_income`, `add_transfer`, `month_summary` (returns `layout: "budget"`) and `get_categories` (returns the blocks) work; `add_lunch`, `set_expense_date` and `adjust_balance` refuse, since budget months have no lunch log, card buckets or bank-balance sections. 5 月–10 月 keep the old layout and every tool behaves there as before.
 
