@@ -325,12 +325,12 @@ describe("monthSummary and getCategories on budget months", () => {
 		expect(s["本月新臺幣超支（加上回補）"]).toBeNull();
 	});
 
-	it("add_expense, delete_expense and month_summary on an old-shape tab point at the migration", async () => {
+	it("add_expense, delete_expense and month_summary refuse an old-shape tab", async () => {
 		const adding = budgetClient({ "11 月": legacyBudgetGrid() });
-		await expect(addExpense(adding, { item: "x", amount: 1, currency: "TWD", tag: "購物", month: 11 })).rejects.toThrow(/migrate_budget_split/);
+		await expect(addExpense(adding, { item: "x", amount: 1, currency: "TWD", tag: "購物", month: 11 })).rejects.toThrow(/old single-currency/);
 		const deleting = budgetClient({ "11 月": legacyBudgetGrid() });
-		await expect(deleteExpense(deleting, { item: "Claude", month: 11 })).rejects.toThrow(/migrate_budget_split/);
-		await expect(monthSummary(budgetClient({ "11 月": legacyBudgetGrid() }), 11)).rejects.toThrow(/migrate_budget_split/);
+		await expect(deleteExpense(deleting, { item: "Claude", month: 11 })).rejects.toThrow(/old single-currency/);
+		await expect(monthSummary(budgetClient({ "11 月": legacyBudgetGrid() }), 11)).rejects.toThrow(/old single-currency/);
 		expect(adding.batchUpdate).not.toHaveBeenCalled();
 		expect(deleting.batchUpdate).not.toHaveBeenCalled();
 	});
