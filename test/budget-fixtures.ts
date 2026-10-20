@@ -45,7 +45,9 @@ export function budgetGrid(): unknown[][] {
 	put(32, 1, "本月美金收支狀況");
 	put(32, 3, '=SUMIF(C28:C31,"USD",D28:D31)-D3-(SUMIF(AE7:AE,"USD",AD7:AD))');
 	put(33, 1, "本月新臺幣收支狀況");
-	put(33, 3, '=SUMIF(C28:C31,"TWD",D28:D31)-E4-SUMIF(F5:F14,"TWD",E5:E14)-BF5');
+	put(33, 3, '=SUMIF(C28:C31,"TWD",D28:D31)-E4-SUMIF(F5:F14,"TWD",E5:E14)+D34-BF5');
+	put(34, 1, "本月新臺幣超支");
+	put(34, 3, '=MIN(0,SUMIFS($E$3:$E$23,$B$3:$B$23,"中餐預算",$F$3:$F$23,"TWD")-SUMIF(K7:K,"<>USD",J7:J))');
 	put(35, 1, "本月超支");
 	put(36, 1, "本月超支（加上回補）");
 	put(40, 1, "總支出");

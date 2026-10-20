@@ -36,8 +36,14 @@ exactly as today.
 6. **本月美金收支狀況** = the USD account's own month, in USD: USD income −
    上月美金透支 − every block entry marked USD. No conversion.
 7. **本月新臺幣收支狀況** = TWD income − 上月新臺幣透支 − the budget lines
-   whose 支付幣別 is TWD − the 乾坤大挪移 手續費 total. 沛還 (USD) stays on
-   the USD side only.
+   whose 支付幣別 is TWD + **本月新臺幣超支** − the 乾坤大挪移 手續費 total.
+   沛還 (USD) stays on the USD side only. 本月新臺幣超支 is the overspend
+   paid in NTD: for each category, its TWD entries (a blank 幣別 counts as
+   TWD) set against its TWD budget lines, counted only when over, summed —
+   so it is ≤ 0 and adding it lowers the line.
+   USD overspend stays out of it because decision 6 already subtracts
+   every USD entry. *(Added 2026-10-20, after 11 月's train-set purchases
+   went past budget without reaching the NTD line.)*
 8. 上月新臺幣透支 carries the previous month's negative 本月新臺幣收支狀況,
    the same way 上月美金透支 carries the USD side.
 9. Card reconciliation (信用卡帳單對帳區), 銀行餘額 and 帳戶實際數字對應
@@ -83,7 +89,8 @@ this codebase, never by fixed rows.
 | B27:D27 | Income header 項目 / 幣別 / 金額 |
 | B28:D31 | Income rows: 薪水 TWD 65,271 (row 28), 沛還 USD 700 (row 29). D32/D33 read C28:C31 / D28:D31 |
 | B32 / D32 | 本月美金收支狀況 (decision 6) |
-| B33 / D33 | 本月新臺幣收支狀況 (decision 7) |
+| B33 / D33 | 本月新臺幣收支狀況 (decision 7): `=SUMIF(C28:C31,"TWD",D28:D31)-E4-SUMIF(F5:F14,"TWD",E5:E14)+D34-BF5` |
+| B34 / D34 | 本月新臺幣超支 (decision 7): one `MIN(0, SUMIFS(E, B, "<類別>預算", F, "TWD") − SUMIF(block 幣別, "<>USD", block 金額))` per block, summed |
 | B35 / D35 | 本月超支 = sum of the negative block 剩餘 |
 | B36 / D36 | 本月超支（加上回補） = sum of every block 剩餘 |
 | B40 / D40 | 總支出 = sum of the nine block 總和 + 乾坤大挪移 手續費 total |
@@ -230,7 +237,8 @@ transfers into budget months can be designed when a trip needs it.)*
 **`month_summary`.** Returns `layout: "budget"` and, read by labels:
 本月匯率; 上月美金透支 and 上月新臺幣透支; per block `{ category,
 編列預算, 總和, 剩餘 }`; 預算總額; the income list `{ item, currency,
-amount }`; 本月美金收支狀況; 本月新臺幣收支狀況; 本月超支; 本月超支（加上回補）;
+amount }`; 本月美金收支狀況; 本月新臺幣收支狀況; 本月新臺幣超支; 本月超支;
+本月超支（加上回補）;
 總支出; and the 乾坤大挪移 totals. The old-layout shape is unchanged.
 
 **`get_categories`.** On budget months, returns the block categories

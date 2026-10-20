@@ -194,6 +194,12 @@ describe("setIncome on budget months", () => {
 			/layout label/,
 		);
 	});
+
+	it("refuses 本月新臺幣超支 as an income item", async () => {
+		await expect(
+			setIncome(budgetClient({ "11 月": budgetGrid() }), { item: "本月新臺幣超支", amount: 1, currency: "TWD", month: 11 }),
+		).rejects.toThrow(/layout label/);
+	});
 });
 
 describe("addTransfer on budget months", () => {
@@ -244,7 +250,8 @@ describe("monthSummary and getCategories on budget months", () => {
 		g[3]![4] = 19281.68;
 		g[14]![4] = 63619.74;
 		g[31]![3] = 183.7;
-		g[32]![3] = -883.62;
+		g[32]![3] = -10133.62;
+		g[33]![3] = -9250; // 本月新臺幣超支 (D34)
 		g[34] = ["", "本月超支", "", 0];
 		g[39] = ["", "總支出", "", 55512.6];
 		g[4]![53] = 0; // 乾坤大挪移 總和: 新臺幣 BB, 實際美金 BD, 手續費 BF, 當筆總額外花費 BG
@@ -258,7 +265,8 @@ describe("monthSummary and getCategories on budget months", () => {
 			上月新臺幣透支: 19281.68,
 			預算總額: 63619.74,
 			本月美金收支狀況: 183.7,
-			本月新臺幣收支狀況: -883.62,
+			本月新臺幣收支狀況: -10133.62,
+			本月新臺幣超支: -9250,
 			本月超支: 0,
 			總支出: 55512.6,
 			incomes: [
