@@ -233,6 +233,12 @@ describe("conventions", () => {
 		}
 	});
 
+	it("describes budget months", () => {
+		for (const needle of ["BUDGET MONTHS", "本月匯率", "Budget Based", "replace_old_layout", "N 月 DEP", "幣別"]) {
+			expect(CONVENTIONS_TEXT).toContain(needle);
+		}
+	});
+
 	it("exports the trip block anchors", () => {
 		expect(TRIP_HEADER_DATE).toBe("日期");
 		expect(TRIP_HEADER_SHOP).toBe("店鋪");

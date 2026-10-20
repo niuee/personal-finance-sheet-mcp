@@ -11,6 +11,8 @@ import {
 	ADJUSTED_REAL_USD_END_LABEL,
 	ADJUSTED_USD_END_BALANCE_LABELS,
 	BANK_BLOCK_LABEL,
+	BUDGET_SUM_LABEL,
+	BUDGET_TEMPLATE_TAB,
 	BUDGET_HEADER_LABEL,
 	CREDIT_BLOCK_COLS,
 	CREDIT_BLOCK_WIDTH,
@@ -47,10 +49,13 @@ import {
 	NTD_SPENDING_LABEL,
 	NTD_START_BALANCE_LABEL,
 	OVERDRAFT_LABEL,
+	OVERSPEND_LABEL,
+	OVERSPEND_NET_LABEL,
 	parseDateInput,
 	PREV_NTD_OVERDRAFT_LABEL,
 	PREV_USD_OVERDRAFT_LABEL,
 	previousMonth,
+	RATE_LABEL,
 	REAL_NTD_CARD_PAYMENT_LABEL,
 	REAL_NTD_CASH_SPENDING_LABEL,
 	REAL_NTD_END_BALANCE_LABEL,
@@ -68,6 +73,7 @@ import {
 	serialToIso,
 	todaySerial,
 	TOTAL_ROW_LABEL,
+	TOTAL_SPENDING_LABEL,
 	TRANSFER_COLS,
 	TRANSFER_JPY_COLS,
 	TRANSFER_SECTION_LABEL,
@@ -88,6 +94,15 @@ import {
 	USD_START_BALANCE_LABEL,
 } from "./conventions";
 import type { SheetsClient } from "./sheets-client";
+import { findBudgetIncomeSumifWindow, isBudgetMonth } from "./budget-layout";
+import {
+	addBudgetExpense,
+	addBudgetTransfer,
+	budgetCategories,
+	budgetMonthSummary,
+	deleteBudgetExpense,
+	startBudgetMonth,
+} from "./budget-ops";
 
 /** Re-target a single-row formula: "=E5*0.22" from row 5 to row 9 → "=E9*0.22". */
 export function adaptRowFormula(formula: string, fromRow: number, toRow: number): string {
@@ -605,7 +620,7 @@ function norm(v: unknown): string {
  * and the fresh cells copy the neighbouring row's format like
  * inheritFromBefore did.
  */
-function bandInsert(sheetId: number, row: number, count: number, startCol: number, endCol: number): object {
+export function bandInsert(sheetId: number, row: number, count: number, startCol: number, endCol: number): object {
 	return {
 		insertRange: {
 			range: {
@@ -1016,6 +1031,11 @@ const NON_INCOME_LABELS = new Set<string>([
 	...ADJUSTED_USD_END_BALANCE_LABELS,
 	ADJUSTED_REAL_NTD_END_LABEL,
 	ADJUSTED_REAL_USD_END_LABEL,
+	RATE_LABEL,
+	BUDGET_SUM_LABEL,
+	OVERSPEND_LABEL,
+	OVERSPEND_NET_LABEL,
+	TOTAL_SPENDING_LABEL,
 ]);
 
 /**
@@ -1049,7 +1069,10 @@ export async function setIncome(client: SheetsClient, p: SetIncomeParams) {
 			`${tab} still has the old 剩餘 income layout (6月 2026 and earlier) — those tabs are frozen history; edit them by hand if you must.`,
 		);
 	}
-	const sumifWin = findIncomeSumifWindow(values, tab);
+	// Budget months have no 本月美金收入 row: their income window is the one
+	// the 本月美金收支狀況 SUMIF covers.
+	const budget = isBudgetMonth(values);
+	const sumifWin = budget ? findBudgetIncomeSumifWindow(values, tab) : findIncomeSumifWindow(values, tab);
 
 	const cellStr = (r: number, c: number) => String(values[r - 1]?.[c] ?? "");
 	let targetRow: number | null = null;
@@ -1114,7 +1137,8 @@ export async function setIncome(client: SheetsClient, p: SetIncomeParams) {
 
 	// Any tool write is a chance to heal 對帳區 buckets that hand-entered card
 	// rows overflowed — ahead of the income band insert, like every audit.
-	const audit = auditCreditBuckets(values, tab, sheetId);
+	// Budget months have no 對帳區.
+	const audit = budget ? { requests: [], warning: undefined, grown: [] } : auditCreditBuckets(values, tab, sheetId);
 
 	await client.batchUpdate([...audit.requests, ...requests]);
 	return {
@@ -1134,7 +1158,7 @@ export function quoteTab(tab: string): string {
 	return `'${tab.replace(/'/g, "''")}'`;
 }
 
-function assertNotTruncated(truncated: boolean, tab: string, range: string): void {
+export function assertNotTruncated(truncated: boolean, tab: string, range: string): void {
 	if (truncated) {
 		throw new Error(
 			`Refusing to operate on ${tab}: reading ${range} was truncated at the size cap, so row positions cannot be trusted.`,
@@ -1174,6 +1198,7 @@ export async function adjustBalance(client: SheetsClient, p: AdjustBalanceParams
 		client.readRange(range, "FORMULA"),
 	]);
 	assertNotTruncated(truncated || formulas.truncated, tab, FULL_GRID_READ);
+	if (isBudgetMonth(values)) throw new Error(`${tab} is a budget month — it has no bank-balance sections to reconcile.`);
 
 	const endRow = findRowByValue(values, MONTH_COLS.budgetLabel, labels.end);
 	const adjustRow = findRowByValue(values, MONTH_COLS.budgetLabel, labels.adjust);
@@ -1260,6 +1285,9 @@ export async function addExpense(client: SheetsClient, p: AddExpenseParams) {
 
 	const { values, truncated } = await client.readRange(`${quoteTab(tab)}!${FULL_GRID_READ}`, "FORMULA");
 	assertNotTruncated(truncated, tab, FULL_GRID_READ);
+	// Budget months hand off. The cast keeps this op's declared (old-layout)
+	// result type for its typed callers; the tool layer only serializes it.
+	if (isBudgetMonth(values)) return (await addBudgetExpense(client, tab, p, dateSerialValue)) as never;
 
 	const { totalRow, start: windowStart, end: windowEnd } = findExpenseWindow(values, tab);
 
@@ -1399,7 +1427,7 @@ export interface AddTransferParams {
 	month?: number;
 }
 
-function round2(n: number): number {
+export function round2(n: number): number {
 	return Math.round(n * 100) / 100;
 }
 
@@ -1418,7 +1446,12 @@ export interface AddTransferResult {
 	spotUsd?: number;
 	jpy?: number;
 	spotJpy?: number;
-	wiredMonthTab?: string;
+	/** jpy only — the month tab the NTD side was wired into; null when that month is a budget month (not wired). */
+	wiredMonthTab?: string | null;
+	/** jpy only — why the month wiring was skipped. */
+	wiringNote?: string;
+	/** Set when the entry went into a budget month's 乾坤大挪移 log. */
+	layout?: "budget";
 	/** usd only — the month-tab 對帳區 audit's outcome (see auditCreditBuckets). */
 	bucketWarning?: string;
 	bucketsGrown?: BucketGrowth[];
@@ -1438,9 +1471,11 @@ async function wireJpyTransferIntoMonth(
 	monthTab: string,
 	tripTab: string,
 	entryRow: number,
-): Promise<void> {
+): Promise<boolean> {
 	const { values, truncated } = await client.readRange(`${quoteTab(monthTab)}!${FULL_GRID_READ}`, "FORMULA");
 	assertNotTruncated(truncated, monthTab, FULL_GRID_READ);
+	// Budget months have none of the bank rows these terms append to.
+	if (isBudgetMonth(values)) return false;
 	const ntdRef = `${quoteTab(tripTab)}!${colLetter(TRANSFER_JPY_COLS.ntd)}${entryRow}`;
 	const feeRef = `${quoteTab(tripTab)}!${colLetter(TRANSFER_JPY_COLS.fee)}${entryRow}`;
 	const targets: Array<{ label: string; term: string }> = [
@@ -1472,6 +1507,67 @@ async function wireJpyTransferIntoMonth(
 	// Heal any hand-entered 對帳區 bucket drift while we're writing the tab anyway.
 	requests.push(...auditCreditBuckets(values, monthTab, sheetId).requests);
 	await client.batchUpdate(requests);
+	return true;
+}
+
+/**
+ * Pin a transfer's rate: the entry's own 當下美金/當下日幣 cell doubles as the
+ * scratch — a live GOOGLEFINANCE written in ONE batch after `preRequests`,
+ * read once, then (by the caller) overwritten with the pinned formula. An
+ * unusable rate clears the scratch cell and throws.
+ */
+export async function pinTransferRate(
+	client: SheetsClient,
+	tab: string,
+	sheetId: number,
+	preRequests: object[],
+	row: number,
+	spotCol: number,
+	pair: "USDTWD" | "JPYTWD",
+): Promise<number> {
+	const scratchWrite = {
+		updateCells: {
+			start: { sheetId, rowIndex: row - 1, columnIndex: spotCol },
+			rows: [{ values: [cellData(`=GOOGLEFINANCE("CURRENCY:${pair}")`)] }],
+			fields: "userEnteredValue",
+		},
+	};
+	await client.batchUpdate([...preRequests, scratchWrite]);
+
+	const scratchCell = `${colLetter(spotCol)}${row}`;
+	const read = await client.readRange(`${quoteTab(tab)}!${scratchCell}`, "UNFORMATTED_VALUE");
+	const rate = read.values[0]?.[0];
+	if (typeof rate !== "number" || !Number.isFinite(rate) || rate <= 0) {
+		await client.batchUpdate([{ updateCells: { ...scratchWrite.updateCells, rows: [{ values: [{}] }] } }]);
+		throw new Error(
+			`GOOGLEFINANCE("CURRENCY:${pair}") did not return a usable rate (got ${JSON.stringify(rate)}); the scratch cell ${scratchCell} was cleared — try again in a moment.`,
+		);
+	}
+	return rate;
+}
+
+/** The six value cells 新臺幣…當筆總額外花費 of transfer entry `row`, rate pinned as a literal. */
+export function transferRowCells(
+	cols: TransferSectionConfig["cols"],
+	row: number,
+	ntd: number,
+	received: number,
+	rate: number,
+	fee: number,
+): object[] {
+	const B = colLetter(cols.ntd);
+	const C = colLetter(cols.spot);
+	const D = colLetter(cols.actual);
+	const E = colLetter(cols.spread);
+	const F = colLetter(cols.fee);
+	return [
+		cellData(ntd), // 新臺幣
+		cellData(`=${B}${row}/${rate}`), // 當下美金/日幣, rate pinned at entry
+		cellData(received), // 實際美金/日幣
+		cellData(`=(${C}${row}-${D}${row})*${rate}`), // 匯差 in NTD
+		cellData(fee), // 手續費
+		cellData(`=${E}${row}+${F}${row}`), // 當筆總額外花費
+	];
 }
 
 export async function addTransfer(client: SheetsClient, p: AddTransferParams): Promise<AddTransferResult> {
@@ -1496,6 +1592,7 @@ export async function addTransfer(client: SheetsClient, p: AddTransferParams): P
 
 	const { values, truncated } = await client.readRange(`${quoteTab(tab)}!${cfg.gridRead}`, "FORMULA");
 	assertNotTruncated(truncated, tab, cfg.gridRead);
+	if (currency === "usd" && isBudgetMonth(values)) return addBudgetTransfer(client, tab, p, dateSerialValue);
 	const { headerRow, totalRow } = findTransferSection(values, tab, cfg);
 
 	// First row between the header and 總和 that is empty across the section's columns.
@@ -1530,42 +1627,10 @@ export async function addTransfer(client: SheetsClient, p: AddTransferParams): P
 		finalTotalRow = totalRow + 1;
 		scratchRequests.push(bandInsert(sheetId, targetRow, 1, cfg.cols.date, cfg.cols.extra + 1));
 	}
-	// The entry's own 當下美金/當下日幣 cell doubles as the rate scratch: live GOOGLEFINANCE,
-	// read once, then overwritten with the pinned formula.
-	const scratchWrite = {
-		updateCells: {
-			start: { sheetId, rowIndex: targetRow - 1, columnIndex: cfg.cols.spot },
-			rows: [{ values: [cellData(`=GOOGLEFINANCE("CURRENCY:${cfg.pair}")`)] }],
-			fields: "userEnteredValue",
-		},
-	};
-	scratchRequests.push(scratchWrite);
-	await client.batchUpdate(scratchRequests);
-
-	const scratchCell = `${colLetter(cfg.cols.spot)}${targetRow}`;
-	const read = await client.readRange(`${quoteTab(tab)}!${scratchCell}`, "UNFORMATTED_VALUE");
-	const rate = read.values[0]?.[0];
-	if (typeof rate !== "number" || !Number.isFinite(rate) || rate <= 0) {
-		await client.batchUpdate([{ updateCells: { ...scratchWrite.updateCells, rows: [{ values: [{}] }] } }]);
-		throw new Error(
-			`GOOGLEFINANCE("CURRENCY:${cfg.pair}") did not return a usable rate (got ${JSON.stringify(rate)}); the scratch cell ${scratchCell} was cleared — try again in a moment.`,
-		);
-	}
+	const rate = await pinTransferRate(client, tab, sheetId, scratchRequests, targetRow, cfg.cols.spot, cfg.pair);
 
 	const r = targetRow;
-	const B = colLetter(cfg.cols.ntd);
-	const C = colLetter(cfg.cols.spot);
-	const D = colLetter(cfg.cols.actual);
-	const E = colLetter(cfg.cols.spread);
-	const F = colLetter(cfg.cols.fee);
-	const rowCells = [
-		cellData(p.ntd), // 新臺幣
-		cellData(`=${B}${r}/${rate}`), // 當下美金/日幣, rate pinned at entry
-		cellData(received), // 實際美金/日幣
-		cellData(`=(${C}${r}-${D}${r})*${rate}`), // 匯差 in NTD
-		cellData(p.fee), // 手續費
-		cellData(`=${E}${r}+${F}${r}`), // 當筆總額外花費
-	];
+	const rowCells = transferRowCells(cfg.cols, r, p.ntd, received, rate, p.fee);
 	// Rewrite 總和 over the whole data window: the sheet's original single-cell
 	// =sum(...) cannot auto-extend, so the op owns the range from now on.
 	const sumCells = [];
@@ -1643,14 +1708,21 @@ export async function addTransfer(client: SheetsClient, p: AddTransferParams): P
 	if (currency === "jpy") {
 		const monthNum = Number(serialToIso(dateSerialValue).slice(5, 7));
 		const monthTab = monthTabName(monthNum);
+		let wired: boolean;
 		try {
-			await wireJpyTransferIntoMonth(client, monthTab, tab, r);
+			wired = await wireJpyTransferIntoMonth(client, monthTab, tab, r);
 		} catch (e) {
 			throw new Error(
 				`The transfer row ${tab}!${colLetter(cfg.cols.date)}${r} was already written, but wiring it into ${monthTab} failed: ${e instanceof Error ? e.message : String(e)} — fix the three bank formulas by hand (−新臺幣 into 本月底/保守預計, +手續費 into 本月新臺幣支出) or delete the row and retry.`,
 			);
 		}
-		return { ...base, jpy: received, spotJpy: round2(p.ntd / rate), wiredMonthTab: monthTab };
+		return {
+			...base,
+			jpy: received,
+			spotJpy: round2(p.ntd / rate),
+			wiredMonthTab: wired ? monthTab : null,
+			...(wired ? {} : { wiringNote: `${monthTab} is a budget month — the JPY transfer's NTD side was not linked into it.` }),
+		};
 	}
 	return {
 		...base,
@@ -1694,6 +1766,7 @@ export async function addLunch(client: SheetsClient, p: AddLunchParams) {
 
 	const { values, truncated } = await client.readRange(`${quoteTab(tab)}!${FULL_GRID_READ}`, "FORMULA");
 	assertNotTruncated(truncated, tab, FULL_GRID_READ);
+	if (isBudgetMonth(values)) throw new Error(`${tab} is a budget month — lunches are entries in the 午餐 block: use add_expense with tag 中餐.`);
 	const { budgetRow, headerRow, totalRow } = findLunchSection(values, tab);
 
 	// First row between the header and 總和 that is empty across P–S.
@@ -1816,6 +1889,7 @@ export async function setExpenseDate(client: SheetsClient, p: SetExpenseDatePara
 
 	const { values, truncated } = await client.readRange(`${quoteTab(tab)}!${FULL_GRID_READ}`, "FORMULA");
 	assertNotTruncated(truncated, tab, FULL_GRID_READ);
+	if (isBudgetMonth(values)) throw new Error(`${tab} is a budget month — it has no card statement buckets to date a row into. To change an entry's date, delete_expense it and add_expense it again.`);
 	const { totalRow, start: windowStart, end: windowEnd } = findExpenseWindow(values, tab);
 
 	const candidates: number[] = [];
@@ -1941,6 +2015,7 @@ export async function monthSummary(client: SheetsClient, month?: number) {
 	const tab = month !== undefined ? monthTabName(month) : currentMonthTab();
 	const { values, truncated } = await client.readRange(`${quoteTab(tab)}!${FULL_GRID_READ}`, "UNFORMATTED_VALUE");
 	assertNotTruncated(truncated, tab, FULL_GRID_READ);
+	if (isBudgetMonth(values)) return (await budgetMonthSummary(client, tab)) as never;
 
 	const num = (v: unknown): number | null => (typeof v === "number" ? v : null);
 	const cellAt = (row: number | null, col: number): number | null =>
@@ -2027,6 +2102,10 @@ const TAG_VALIDATION_ROWS = { start: 3, end: 15 } as const;
 /** The live 類別 tag list, read from the dropdown (data validation) on a monthly tab's 類別 column. */
 export async function getCategories(client: SheetsClient, month?: number) {
 	const tab = month !== undefined ? monthTabName(month) : currentMonthTab();
+	// Layout first: a budget month has no 類別 dropdown — its categories are its blocks.
+	const { values, truncated } = await client.readRange(`${quoteTab(tab)}!${FULL_GRID_READ}`, "FORMULA");
+	assertNotTruncated(truncated, tab, FULL_GRID_READ);
+	if (isBudgetMonth(values)) return (await budgetCategories(client, tab)) as never;
 	const rule = await client.getDataValidation(
 		tab,
 		TAG_VALIDATION_ROWS.start,
@@ -2054,12 +2133,36 @@ export async function getCategories(client: SheetsClient, month?: number) {
 	throw new Error(`類別 column validation on "${tab}" is ${rule.type}, not a dropdown list.`);
 }
 
-export async function startMonth(client: SheetsClient, month: number) {
+/** A month's carry: the previous month's negative 本月…收支狀況 (column D of `row`) becomes this month's shortfall; a positive month carries 0. */
+export function carryFormula(prevTab: string, row: number): string {
+	const cell = `${quoteTab(prevTab)}!${colLetter(MONTH_COLS.budgetValue)}${row}`;
+	return `=IF(-(${cell}) > 0, -(${cell}), 0)`;
+}
+
+export async function startMonth(
+	client: SheetsClient,
+	month: number,
+	opts: { replaceOldLayout?: boolean; now?: Date; newSheetId?: number } = {},
+) {
 	const newTab = monthTabName(month);
 	const prevTab = monthTabName(previousMonth(month));
 	const prevPrevTab = monthTabName(previousMonth(previousMonth(month)));
 
 	const tabs = await client.listTabs();
+	// With the template tab present, every new month is a budget month built from it.
+	if (tabs.some((t) => t.title === BUDGET_TEMPLATE_TAB)) {
+		return (await startBudgetMonth(
+			client,
+			month,
+			tabs.map((t) => t.title),
+			{ replaceOldLayout: opts.replaceOldLayout ?? false, now: opts.now ?? new Date(), newSheetId: opts.newSheetId },
+		)) as never;
+	}
+	if (opts.replaceOldLayout) {
+		throw new Error(
+			`replace_old_layout needs the "${BUDGET_TEMPLATE_TAB}" template tab — without it start_month duplicates the previous month and never replaces a tab.`,
+		);
+	}
 	if (tabs.some((t) => t.title === newTab)) {
 		throw new Error(`Tab "${newTab}" already exists — refusing to overwrite it.`);
 	}
@@ -2123,11 +2226,9 @@ export async function startMonth(client: SheetsClient, month: number) {
 			},
 		});
 	};
-	const carryFormula = (netLabels: readonly string[]): string | null => {
+	const carryFormulaFor = (netLabels: readonly string[]): string | null => {
 		const netRow = findRowByLabels(values, MONTH_COLS.budgetLabel, netLabels);
-		if (netRow === null) return null;
-		const cell = `${quoteTab(prevTab)}!${colLetter(MONTH_COLS.budgetValue)}${netRow}`;
-		return `=IF(-(${cell}) > 0, -(${cell}), 0)`;
+		return netRow === null ? null : carryFormula(prevTab, netRow);
 	};
 	const legacyCarryFormula = (fallbackRow: number): string => {
 		const remainderRow = findRowByValue(values, MONTH_COLS.budgetLabel, REMAINDER_LABEL);
@@ -2144,10 +2245,10 @@ export async function startMonth(client: SheetsClient, month: number) {
 			// Degenerate (previous month predates the 收支狀況 view): nothing to
 			// anchor the USD side on — carry 0. The row's E conversion formula is
 			// row-relative and survives duplication; only D is rewritten.
-			carryWrite(usdCarryRow, MONTH_COLS.usd, carryFormula(MONTH_USD_NET_LABELS) ?? 0);
+			carryWrite(usdCarryRow, MONTH_COLS.usd, carryFormulaFor(MONTH_USD_NET_LABELS) ?? 0);
 		}
 		if (ntdCarryRow !== null) {
-			carryWrite(ntdCarryRow, MONTH_COLS.twd, carryFormula(MONTH_NTD_NET_LABELS) ?? legacyCarryFormula(ntdCarryRow));
+			carryWrite(ntdCarryRow, MONTH_COLS.twd, carryFormulaFor(MONTH_NTD_NET_LABELS) ?? legacyCarryFormula(ntdCarryRow));
 		} else {
 			// Mid-backfill tab (USD row inserted, old row not yet renamed): re-anchor the legacy TWD carry to this month rather than leave it pointing two months back.
 			const legacyRow = findRowByValue(values, MONTH_COLS.item, OVERDRAFT_LABEL);
@@ -3039,6 +3140,8 @@ export interface DeleteExpenseParams {
 	month?: number;
 	/** 1-indexed sheet row, to disambiguate duplicate 項目 names. */
 	row?: number;
+	/** Budget months only: the category block to search (old-layout months ignore it). */
+	tag?: string;
 }
 
 /**
@@ -3057,6 +3160,7 @@ export async function deleteExpense(client: SheetsClient, p: DeleteExpenseParams
 
 	const { values, truncated } = await client.readRange(`${quoteTab(tab)}!${FULL_GRID_READ}`, "FORMULA");
 	assertNotTruncated(truncated, tab, FULL_GRID_READ);
+	if (isBudgetMonth(values)) return (await deleteBudgetExpense(client, tab, p)) as never;
 	const { totalRow, start: windowStart, end: windowEnd } = findExpenseWindow(values, tab);
 
 	const candidates: number[] = [];
