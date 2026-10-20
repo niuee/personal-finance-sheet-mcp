@@ -245,9 +245,19 @@ describe("conventions", () => {
 		expect(CONVENTIONS_TEXT).toContain("add_expense copies the 幣別 dropdown rule onto the new row");
 	});
 
-	it("says the USD line mirrors the NTD line: budget lines plus its own overspend", () => {
+	it("describes per-currency budget months", () => {
 		expect(USD_OVERSPEND_LABEL).toBe("本月美金超支");
-		expect(CONVENTIONS_TEXT).toContain("本月美金收支狀況 (USD income − 上月美金透支 − the USD budget lines + 本月美金超支)");
+		for (const needle of [
+			"<類別>美金預算",
+			"<類別>新臺幣預算",
+			"a 美金 row and a 新臺幣 row",
+			"本月美金超支（加上回補）",
+			"本月新臺幣超支（加上回補）",
+			"migrate_budget_split",
+			"本月美金收支狀況 (USD income − 上月美金透支 − the USD budget lines + 本月美金超支)",
+		]) {
+			expect(CONVENTIONS_TEXT).toContain(needle);
+		}
 	});
 
 	it("says the NTD line subtracts the NTD-paid overspend", () => {
