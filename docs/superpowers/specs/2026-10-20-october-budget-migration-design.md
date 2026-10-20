@@ -129,11 +129,20 @@ The old expense list's `中餐 =130*30` row (tagged 吃喝) is the lunch
 The income list needs no change: the template's 薪水 TWD 65,271 and 沛還
 USD 700 are October's.
 
+**No transfers to move.** Checked on 2026-10-20:
+- The old 10 月's 乾坤大挪移 log (H–N) is empty.
+- None of its 銀行餘額 formulas carry a trip-tab term, so no JPY trip
+  transfer is wired into October.
+
+If the step-1 re-read finds a transfer after all, stop and ask Vincent
+before going on.
+
 **Expected differences from "10 月 DEP":**
 - **Rate.** USD amounts convert at the locked 10/1 rate instead of today's
   live one.
 - **NTD line.** 本月新臺幣收支狀況 drops from about −21,076 to about
-  −28,258. Under the budget layout, unspent budget stays reserved (訂閱's NTD
+  −28,258 (rough figures; both move with the JPY rate behind 近鐵 80000系,
+  and the old one with the live USD rate). Under the budget layout, unspent budget stays reserved (訂閱's NTD
   side ≈ 4,290 and 中餐 3,070), and the overspend is counted per block.
 - **USD line.** 本月美金收支狀況 stays +18.31: every USD category is at or
   over its budget, so the budget logic and the old logic agree.
@@ -162,6 +171,10 @@ next to 11 月 by hand if wanted.
   `append_rows`, `insert_rows`, `delete_rows`, `find_cells`, `add_tab`,
   `list_tabs`). They stay usable on any tab as the escape hatch.
 - Editing old design docs under `docs/`. They stay as history.
+- Next year's tab names. Tab names carry no year, so next May
+  `start_month(5)` will refuse, because 2026's read-only "5 月" holds the
+  name (likewise through 12 月). Removing `replace_old_layout` doesn't change
+  this, and keeping it wouldn't fix it. Separate work, before 2027-05.
 
 ### Anti-goals
 
@@ -180,7 +193,7 @@ next to 11 月 by hand if wanted.
 | `add_transfer` (usd) | Budget months only. |
 | `add_transfer` (jpy) | Still logs into the trip tab's 乾坤大挪移. It never writes into a month tab any more, whatever the date (budget months already skip this). |
 | `get_categories` | Budget months only (returns the blocks). |
-| `month_summary` | Unchanged on both layouts. |
+| `month_summary` | Unchanged on both layouts. It still opens "N 月" by month number only, so the "N 月 DEP" copies (now including 10 月 DEP) stay readable with `read_range` only, as they always were. *(My call: no `tab` param.)* |
 | `start_month` | Template path only. Without a "Budget Based" tab it refuses instead of duplicating the previous month. `replace_old_layout` is removed: with October done, no old-layout month is left to rebuild. |
 | `add_trip_entry`, `trip_budget_status` | Unchanged. |
 | General tools | Unchanged. `delete_rows`' description names the budget-month bands instead of the old ones. |
