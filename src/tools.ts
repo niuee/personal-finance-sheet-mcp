@@ -113,6 +113,22 @@ export function registerFinanceTools(server: McpServer, client: SheetsClient): v
 	);
 
 	server.tool(
+		"rename_tab",
+		"Rename a tab. Sheets rewrites every formula that refers to it, on any tab, so cross-tab references (e.g. a month's 上月…透支 carries pointing at the previous month) keep working. Refuses when the tab doesn't exist or the new name is taken. Month tabs are named \"YYYY 年 M 月\" (e.g. \"2026 年 10 月\").",
+		{
+			from: z.string().min(1).describe("Current tab name, exactly as it appears, e.g. 10 月"),
+			to: z.string().min(1).describe("New tab name, e.g. 2026 年 10 月"),
+		},
+		async ({ from, to }) => {
+			try {
+				return ok(await client.renameTab(from, to));
+			} catch (e) {
+				return toError(e);
+			}
+		},
+	);
+
+	server.tool(
 		"add_tab",
 		"Create a new empty tab (sheet) in the spreadsheet.",
 		{
@@ -129,6 +145,13 @@ export function registerFinanceTools(server: McpServer, client: SheetsClient): v
 }
 
 const monthParam = z.number().int().min(1).max(12);
+const yearParam = z
+	.number()
+	.int()
+	.min(2000)
+	.max(2100)
+	.optional()
+	.describe("The month's year, e.g. 2027 (default: the occurrence of month nearest to today). Only with month.");
 
 export function registerTailoredTools(server: McpServer, client: SheetsClient): void {
 	server.tool(
@@ -153,6 +176,7 @@ export function registerTailoredTools(server: McpServer, client: SheetsClient): 
 					"Expense date: M/D, MM/DD, or YYYY-MM-DD (year defaults to the current Taipei year). Omit to leave the 日期 cell blank, like recurring rows.",
 				),
 			month: monthParam.optional().describe("Target month 1-12 (default: current month)"),
+			year: yearParam,
 			paid_with: z
 				.enum(["TWD", "USD"])
 				.optional()
@@ -175,6 +199,7 @@ export function registerTailoredTools(server: McpServer, client: SheetsClient): 
 		{
 			item: z.string().min(1).describe("項目 of the expense row to delete, exactly as written"),
 			month: monthParam.optional().describe("Target month 1-12 (default: current month)"),
+			year: yearParam,
 			row: z.number().int().min(3).optional().describe("1-indexed sheet row, to disambiguate duplicate 項目 names"),
 			tag: z
 				.string()
@@ -201,6 +226,7 @@ export function registerTailoredTools(server: McpServer, client: SheetsClient): 
 			amount: z.number().describe("The amount, in the given currency"),
 			currency: z.enum(["TWD", "USD"]).describe("The income's 幣別 — routes it into 本月新臺幣收支狀況 or 本月美金收支狀況"),
 			month: monthParam.optional().describe("Target month 1-12 (default: current month)"),
+			year: yearParam,
 		},
 		async (p) => {
 			try {
@@ -214,10 +240,10 @@ export function registerTailoredTools(server: McpServer, client: SheetsClient): 
 	server.tool(
 		"month_summary",
 		"Get a month's numbers as clean JSON (unformatted). Defaults to the current month. A budget month (10 月 2026 on) returns layout:'budget': per-block 美金 and 新臺幣 編列預算/總和/剩餘 (USD in USD, NTD in NTD), 本月匯率, the carries (上月美金透支/上月新臺幣透支), 預算總額, the income list, both 收支狀況 lines, 本月美金超支 / 本月新臺幣超支 (each currency's overspend, ≤ 0, already included in its line), 本月美金超支（加上回補） / 本月新臺幣超支（加上回補）, 總支出, and the 乾坤大挪移 totals. An old-layout month (5 月–9 月, read-only) returns its own shape: 花費總額, the carries (or legacy 上月透支), per-類別 tag totals, the 午餐預算 lunch block and 午餐超支或回補, the income list, 薪水, 沛還, both 收支狀況 lines and the 銀行餘額 block (old tabs report 剩餘 instead); fields the sheet doesn't have come back null.",
-		{ month: monthParam.optional().describe("Month 1-12 (default: current month)") },
-		async ({ month }) => {
+		{ month: monthParam.optional().describe("Month 1-12 (default: current month)"), year: yearParam },
+		async ({ month, year }) => {
 			try {
-				return ok(await monthSummary(client, month));
+				return ok(await monthSummary(client, month, year));
 			} catch (e) {
 				return toError(e);
 			}
@@ -227,10 +253,10 @@ export function registerTailoredTools(server: McpServer, client: SheetsClient): 
 	server.tool(
 		"get_categories",
 		"List a budget month's category blocks — the tags add_expense accepts (source BUDGET_BLOCKS; the 午餐 block is reported as 中餐). Call this before add_expense when unsure which tag to use. Defaults to the current month. Old-layout months (5 月–9 月) are refused.",
-		{ month: monthParam.optional().describe("Month 1-12 (default: current month)") },
-		async ({ month }) => {
+		{ month: monthParam.optional().describe("Month 1-12 (default: current month)"), year: yearParam },
+		async ({ month, year }) => {
 			try {
-				return ok(await getCategories(client, month));
+				return ok(await getCategories(client, month, year));
 			} catch (e) {
 				return toError(e);
 			}
@@ -240,10 +266,13 @@ export function registerTailoredTools(server: McpServer, client: SheetsClient): 
 	server.tool(
 		"start_month",
 		"Open a new month by COPYING the 'Budget Based' template tab: the template's starting entries, budgets and income come along as they are, the title is set, 上月美金透支/上月新臺幣透支 point at the previous month's 本月…收支狀況 cells (0 when that tab is missing), and 本月匯率 gets a formula that shows the live USDTWD rate until the 1st and then locks to the 1st's rate. Refuses if the tab already exists, and without the template tab. To change what every new month starts with, edit the template tab by hand.",
-		{ month: monthParam.describe("The month to create, 1-12") },
-		async ({ month }) => {
+		{
+			month: monthParam.describe("The month to create, 1-12"),
+			year: yearParam.describe("The month's year, e.g. 2027 (default: the occurrence of month nearest to today — January built in December is next year's)"),
+		},
+		async ({ month, year }) => {
 			try {
-				return ok(await startMonth(client, month));
+				return ok(await startMonth(client, month, { year }));
 			} catch (e) {
 				return toError(e);
 			}
@@ -307,6 +336,7 @@ export function registerTailoredTools(server: McpServer, client: SheetsClient): 
 				.optional()
 				.describe("Transfer date: M/D, MM/DD, or YYYY-MM-DD (defaults to today in Taipei)"),
 			month: monthParam.optional().describe("Target month 1-12 (default: current month) — usd transfers only"),
+			year: yearParam.describe("The month's year, e.g. 2027 (default: the occurrence of month nearest to today) — usd transfers only"),
 		},
 		async (p) => {
 			try {

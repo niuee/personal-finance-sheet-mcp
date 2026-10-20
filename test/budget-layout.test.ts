@@ -8,7 +8,6 @@ import {
 	firstEmptyEntryRow,
 	isBudgetMonth,
 	rateFormula,
-	rateYear,
 	resolveBudgetBlock,
 } from "../src/budget-layout";
 import { budgetGrid, legacyBudgetGrid, oldMonthGrid } from "./budget-fixtures";
@@ -70,20 +69,6 @@ describe("budget-month layout", () => {
 
 	it("findRateRow finds 本月匯率", () => {
 		expect(findRateRow(budgetGrid(), "11 月")).toBe(23);
-	});
-
-	it("rateYear: this year from the current month on, next year before it (Taipei)", () => {
-		const oct20 = new Date("2026-10-20T04:00:00Z");
-		expect(rateYear(11, oct20)).toBe(2026);
-		expect(rateYear(10, oct20)).toBe(2026);
-		expect(rateYear(1, new Date("2026-12-15T04:00:00Z"))).toBe(2027);
-		expect(rateYear(1, new Date("2026-12-31T17:00:00Z"))).toBe(2027); // already 2027-01-01 in Taipei → current month
-	});
-
-	it("rateYear picks the nearest occurrence, so rebuilding a just-ended month keeps its year", () => {
-		expect(rateYear(11, new Date("2026-12-15T04:00:00Z"))).toBe(2026); // November built late, in December
-		expect(rateYear(12, new Date("2027-01-10T04:00:00Z"))).toBe(2026);
-		expect(rateYear(4, new Date("2026-10-20T04:00:00Z"))).toBe(2027); // six months either way → the coming one
 	});
 
 	it("rateFormula is the exact self-locking formula", () => {

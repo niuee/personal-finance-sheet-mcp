@@ -13,7 +13,8 @@ import {
 	BUDGET_SUM_LABEL,
 	BUDGET_TEMPLATE_TAB,
 	BUDGET_HEADER_LABEL,
-	currentMonthTab,
+	bareMonthTabName,
+	BARE_TAB_YEAR,
 	DATE_HEADER_LABEL,
 	INCOME_HEADER_LABEL,
 	LUNCH_ADJUST_LABEL,
@@ -27,6 +28,8 @@ import {
 	MONTH_USD_NET_LABEL,
 	MONTH_USD_NET_LABELS,
 	monthTabName,
+	resolveYearMonth,
+	type YearMonth,
 	NTD_ADJUSTMENT_LABEL,
 	NTD_CONSERVATIVE_END_LABEL,
 	NTD_END_BALANCE_LABEL,
@@ -329,6 +332,8 @@ export interface SetIncomeParams {
 	amount: number;
 	currency: "TWD" | "USD";
 	month?: number;
+	/** The month's year; defaults to the occurrence of `month` nearest to today (resolveYearMonth). */
+	year?: number;
 }
 
 /** Labels that name layout rows, not income items — set_income must never write them into the income list. */
@@ -391,7 +396,7 @@ export async function setIncome(client: SheetsClient, p: SetIncomeParams) {
 	if (NON_INCOME_LABELS.has(item)) {
 		throw new Error(`"${item}" is a layout label, not an income item — refusing to write it into the income list.`);
 	}
-	const tab = p.month !== undefined ? monthTabName(p.month) : currentMonthTab();
+	const tab = await resolveMonthTab(client, p.month, p.year);
 
 	const { values, truncated } = await client.readRange(`${quoteTab(tab)}!${FULL_GRID_READ}`, "FORMULA");
 	assertNotTruncated(truncated, tab, FULL_GRID_READ);
@@ -475,6 +480,23 @@ export function quoteTab(tab: string): string {
 	return `'${tab.replace(/'/g, "''")}'`;
 }
 
+/** The tab holding month `ym` among `titles`: "YYYY 年 M 月", or a 2026 month's bare "M 月" name. Null when neither exists. */
+export function findMonthTab(titles: readonly string[], ym: YearMonth): string | null {
+	const named = monthTabName(ym);
+	if (titles.includes(named)) return named;
+	if (ym.year === BARE_TAB_YEAR && titles.includes(bareMonthTabName(ym.month))) return bareMonthTabName(ym.month);
+	return null;
+}
+
+/** A tool's month/year params → the month's existing tab (see resolveYearMonth, findMonthTab). Throws when it doesn't exist. */
+export async function resolveMonthTab(client: SheetsClient, month?: number, year?: number): Promise<string> {
+	const ym = resolveYearMonth(month, year);
+	const titles = (await client.listTabs()).map((t) => t.title);
+	const tab = findMonthTab(titles, ym);
+	if (tab === null) throw new Error(`No "${monthTabName(ym)}" tab — start_month creates it.`);
+	return tab;
+}
+
 export function assertNotTruncated(truncated: boolean, tab: string, range: string): void {
 	if (truncated) {
 		throw new Error(
@@ -488,6 +510,8 @@ export interface AddExpenseParams {
 	amount: number;
 	currency: "TWD" | "USD";
 	month?: number;
+	/** The month's year; defaults to the occurrence of `month` nearest to today (resolveYearMonth). */
+	year?: number;
 	/** M/D, MM/DD, YYYY/M/D, or YYYY-MM-DD; omitted = leave the 日期 cell blank. */
 	date?: string;
 	/** The category block the entry goes into (中餐 or 午餐 → the 午餐 block); required on a budget month. */
@@ -498,7 +522,6 @@ export interface AddExpenseParams {
 
 /** add_expense: append the entry to its category block on a budget month. Old-layout months are refused. */
 export async function addExpense(client: SheetsClient, p: AddExpenseParams) {
-	const tab = p.month !== undefined ? monthTabName(p.month) : currentMonthTab();
 	// Parse before any read/write so a bad date fails closed.
 	const dateSerialValue = p.date !== undefined ? parseDateInput(p.date) : null;
 	if (p.currency === "TWD" && (p.paidWith ?? p.currency) === "USD") {
@@ -506,6 +529,7 @@ export async function addExpense(client: SheetsClient, p: AddExpenseParams) {
 			"A TWD-priced expense paid from the USD account is not representable: its 金額 would be NTD under a USD 幣別. Log it in USD (currency USD, paid_with USD) instead.",
 		);
 	}
+	const tab = await resolveMonthTab(client, p.month, p.year);
 	const { values, truncated } = await client.readRange(`${quoteTab(tab)}!${FULL_GRID_READ}`, "FORMULA");
 	assertNotTruncated(truncated, tab, FULL_GRID_READ);
 	assertBudgetMonth(values, tab);
@@ -529,6 +553,8 @@ export interface AddTransferParams {
 	date?: string;
 	/** usd only. */
 	month?: number;
+	/** usd only — the month's year (see resolveYearMonth). */
+	year?: number;
 }
 
 export function round2(n: number): number {
@@ -620,25 +646,26 @@ export async function addTransfer(client: SheetsClient, p: AddTransferParams): P
 		if (!p.tab) throw new Error("currency:'jpy' logs into a trip tab — provide tab (e.g. 2026/07/25 京都東京).");
 		if (p.jpy === undefined) throw new Error("currency:'jpy' needs jpy (實際日幣 that actually arrived).");
 		if (p.usd !== undefined) throw new Error("currency:'jpy' takes jpy, not usd.");
-		if (p.month !== undefined) {
-			throw new Error("currency:'jpy' logs into a trip tab, not a month — month is not accepted.");
+		if (p.month !== undefined || p.year !== undefined) {
+			throw new Error("currency:'jpy' logs into a trip tab, not a month — month and year are not accepted.");
 		}
 	} else {
 		if (p.usd === undefined) throw new Error("usd (實際美金 that actually arrived) is required.");
 		if (p.jpy !== undefined) throw new Error("jpy is only valid with currency:'jpy'.");
 		if (p.tab !== undefined) throw new Error("tab is only valid with currency:'jpy' — usd transfers target a month tab (use month).");
 	}
-	const tab = currency === "jpy" ? p.tab! : p.month !== undefined ? monthTabName(p.month) : currentMonthTab();
 	const received = currency === "jpy" ? p.jpy! : p.usd!;
 	// Parse before any read/write so a bad date fails closed.
 	const dateSerialValue = p.date !== undefined ? parseDateInput(p.date) : todaySerial();
 
 	if (currency === "usd") {
+		const tab = await resolveMonthTab(client, p.month, p.year);
 		const month = await client.readRange(`${quoteTab(tab)}!${FULL_GRID_READ}`, "FORMULA");
 		assertNotTruncated(month.truncated, tab, FULL_GRID_READ);
 		assertBudgetMonth(month.values, tab);
 		return addBudgetTransfer(client, tab, p, dateSerialValue);
 	}
+	const tab = p.tab!;
 	const cfg = JPY_TRANSFER_SECTION;
 	const { values, truncated } = await client.readRange(`${quoteTab(tab)}!${cfg.gridRead}`, "FORMULA");
 	assertNotTruncated(truncated, tab, cfg.gridRead);
@@ -743,8 +770,8 @@ export async function addTransfer(client: SheetsClient, p: AddTransferParams): P
 	return { ...base, jpy: received, spotJpy: round2(p.ntd / rate) };
 }
 
-export async function monthSummary(client: SheetsClient, month?: number) {
-	const tab = month !== undefined ? monthTabName(month) : currentMonthTab();
+export async function monthSummary(client: SheetsClient, month?: number, year?: number) {
+	const tab = await resolveMonthTab(client, month, year);
 	const { values, truncated } = await client.readRange(`${quoteTab(tab)}!${FULL_GRID_READ}`, "UNFORMATTED_VALUE");
 	assertNotTruncated(truncated, tab, FULL_GRID_READ);
 	if (isBudgetMonth(values)) return (await budgetMonthSummary(client, tab)) as never;
@@ -829,8 +856,8 @@ export async function monthSummary(client: SheetsClient, month?: number) {
 }
 
 /** get_categories: a budget month's category blocks. Old-layout months are refused. */
-export async function getCategories(client: SheetsClient, month?: number) {
-	const tab = month !== undefined ? monthTabName(month) : currentMonthTab();
+export async function getCategories(client: SheetsClient, month?: number, year?: number) {
+	const tab = await resolveMonthTab(client, month, year);
 	const { values, truncated } = await client.readRange(`${quoteTab(tab)}!${FULL_GRID_READ}`, "FORMULA");
 	assertNotTruncated(truncated, tab, FULL_GRID_READ);
 	assertBudgetMonth(values, tab);
@@ -844,12 +871,17 @@ export function carryFormula(prevTab: string, row: number): string {
 }
 
 /** start_month: build "N 月" by copying the "Budget Based" template (see startBudgetMonth). */
-export async function startMonth(client: SheetsClient, month: number, opts: { now?: Date; newSheetId?: number } = {}) {
+export async function startMonth(
+	client: SheetsClient,
+	month: number,
+	opts: { year?: number; now?: Date; newSheetId?: number } = {},
+) {
 	const tabs = (await client.listTabs()).map((t) => t.title);
 	if (!tabs.includes(BUDGET_TEMPLATE_TAB)) {
 		throw new Error(`No "${BUDGET_TEMPLATE_TAB}" template tab — start_month builds every month from it.`);
 	}
-	return startBudgetMonth(client, month, tabs, { now: opts.now ?? new Date(), newSheetId: opts.newSheetId });
+	const now = opts.now ?? new Date();
+	return startBudgetMonth(client, resolveYearMonth(month, opts.year, now), tabs, { newSheetId: opts.newSheetId });
 }
 
 export interface TripEntryParams {
@@ -1516,6 +1548,8 @@ export async function safeDeleteRows(client: SheetsClient, p: DeleteRowsParams):
 export interface DeleteExpenseParams {
 	item: string;
 	month?: number;
+	/** The month's year; defaults to the occurrence of `month` nearest to today (resolveYearMonth). */
+	year?: number;
 	/** 1-indexed sheet row, to disambiguate duplicate 項目 names. */
 	row?: number;
 	/** The category block to search; every block has entries on the same sheet rows. */
@@ -1528,7 +1562,7 @@ export interface DeleteExpenseParams {
  * months are refused.
  */
 export async function deleteExpense(client: SheetsClient, p: DeleteExpenseParams) {
-	const tab = p.month !== undefined ? monthTabName(p.month) : currentMonthTab();
+	const tab = await resolveMonthTab(client, p.month, p.year);
 	const { values, truncated } = await client.readRange(`${quoteTab(tab)}!${FULL_GRID_READ}`, "FORMULA");
 	assertNotTruncated(truncated, tab, FULL_GRID_READ);
 	assertBudgetMonth(values, tab);

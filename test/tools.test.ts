@@ -37,6 +37,7 @@ describe("registered tools", () => {
 				"delete_rows",
 				"find_cells",
 				"get_sheet_conventions",
+				"rename_tab",
 			]),
 		);
 	});

@@ -13,6 +13,7 @@ import {
 	FIND_CELLS_CAP,
 	findIncomeWindow,
 	findLunchSection,
+	findMonthTab,
 	findRowByLabels,
 	findRowByValue,
 	findTransferSection,
@@ -180,8 +181,12 @@ function lunchGrid(): unknown[][] {
 	return g;
 }
 
+/** 2026's month tabs, under the bare names they were created with. */
+const BARE_2026_TABS = Array.from({ length: 12 }, (_, i) => ({ title: `${i + 1} 月`, rowCount: 1000, columnCount: 30 }));
+
 function fakeClient(grid: unknown[][]): SheetsClient {
 	return {
+		listTabs: vi.fn(async () => BARE_2026_TABS),
 		readRange: vi.fn(async () => ({ range: "x", values: grid, truncated: false })),
 		getSheetId: vi.fn(async () => 111),
 		batchUpdate: vi.fn(async () => ({ replies: [{}] })),
@@ -245,6 +250,22 @@ describe("findTransferSection (jpy config)", () => {
 	});
 });
 
+describe("findMonthTab", () => {
+	it("prefers the year-named tab", () => {
+		expect(findMonthTab(["2026 年 5 月", "5 月"], { year: 2026, month: 5 })).toBe("2026 年 5 月");
+		expect(findMonthTab(["2027 年 5 月", "5 月"], { year: 2027, month: 5 })).toBe("2027 年 5 月");
+	});
+
+	it("finds a 2026 month under its bare name", () => {
+		expect(findMonthTab(["5 月"], { year: 2026, month: 5 })).toBe("5 月");
+	});
+
+	it("never takes a bare name for another year — that is 2026's tab", () => {
+		expect(findMonthTab(["5 月"], { year: 2027, month: 5 })).toBeNull();
+		expect(findMonthTab(["5 月 DEP", "2027 年 4 月"], { year: 2027, month: 5 })).toBeNull();
+	});
+});
+
 describe("findLunchSection", () => {
 	it("locates the budget, header and 總和 rows from the anchor", () => {
 		expect(findLunchSection(lunchGrid(), "9 月")).toEqual({ budgetRow: 35, headerRow: 36, totalRow: 38 });
@@ -302,6 +323,7 @@ describe("findLunchSection", () => {
 /** Like fakeClient, but the single-cell scratch read returns `rate` instead of the grid. */
 function transferClient(grid: unknown[][], rate: unknown = 29.85): SheetsClient {
 	return {
+		listTabs: vi.fn(async () => BARE_2026_TABS),
 		readRange: vi.fn(async (range: string) =>
 			range.includes(":")
 				? { range, values: grid, truncated: false }
@@ -439,15 +461,10 @@ describe("addTransfer (jpy)", () => {
 	});
 
 	it("dates the entry today (Taipei) when no date is given", async () => {
-		vi.useFakeTimers();
-		try {
-			vi.setSystemTime(new Date("2026-10-20T04:00:00Z"));
-			const client = transferClient(jpyTransferGrid(), 0.208);
-			const result = await addTransfer(client, { currency: "jpy", tab: TRIP, ntd: 100, jpy: 470, fee: 0 });
-			expect(result.date).toBe("2026-10-20");
-		} finally {
-			vi.useRealTimers();
-		}
+		// test/setup.ts pins today at 2026-10-20 (Taipei)
+		const client = transferClient(jpyTransferGrid(), 0.208);
+		const result = await addTransfer(client, { currency: "jpy", tab: TRIP, ntd: 100, jpy: 470, fee: 0 });
+		expect(result.date).toBe("2026-10-20");
 	});
 
 	it("rejects a bad date before reading or writing anything", async () => {

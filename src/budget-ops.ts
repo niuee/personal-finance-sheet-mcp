@@ -25,7 +25,8 @@ import {
 	NTD_OVERSPEND_NET_LABEL,
 	PREV_NTD_OVERDRAFT_LABEL,
 	PREV_USD_OVERDRAFT_LABEL,
-	previousMonth,
+	previousYearMonth,
+	type YearMonth,
 	RATE_LABEL,
 	serialToIso,
 	TOTAL_SPENDING_LABEL,
@@ -36,6 +37,7 @@ import type { AddExpenseParams, AddTransferParams, AddTransferResult, DeleteExpe
 import {
 	assertNotTruncated,
 	carryFormula,
+	findMonthTab,
 	cellData,
 	colLetter,
 	findIncomeWindow,
@@ -56,7 +58,6 @@ import {
 	findRateRow,
 	firstEmptyEntryRow,
 	rateFormula,
-	rateYear,
 	RATE_VALUE_COL,
 	resolveBudgetBlock,
 } from "./budget-layout";
@@ -416,7 +417,7 @@ export interface StartBudgetMonthResult {
 }
 
 /**
- * start_month: copy the "Budget Based" template as "N 月", then write the
+ * start_month: copy the "Budget Based" template as "YYYY 年 M 月", then write the
  * title, both carries (against the previous month's 收支狀況 cells, whatever
  * its layout) and the self-locking 本月匯率 formula. An existing "N 月" is
  * never replaced.
@@ -428,15 +429,16 @@ export interface StartBudgetMonthResult {
  */
 export async function startBudgetMonth(
 	client: SheetsClient,
-	month: number,
+	ym: YearMonth,
 	tabTitles: string[],
-	opts: { now: Date; newSheetId?: number },
+	opts: { newSheetId?: number } = {},
 ): Promise<StartBudgetMonthResult> {
-	const newTab = monthTabName(month);
-	const prevTab = monthTabName(previousMonth(month));
-	if (tabTitles.includes(newTab)) {
-		throw new Error(`Tab "${newTab}" already exists — refusing to overwrite it.`);
+	const existing = findMonthTab(tabTitles, ym);
+	if (existing !== null) {
+		throw new Error(`Tab "${existing}" already exists — refusing to overwrite it.`);
 	}
+	const newTab = monthTabName(ym);
+	const prevTab = findMonthTab(tabTitles, previousYearMonth(ym));
 
 	// The copy is identical to the template, so the template's rows are the copy's rows.
 	const template = await readBudgetGrid(client, BUDGET_TEMPLATE_TAB, "FORMULA");
@@ -456,7 +458,7 @@ export async function startBudgetMonth(
 	let usdCarry: string | number = 0;
 	let ntdCarry: string | number = 0;
 	let carriesFrom: string | null = null;
-	if (tabTitles.includes(prevTab)) {
+	if (prevTab !== null) {
 		const prev = await client.readRange(`${quoteTab(prevTab)}!${FULL_GRID_READ}`, "FORMULA");
 		assertNotTruncated(prev.truncated, prevTab, FULL_GRID_READ);
 		const usdNet = findRowByLabels(prev.values, MONTH_COLS.budgetLabel, MONTH_USD_NET_LABELS);
@@ -480,9 +482,9 @@ export async function startBudgetMonth(
 			fields: "userEnteredValue",
 		},
 	});
-	const formula = rateFormula(rateYear(month, opts.now), month);
+	const formula = rateFormula(ym.year, ym.month);
 	requests.push(
-		write(1, 0, `${month} 月花費`),
+		write(1, 0, `${ym.month} 月花費`),
 		write(usdCarryRow, MONTH_COLS.usd, usdCarry),
 		write(ntdCarryRow, MONTH_COLS.twd, ntdCarry),
 		write(rateRow, RATE_VALUE_COL, formula),

@@ -130,10 +130,33 @@ export const USD_ADJUSTMENT_LABEL = "美金餘額調整";
 export const ADJUSTED_REAL_NTD_END_LABEL = "調整後本月底新臺幣真實餘額";
 export const ADJUSTED_REAL_USD_END_LABEL = "調整後本月底美金真實餘額";
 
-export function monthTabName(month: number): string {
+/** A calendar month: its year and its month (1–12). */
+export interface YearMonth {
+	year: number;
+	month: number;
+}
+
+function assertMonth(month: number): void {
 	if (!Number.isInteger(month) || month < 1 || month > 12) {
 		throw new Error(`Invalid month: ${month} (expected an integer 1-12)`);
 	}
+}
+
+/** Month tabs carry their year: "2027 年 5 月". */
+export function monthTabName(ym: YearMonth): string {
+	assertMonth(ym.month);
+	if (!Number.isInteger(ym.year)) throw new Error(`Invalid year: ${ym.year}`);
+	return `${ym.year} 年 ${ym.month} 月`;
+}
+
+/**
+ * 2026's month tabs were created before tab names carried the year, as bare
+ * "N 月". Tools still find them, as 2026's months only: a bare name never
+ * stands for another year.
+ */
+export const BARE_TAB_YEAR = 2026;
+export function bareMonthTabName(month: number): string {
+	assertMonth(month);
 	return `${month} 月`;
 }
 
@@ -275,15 +298,49 @@ export function parseDateInput(input: string, now: Date = new Date()): number {
 	return dateSerial(year, month, day);
 }
 
-export function currentMonthTab(now: Date = new Date()): string {
-	const month = Number(
-		new Intl.DateTimeFormat("en-US", { timeZone: SHEET_TIMEZONE, month: "numeric" }).format(now),
-	);
-	return monthTabName(month);
+/** This month in Taipei. */
+export function currentYearMonth(now: Date = new Date()): YearMonth {
+	const parts = new Intl.DateTimeFormat("en-US", { timeZone: SHEET_TIMEZONE, year: "numeric", month: "numeric" }).formatToParts(now);
+	return {
+		year: Number(parts.find((p) => p.type === "year")?.value),
+		month: Number(parts.find((p) => p.type === "month")?.value),
+	};
 }
 
-export function previousMonth(month: number): number {
-	return month === 1 ? 12 : month - 1;
+/**
+ * The year of the occurrence of `month` nearest to the current Taipei month.
+ * Months are usually created ahead of time (January built in December is
+ * next year's), but a month built or read just after it ended (November in
+ * December) is this year's. Six months either way resolves to the coming one.
+ */
+export function nearestYear(month: number, now: Date = new Date()): number {
+	assertMonth(month);
+	const { year, month: current } = currentYearMonth(now);
+	let best = year;
+	let bestDistance = Number.POSITIVE_INFINITY;
+	for (const candidate of [year - 1, year, year + 1]) {
+		const offset = candidate * 12 + month - (year * 12 + current);
+		const distance = Math.abs(offset);
+		if (distance < bestDistance || (distance === bestDistance && offset > 0)) {
+			best = candidate;
+			bestDistance = distance;
+		}
+	}
+	return best;
+}
+
+/** A tool's month/year params: no month = this month; a month alone = its nearest year; both = as given. */
+export function resolveYearMonth(month?: number, year?: number, now: Date = new Date()): YearMonth {
+	if (month === undefined) {
+		if (year !== undefined) throw new Error("year needs month — pass both, or neither for the current month.");
+		return currentYearMonth(now);
+	}
+	assertMonth(month);
+	return { year: year ?? nearestYear(month, now), month };
+}
+
+export function previousYearMonth(ym: YearMonth): YearMonth {
+	return ym.month === 1 ? { year: ym.year - 1, month: 12 } : { year: ym.year, month: ym.month - 1 };
 }
 
 /** Trip tabs: a block header row starts with these two cells, side by side. */
@@ -312,15 +369,15 @@ export const TRIP_BUDGET_WIDTH = 5;
 
 export const CONVENTIONS_TEXT = `How this personal-finance spreadsheet is organized:
 
-MONTHLY TABS — named "N 月" (e.g. "10 月", with a space). Every month from 10 月 2026 on uses the budget layout below (a budget month is recognised by the 本月匯率 label in column B); earlier months are read-only history (see OLD MONTHS).
+MONTHLY TABS — named "YYYY 年 M 月" (e.g. "2027 年 5 月"). 2026's tabs were created before names carried the year, as bare "M 月" (e.g. "10 月"), and keep that name until renamed with rename_tab; the tools find them either way, as 2026's months only — a bare name never stands for another year. A month tool's year param picks the year; without it, a month resolves to its occurrence nearest to today (no month = this month). Every month from 10 月 2026 on uses the budget layout below (a budget month is recognised by the 本月匯率 label in column B); earlier months are read-only history (see OLD MONTHS).
 - Left side (A–F), every row located by its label: 上月美金透支 (USD in D, E = D × 本月匯率) and 上月新臺幣透支 (TWD in E) carry the previous month's negative 本月…收支狀況 as =IF(-(that cell) > 0, -(that cell), 0) — a positive month carries 0. Then the budget list, two rows per category — "<類別>美金預算" (D = the USD budget, E = D × 本月匯率, F = USD) and "<類別>新臺幣預算" (E = the NTD budget, F = TWD) — 18 rows for the nine categories; C = 類別. Right below the list: 本月匯率 (label B, value C), the month's single USD→TWD rate — a formula that shows the live rate until the 1st of the month and then locks to the 1st's rate; every conversion on the tab references it — and 預算總額 (label D, value E, every budget in NTD). Further down: 總預算 and the 項目/幣別/金額 income list (薪水 TWD, 沛還 USD, …), then the two lines built the same way, one per account: 本月美金收支狀況 (USD income − 上月美金透支 − the USD budget lines + 本月美金超支), in USD from column D with no conversion, and 本月新臺幣收支狀況 (TWD income − 上月新臺幣透支 − the TWD budget lines + 本月新臺幣超支 − the 乾坤大挪移 手續費). Each subtracts its currency's BUDGET (unspent budget stays reserved) plus that currency's overspend: 本月美金超支 adds up every block's negative 美金 剩餘 (in USD, ≤ 0) and 本月新臺幣超支 every block's negative 新臺幣 剩餘 (≤ 0). 本月美金超支（加上回補） and 本月新臺幣超支（加上回補） add up every block's 剩餘 in that currency, unspent budget included. 總支出 = every block's 美金 總和 × 本月匯率 + every 新臺幣 總和 + 手續費, in NTD.
 - Nine category blocks to the right, four columns plus a spacer each — 午餐 H–K, 購物 M–P, 吃喝 R–U, 生活用品 W–Z, 訂閱 AB–AE, 交通 AG–AJ, 娛樂 AL–AO, 學貸 AQ–AT, 其他 AV–AY: a "<category>支出" title (午餐支出 holds the 中餐 budget), then a small table above the entries: a 編列預算 / 總和 / 剩餘 header row, then a 美金 row and a 新臺幣 row (the label in the block's first column, the three figures in the next three). The 美金 row is all in USD: 編列預算 from the "<類別>美金預算" row, 總和 = the entries whose 幣別 is USD, 剩餘 = 編列預算 − 總和. The 新臺幣 row is all in NTD: 編列預算 from "<類別>新臺幣預算", 總和 = every other entry (a blank 幣別 counts as TWD), 剩餘 likewise. Nothing inside a block is converted. Then a 日期/項目/金額/幣別 header and entries running down, open-ended. 幣別 is the currency of the account that PAID — a USD-priced charge paid from the NTD account is TWD, at amount × 本月匯率. 幣別 is a dropdown whose rule the template only puts on its own rows: add_expense copies the 幣別 dropdown rule onto the new row (from the nearest entry above that has it, healing any rows in between; when nothing above has one, from another block's 幣別, onto the block's whole column down to the new row), so log entries with add_expense — a 幣別 written with update_range shows as plain text. Never write anything below a block except entries: the open-ended 總和 counts every number in its column.
 - 乾坤大挪移 (NTD→USD transfers) sits after the last block (BA–BG) with the same anatomy: 總和 on top, the header, open-ended entries. Only its 手續費 counts as spending.
 - There is no card reconciliation, bank-balance ledger or separate lunch log: lunches are entries in the 午餐 block, and 幣別 is the only payment detail an entry carries.
-- start_month copies the "Budget Based" template tab — its starting entries, budgets and income come along as they are — then writes the title, points both carries at the previous month and writes the 本月匯率 formula. It refuses a month that already exists. To change what every new month starts with, edit the template tab by hand.
+- start_month copies the "Budget Based" template tab as "YYYY 年 M 月" — its starting entries, budgets and income come along as they are — then writes the title, points both carries at the previous month (across the year boundary: January's carry reads the previous December) and writes the 本月匯率 formula for that year. It refuses a month that already exists, under either name. To change what every new month starts with, edit the template tab by hand.
 - Tools: add_expense (tag required, it picks the block), delete_expense (tag narrows the search to one block), set_income, add_transfer, month_summary (returns layout:'budget', each block's money per currency), get_categories (returns the blocks) and start_month. Never insert or delete whole rows on a month tab — the budget list, income and blocks share sheet rows; scope delete_rows to one block's own columns.
 
-OLD MONTHS — 5 月–9 月 2026 and every "N 月 DEP" copy (the months rebuilt onto a newer layout, e.g. 10 月 DEP) are the old layout and read-only: the write tools refuse them, and nothing should be written into them or wired at them. month_summary still reads 5 月–9 月 (it opens "N 月" by number, so read N 月 DEP tabs with read_range). For reading them: one expense list in A–G (日期 項目 類別 美金 新臺幣 支付幣別 支付方式) from row 3 down to the 花費總額 row (total in E), USD rows converted with a live GOOGLEFINANCE; 上月美金透支 / 上月新臺幣透支 carry rows on rows 3–4 (6 月 and earlier: a single 上月透支); below the list 總預算, the income list and 本月美金收支狀況 / 本月新臺幣收支狀況, then the 銀行餘額 block (本月…收入/支出, 本月初/本月底…餘額, 保守預計本月底新臺幣餘額, 調整後 rows) and the 帳戶實際數字對應 block; to the right a 乾坤大挪移 log (H–N), a 午餐預算 lunch log (P–S; early tabs title it 中餐預算; its 剩餘 feeds 午餐超支或回補) and, below the transfer log, the 信用卡帳單對帳區 card statement buckets. 5 月 and 6 月 DEP predate the 類別/支付幣別 columns and end at a single 剩餘 row.
+OLD MONTHS — 5 月–9 月 2026 and every "… DEP" copy (the months rebuilt onto a newer layout, e.g. "10 月 DEP") are the old layout and read-only: the write tools refuse them, and nothing should be written into them or wired at them. month_summary still reads 5 月–9 月 (month + year; read the DEP copies with read_range). For reading them: one expense list in A–G (日期 項目 類別 美金 新臺幣 支付幣別 支付方式) from row 3 down to the 花費總額 row (total in E), USD rows converted with a live GOOGLEFINANCE; 上月美金透支 / 上月新臺幣透支 carry rows on rows 3–4 (6 月 and earlier: a single 上月透支); below the list 總預算, the income list and 本月美金收支狀況 / 本月新臺幣收支狀況, then the 銀行餘額 block (本月…收入/支出, 本月初/本月底…餘額, 保守預計本月底新臺幣餘額, 調整後 rows) and the 帳戶實際數字對應 block; to the right a 乾坤大挪移 log (H–N), a 午餐預算 lunch log (P–S; early tabs title it 中餐預算; its 剩餘 feeds 午餐超支或回補) and, below the transfer log, the 信用卡帳單對帳區 card statement buckets. 5 月 and 6 月 DEP predate the 類別/支付幣別 columns and end at a single 剩餘 row.
 
 TRIP TABS — e.g. "2026/07/25 京都東京".
 - A mosaic of category blocks in four column bands (A-G, I-O, Q-W, Z-AF), stacked vertically within each band.
@@ -334,4 +391,4 @@ TRIP TABS — e.g. "2026/07/25 京都東京".
 
 OTHER — "火車模型" is a hobby purchase planner; monthly tabs may cross-reference its cells.
 
-Prefer the tailored tools (add_expense, delete_expense, set_income, add_transfer, month_summary, get_categories, start_month, add_trip_entry, trip_budget_status) over raw range edits. Locate rows with find_cells — never by reading a big range and counting rows. To REMOVE something, delete it rather than blanking it: delete_expense for a block entry, delete_rows (with columns scoping it to the section's own band — a block's four columns, BA:BG for 乾坤大挪移, B:D for the income list, the trip bands) for anything else; both return what they deleted, and delete_rows refuses when a formula points straight at a deleted cell. For any append-like update_range write, pass expect_empty: true (it refuses if the target is not empty); every update_range response includes previousValues so a mistaken overwrite can be reverted. For math, read with mode "raw" — default reads return locale-formatted strings like "13,603.67".`;
+Prefer the tailored tools (add_expense, delete_expense, set_income, add_transfer, month_summary, get_categories, start_month, add_trip_entry, trip_budget_status) over raw range edits. Rename a tab with rename_tab: Sheets rewrites every formula that refers to it. Locate rows with find_cells — never by reading a big range and counting rows. To REMOVE something, delete it rather than blanking it: delete_expense for a block entry, delete_rows (with columns scoping it to the section's own band — a block's four columns, BA:BG for 乾坤大挪移, B:D for the income list, the trip bands) for anything else; both return what they deleted, and delete_rows refuses when a formula points straight at a deleted cell. For any append-like update_range write, pass expect_empty: true (it refuses if the target is not empty); every update_range response includes previousValues so a mistaken overwrite can be reverted. For math, read with mode "raw" — default reads return locale-formatted strings like "13,603.67".`;
