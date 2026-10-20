@@ -1,5 +1,6 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+import { migrateBudgetSplit } from "./budget-migration";
 import { CONVENTIONS_TEXT, KNOWN_TAGS } from "./conventions";
 import {
 	addExpense,
@@ -297,6 +298,19 @@ export function registerTailoredTools(server: McpServer, client: SheetsClient): 
 		async ({ month, replace_old_layout }) => {
 			try {
 				return ok(await startMonth(client, month, { replaceOldLayout: replace_old_layout }));
+			} catch (e) {
+				return toError(e);
+			}
+		},
+	);
+
+	server.tool(
+		"migrate_budget_split",
+		"One-off: move a budget-month tab (the 'Budget Based' template, 11 月, 12 月) to per-currency budgets — 18 budget rows, a 美金 and a 新臺幣 row per block, split 超支 rows. One atomic write; refuses a tab already migrated or anything it doesn't recognise. Reports the 收支狀況 / 超支 / 總支出 figures before and after, which should match.",
+		{ tab: z.string().min(1).describe("Tab name exactly as it appears, e.g. Budget Based or 11 月") },
+		async ({ tab }) => {
+			try {
+				return ok(await migrateBudgetSplit(client, tab));
 			} catch (e) {
 				return toError(e);
 			}

@@ -1,5 +1,6 @@
-import { describe, expect, it } from "vitest";
-import { NTD_DISPLAY_PATTERN, planBudgetSplit, USD_DISPLAY_PATTERN } from "../src/budget-migration";
+import { describe, expect, it, vi } from "vitest";
+import { migrateBudgetSplit, NTD_DISPLAY_PATTERN, planBudgetSplit, USD_DISPLAY_PATTERN } from "../src/budget-migration";
+import type { SheetsClient } from "../src/sheets-client";
 import { budgetGrid, legacyBudgetGrid, oldMonthGrid } from "./budget-fixtures";
 import { applyRequests, normalize } from "./sheet-sim";
 
@@ -82,5 +83,50 @@ describe("planBudgetSplit", () => {
 			(g[19] ??= [])[1] = "note"; // B20
 			expect(() => planBudgetSplit(g, "11 月", SHEET_ID)).toThrow(/B20/);
 		});
+	});
+});
+
+/** Fake client: each readRange returns the next grid in `reads`. */
+function migrationClient(reads: unknown[][][]): SheetsClient {
+	const queue = [...reads];
+	return {
+		readRange: vi.fn(async (range: string) => ({ range, values: queue.shift() ?? [], truncated: false })),
+		getSheetId: vi.fn(async () => SHEET_ID),
+		batchUpdate: vi.fn(async () => ({ replies: [] })),
+	} as unknown as SheetsClient;
+}
+
+describe("migrateBudgetSplit", () => {
+	it("migrates in one batch after reading, and reports before and after", async () => {
+		const before = legacyBudgetGrid();
+		before[33]![3] = -99.99;
+		const after = budgetGrid();
+		after[33]![3] = -99.99;
+		after[22]![2] = 32.54;
+		const client = migrationClient([legacyBudgetGrid(), before, after]);
+		const r = await migrateBudgetSplit(client, "11 月");
+		const reads = (client.readRange as any).mock;
+		const writes = (client.batchUpdate as any).mock;
+		expect(writes.calls).toHaveLength(1);
+		expect(reads.invocationCallOrder[0]).toBeLessThan(writes.invocationCallOrder[0]);
+		expect(reads.invocationCallOrder[1]).toBeLessThan(writes.invocationCallOrder[0]);
+		expect(reads.calls.slice(0, 2).map((c: unknown[]) => c[1])).toEqual(["FORMULA", "UNFORMATTED_VALUE"]);
+		expect(r).toMatchObject({ tab: "11 月", rateRow: 23 });
+		expect(r.before.本月美金超支).toBe(-99.99);
+		expect(r.before.本月匯率).toBe(32.4607);
+		expect(r.after.本月美金超支).toBe(-99.99);
+		expect(r.after.本月匯率).toBe(32.54);
+	});
+
+	it("a second run refuses and writes nothing", async () => {
+		const client = migrationClient([budgetGrid(), budgetGrid()]);
+		await expect(migrateBudgetSplit(client, "11 月")).rejects.toThrow(/already uses per-currency/);
+		expect(client.batchUpdate).not.toHaveBeenCalled();
+	});
+
+	it("a rejected batch reports that nothing was written", async () => {
+		const client = migrationClient([legacyBudgetGrid(), legacyBudgetGrid()]);
+		(client.batchUpdate as any).mockRejectedValueOnce(new Error("Sheets API error (400): You must select all cells in a merged range"));
+		await expect(migrateBudgetSplit(client, "11 月")).rejects.toThrow(/Migrating 11 月 failed and nothing was written: .*merged range/);
 	});
 });

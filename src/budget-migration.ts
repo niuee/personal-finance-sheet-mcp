@@ -13,10 +13,12 @@
  */
 
 import {
+	BUDGET_GRID_READ,
 	findBudgetTransferSection,
 	findRateRow,
 	isBudgetMonth,
 	isLegacyBudgetBlock,
+	RATE_VALUE_COL,
 	scanBudgetBlockHeaders,
 	type BudgetBlockHeader,
 } from "./budget-layout";
@@ -40,7 +42,8 @@ import {
 	USD_OVERSPEND_LABEL,
 	USD_OVERSPEND_NET_LABEL,
 } from "./conventions";
-import { cellData, colLetter, findRowByLabels, findRowByValue } from "./finance-ops";
+import { assertNotTruncated, cellData, colLetter, findRowByLabels, findRowByValue, quoteTab } from "./finance-ops";
+import type { SheetsClient } from "./sheets-client";
 
 /** How USD cells read once migrated ($71.37). */
 export const USD_DISPLAY_PATTERN = '"$"#,##0.00';
@@ -286,4 +289,59 @@ export function planBudgetSplit(formulas: unknown[][], tab: string, sheetId: num
 	for (const r of [ntdNetRow, ntdOverRow, ntdNetOverRow, totalRow]) format(r, r, MONTH_COLS.usd, MONTH_COLS.usd, NTD_DISPLAY_PATTERN);
 
 	return { requests, rateRow, categories };
+}
+
+/** The figures that must read the same before and after a migration (本月匯率 may tick between the two reads). */
+export interface BudgetSplitReport {
+	本月匯率: number | null;
+	本月美金收支狀況: number | null;
+	本月新臺幣收支狀況: number | null;
+	本月美金超支: number | null;
+	本月新臺幣超支: number | null;
+	總支出: number | null;
+}
+
+function report(values: unknown[][], tab: string): BudgetSplitReport {
+	const num = (v: unknown): number | null => (typeof v === "number" ? v : null);
+	const d = (labels: readonly string[]) => {
+		const row = findRowByLabels(values, MONTH_COLS.item, labels);
+		return row === null ? null : num(cell(values, row, MONTH_COLS.usd));
+	};
+	return {
+		本月匯率: num(cell(values, findRateRow(values, tab), RATE_VALUE_COL)),
+		本月美金收支狀況: d(MONTH_USD_NET_LABELS),
+		本月新臺幣收支狀況: d(MONTH_NTD_NET_LABELS),
+		本月美金超支: d([USD_OVERSPEND_LABEL]),
+		本月新臺幣超支: d([NTD_OVERSPEND_LABEL]),
+		總支出: d([TOTAL_SPENDING_LABEL]),
+	};
+}
+
+async function readGrid(client: SheetsClient, tab: string, render: "FORMULA" | "UNFORMATTED_VALUE"): Promise<unknown[][]> {
+	const { values, truncated } = await client.readRange(`${quoteTab(tab)}!${BUDGET_GRID_READ}`, render);
+	assertNotTruncated(truncated, tab, BUDGET_GRID_READ);
+	return values;
+}
+
+/**
+ * migrate_budget_split: read the tab, plan, write once, read back. Every
+ * read happens before the write; a refusal or a rejected batch writes
+ * nothing (Sheets applies a batchUpdate all or nothing).
+ */
+export async function migrateBudgetSplit(
+	client: SheetsClient,
+	tab: string,
+): Promise<{ tab: string; rateRow: number; categories: string[]; before: BudgetSplitReport; after: BudgetSplitReport }> {
+	const formulas = await readGrid(client, tab, "FORMULA");
+	const values = await readGrid(client, tab, "UNFORMATTED_VALUE");
+	const sheetId = await client.getSheetId(tab);
+	const plan = planBudgetSplit(formulas, tab, sheetId);
+	const before = report(values, tab);
+	try {
+		await client.batchUpdate(plan.requests);
+	} catch (e) {
+		throw new Error(`Migrating ${tab} failed and nothing was written: ${e instanceof Error ? e.message : String(e)}`);
+	}
+	const after = report(await readGrid(client, tab, "UNFORMATTED_VALUE"), tab);
+	return { tab, rateRow: plan.rateRow, categories: plan.categories, before, after };
 }
