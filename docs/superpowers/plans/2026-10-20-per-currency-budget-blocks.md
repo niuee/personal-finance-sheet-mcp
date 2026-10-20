@@ -295,7 +295,8 @@ This task runs after the code is reviewed, pushed and merged to main. Workers Bu
 - [ ] **Step 2: Confirm the tool is visible.** After the deploy, check that `migrate_budget_split` is in this session's tool list. If the list is stale, ask the user to reconnect the Personal Finance Sheet connector, or start a new session.
 - [ ] **Step 3: Record the pre-migration figures.** Read the D32–D40 values of 11 月 and 12 月 so they can be compared.
 - [ ] **Step 4: Migrate the template first and check the move.** Run `migrate_budget_split` on `Budget Based`. Read its E3 and its 訂閱 Claude entry (`AD12`) in `formulas` mode. Both must now say `$C$23`. If either still says `$C$15`, stop and tell the user: `cutPaste` did not carry the references, and 11 月 / 12 月 must not be migrated.
-- [ ] **Step 4b: Migrate the live months.** Run it on `11 月`, then `12 月`. After each, check that `before` and `after` match. The 本月匯率 may tick between the two reads; compare at the reported rate.
+- [ ] **Step 4b: Dry-run on copies of the live months.** Ask the user to duplicate 11 月 and 12 月 in the Sheets UI (they become "Copy of 11 月" / "Copy of 12 月"; nothing refers to the copies). Run `migrate_budget_split` on each copy. Check that `before` and `after` match at the reported rate, and that E3 and the 訂閱 Claude entry read `$C$23` in `formulas` mode. If the after read shows nulls, GOOGLEFINANCE may still be loading: re-read with month_summary. Then ask the user to delete the copies. Any refusal or mismatch stops the rollout before a real month is touched.
+- [ ] **Step 4c: Migrate the live months.** Run it on `11 月`, then `12 月`, and check `before` against `after` the same way.
 - [ ] **Step 5: Verify.**
   - 12 月's 上月…透支 carries still read 11 月's D32 / D33.
   - month_summary works on both months.

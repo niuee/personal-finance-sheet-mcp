@@ -5,6 +5,18 @@ import { budgetGrid, legacyBudgetGrid, oldMonthGrid } from "./budget-fixtures";
 import { applyRequests, normalize } from "./sheet-sim";
 
 const SHEET_ID = 111;
+
+/** Moves the legacy fixture's 本月匯率 row from 15 to 16 the way a sheet edit would: every $C$15 follows it. */
+function rateRowTo16(g: unknown[][]): void {
+	g[15] = g[14]!.slice(0, 5);
+	g[14] = [];
+	for (const row of g) {
+		if (!row) continue;
+		row.forEach((v, c) => {
+			if (typeof v === "string" && v.startsWith("=")) row[c] = v.replace(/\$C\$15(?!\d)/g, "$C$16");
+		});
+	}
+}
 const plan = () => planBudgetSplit(legacyBudgetGrid(), "11 月", SHEET_ID);
 const updateStarts = (requests: object[]) =>
 	(requests as any[]).filter((r) => r.updateCells).map((r) => r.updateCells.start as { rowIndex: number; columnIndex: number });
@@ -21,6 +33,7 @@ describe("planBudgetSplit", () => {
 		expect(cut).toBeGreaterThanOrEqual(0);
 		expect(cut).toBeLessThan(firstNamed);
 		expect(rateRow).toBe(23);
+		expect(JSON.stringify(requests.slice(cut + 1))).not.toContain("$C$15");
 		expect(categories).toEqual(["生活用品", "吃喝", "購物", "訂閱", "交通", "娛樂", "學貸", "其他", "中餐"]);
 	});
 
@@ -61,7 +74,7 @@ describe("planBudgetSplit", () => {
 
 		it("a second USD line for one category", () => {
 			const g = legacyBudgetGrid();
-			g[15] = g[14]!.slice(0, 5); // rate row → 16
+			rateRowTo16(g);
 			g[14] = ["", "訂閱預算", "訂閱", 5, "=D15*$C$16", "USD"];
 			expect(() => planBudgetSplit(g, "11 月", SHEET_ID)).toThrow(/訂閱.*two USD/);
 		});
@@ -76,6 +89,65 @@ describe("planBudgetSplit", () => {
 			const g = legacyBudgetGrid();
 			g[2]![10] = "x"; // K3, in the 中餐 block
 			expect(() => planBudgetSplit(g, "11 月", SHEET_ID)).toThrow(/K3/);
+		});
+
+		it.each([
+			["a TWD amount that references the rate", (g: unknown[][]) => {
+				g[4]![4] = "=30*$C$15";
+			}, /E5/],
+			["a USD amount that references a cell", (g: unknown[][]) => {
+				g[8]![3] = "=500/$C$15";
+			}, /D9/],
+			["an NTD amount that references another line", (g: unknown[][]) => {
+				g[13]![4] = "=E14*8+E10";
+			}, /E14/],
+			["a USD line whose E isn't its own conversion", (g: unknown[][]) => {
+				g[8]![4] = 12345;
+			}, /E9/],
+			["a TWD line with a USD amount that would be dropped", (g: unknown[][]) => {
+				g[9]![3] = 40;
+			}, /D10/],
+		] as const)("a budget amount it can't carry safely: %s", (_name, edit, where) => {
+			const g = legacyBudgetGrid();
+			edit(g);
+			expect(() => planBudgetSplit(g, "11 月", SHEET_ID)).toThrow(where);
+		});
+
+		it.each([
+			["a hand-edited 編列預算", (g: unknown[][]) => {
+				g[3]![12] = '=SUMIF($B$3:$B$23,"購物預算",$E$3:$E$23)+500';
+			}, /M4/],
+			["a hand-set 剩餘", (g: unknown[][]) => {
+				g[3]![14] = 100;
+			}, /O4/],
+			["a hand-edited 總和", (g: unknown[][]) => {
+				g[4]![14] = "=SUM(O7:O)";
+			}, /O5/],
+		] as const)("a block whose money rows were edited by hand: %s", (_name, edit, where) => {
+			const g = legacyBudgetGrid();
+			edit(g);
+			expect(() => planBudgetSplit(g, "11 月", SHEET_ID)).toThrow(where);
+		});
+
+		it.each([
+			["a non-budget row", ["", "保留款", "", "", 500, ""]],
+			["an unlabelled amount", ["", "", "", "", 777, ""]],
+		] as const)("a row inside the old list that isn't a budget line: %s", (_name, row) => {
+			const g = legacyBudgetGrid();
+			rateRowTo16(g);
+			g[14] = [...row];
+			expect(() => planBudgetSplit(g, "11 月", SHEET_ID)).toThrow(/row 15/);
+		});
+
+		it("blocks that don't all sit on the same rows", () => {
+			const g = legacyBudgetGrid();
+			for (let r = g.length - 1; r >= 1; r--) {
+				for (let c = 12; c <= 15; c++) {
+					(g[r + 1] ??= [])[c] = g[r]?.[c];
+					if (g[r]) g[r]![c] = undefined;
+				}
+			}
+			expect(() => planBudgetSplit(g, "11 月", SHEET_ID)).toThrow(/same rows/);
 		});
 
 		it("anything in the rows the list grows into", () => {

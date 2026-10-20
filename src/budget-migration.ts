@@ -77,6 +77,41 @@ function a1(row: number, col: number): string {
 	return `${colLetter(col)}${row}`;
 }
 
+/** A cell's content with all whitespace removed, for comparing formulas ("" when blank). */
+function squash(v: unknown): string {
+	return blank(v) ? "" : String(v).replace(/\s+/g, "");
+}
+
+/** True for a formula that points at any cell (A1, $C$15, E14…); constant formulas like =281.43 + 148.5 don't. */
+function refersToCells(v: unknown): boolean {
+	return typeof v === "string" && v.startsWith("=") && /(?<![A-Z])\$?[A-Z]{1,3}\$?\d+/.test(v.toUpperCase());
+}
+
+function escapeRegExp(s: string): string {
+	return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * What each of an old-shape block's twelve money cells must hold (whitespace
+ * ignored); a cell not listed must be blank. Anything else is a hand edit
+ * the migration would silently replace, so the planner refuses it.
+ */
+function legacyBlockCells(b: BudgetBlockHeader, oldRateRow: number): Map<string, (v: string) => boolean> {
+	const [labelRow, valueRow, totalRow] = [b.titleRow + 1, b.titleRow + 2, b.titleRow + 3];
+	const [first, amt, cur] = [colLetter(b.startCol), colLetter(b.startCol + 2), colLetter(b.startCol + 3)];
+	const e = b.headerRow + 1;
+	const budget = new RegExp(`^=SUMIF\\(\\$B\\$\\d+:\\$B\\$\\d+,"${escapeRegExp(b.category)}預算",\\$E\\$\\d+:\\$E\\$\\d+\\)$`);
+	const total = `=SUMIF(${cur}${e}:${cur},"<>USD",${amt}${e}:${amt})+SUMIF(${cur}${e}:${cur},"USD",${amt}${e}:${amt})*$C$${oldRateRow}`;
+	return new Map<string, (v: string) => boolean>([
+		[a1(labelRow, b.startCol), (v) => v === BUDGET_ALLOCATED_LABEL],
+		[a1(labelRow, b.startCol + 2), (v) => v.startsWith(BLOCK_REMAINING_LABEL)],
+		[a1(valueRow, b.startCol), (v) => budget.test(v)],
+		[a1(valueRow, b.startCol + 2), (v) => v === `=${first}${valueRow}-${amt}${totalRow}`],
+		[a1(totalRow, b.startCol + 1), (v) => v === "總和"],
+		[a1(totalRow, b.startCol + 2), (v) => v === total],
+	]);
+}
+
 /** The single batchUpdate that moves `tab` to per-currency budgets. Throws, writing nothing, on anything it doesn't recognise. */
 export function planBudgetSplit(formulas: unknown[][], tab: string, sheetId: number): BudgetSplitPlan {
 	const refuse = (why: string): never => {
@@ -84,9 +119,12 @@ export function planBudgetSplit(formulas: unknown[][], tab: string, sheetId: num
 	};
 	if (!isBudgetMonth(formulas)) refuse("it is not a budget month (no 本月匯率 in column B).");
 
-	// Blocks: every one must still be in the old shape, rows 3–5 holding only today's cells.
+	const oldRateRow = findRateRow(formulas, tab);
+
+	// Blocks: every one must still be in the old shape, on the same rows, its money rows holding exactly today's cells.
 	const blocks = scanBudgetBlockHeaders(formulas, tab);
 	if (blocks.length === 0) refuse("it has no category blocks.");
+	const lead = blocks[0]!;
 	for (const b of blocks) {
 		if (!isLegacyBudgetBlock(formulas, b)) {
 			const split = [b.titleRow + 1, b.titleRow + 2, b.titleRow + 3].some((r) => text(formulas, r, b.startCol) === BLOCK_USD_ROW_LABEL);
@@ -96,27 +134,27 @@ export function planBudgetSplit(formulas: unknown[][], tab: string, sheetId: num
 					: `the ${b.title} block at ${a1(b.headerRow, b.startCol)} has no ${BUDGET_ALLOCATED_LABEL} label to migrate from.`,
 			);
 		}
+		if (b.titleRow !== lead.titleRow || b.headerRow !== lead.headerRow) {
+			refuse(
+				`the blocks don't all sit on the same rows (the ${b.title} block's header is at row ${b.headerRow}, the ${lead.title} block's at row ${lead.headerRow}).`,
+			);
+		}
 		if (b.headerRow - b.titleRow !== 4) refuse(`the ${b.title} block doesn't have exactly three rows between its title and its header.`);
-		const [labelRow, valueRow, totalRow] = [b.titleRow + 1, b.titleRow + 2, b.titleRow + 3];
-		const allowed = new Set([
-			a1(labelRow, b.startCol),
-			a1(labelRow, b.startCol + 2),
-			a1(valueRow, b.startCol),
-			a1(valueRow, b.startCol + 2),
-			a1(totalRow, b.startCol + 1),
-			a1(totalRow, b.startCol + 2),
-		]);
-		for (const r of [labelRow, valueRow, totalRow]) {
+		const expected = legacyBlockCells(b, oldRateRow);
+		for (let r = b.titleRow + 1; r < b.headerRow; r++) {
 			for (let c = b.startCol; c < b.startCol + 4; c++) {
-				if (!blank(cell(formulas, r, c)) && !allowed.has(a1(r, c))) {
-					refuse(`${a1(r, c)} in the ${b.title} block holds "${String(cell(formulas, r, c))}", which today's layout doesn't have there.`);
+				const v = cell(formulas, r, c);
+				const check = expected.get(a1(r, c));
+				if (check ? !check(squash(v)) : !blank(v)) {
+					refuse(
+						`${a1(r, c)} in the ${b.title} block holds "${blank(v) ? "" : String(v)}", not what the single-currency layout has there; fix it by hand first so the migration doesn't overwrite a hand edit.`,
+					);
 				}
 			}
 		}
 	}
 
 	// The old budget list: "<類別>預算" lines between 上月新臺幣透支 and 本月匯率.
-	const oldRateRow = findRateRow(formulas, tab);
 	const ntdCarryRow = findRowByValue(formulas, MONTH_COLS.item, PREV_NTD_OVERDRAFT_LABEL) ?? refuse(`no ${PREV_NTD_OVERDRAFT_LABEL} row.`);
 	const usdCarryRow = findRowByValue(formulas, MONTH_COLS.item, PREV_USD_OVERDRAFT_LABEL) ?? refuse(`no ${PREV_USD_OVERDRAFT_LABEL} row.`);
 	const lines: Line[] = [];
@@ -127,6 +165,18 @@ export function planBudgetSplit(formulas: unknown[][], tab: string, sheetId: num
 		lines.push({ row: r, category: text(formulas, r, MONTH_COLS.tag), currency: currency as Line["currency"] });
 	}
 	if (lines.length === 0) refuse("it has no budget lines above 本月匯率.");
+	// The new list overwrites B–F from the first line down, so nothing else may live in that span.
+	for (let r = lines[0]!.row; r < oldRateRow; r++) {
+		if (lines.some((l) => l.row === r)) continue;
+		for (let c = MONTH_COLS.item; c <= MONTH_COLS.paidWith; c++) {
+			if (!blank(cell(formulas, r, c))) {
+				refuse(`row ${r} sits inside the budget list but isn't a "<類別>預算" line (${a1(r, c)} holds "${String(cell(formulas, r, c))}"); move it out by hand first.`);
+			}
+		}
+	}
+	if (!blank(cell(formulas, oldRateRow, MONTH_COLS.paidWith))) {
+		refuse(`${a1(oldRateRow, MONTH_COLS.paidWith)} beside 本月匯率 isn't empty, and the budget list will overwrite it.`);
+	}
 	const categories: string[] = [];
 	for (const line of lines) {
 		if (!categories.includes(line.category)) categories.push(line.category);
@@ -150,21 +200,46 @@ export function planBudgetSplit(formulas: unknown[][], tab: string, sheetId: num
 		}
 	}
 
-	// Amounts, as typed. A TWD line whose E converts the rate carries 0 when its D is blank.
-	const rateRef = new RegExp(`\\$?C\\$?${oldRateRow}(?!\\d)`);
+	// Amounts, carried as typed — but only numbers and formulas that point at no cell, since every
+	// reference would land on a different cell once the list is rewritten and the rate row moves.
+	// A USD line's E must be its own conversion and a TWD line's D must be blank, or the migration
+	// would drop them. The template's 吃喝 TWD line (E = D×rate with D blank) carries 0.
+	const isConversion = (row: number, v: unknown) => new RegExp(`^=\\$?D\\$?${row}\\*\\$?C\\$?${oldRateRow}$`).test(squash(v));
+	const carry = (category: string, row: number, col: number): string | number => {
+		const v = cell(formulas, row, col);
+		if (blank(v)) return 0;
+		if (typeof v === "number") return v;
+		if (typeof v === "string" && v.startsWith("=") && !refersToCells(v)) return v;
+		return refuse(
+			`${a1(row, col)} (${category}'s budget) holds "${String(v)}", which refers to other cells or isn't a number; replace it with the amount by hand first.`,
+		);
+	};
 	const amounts = categories.map((category) => {
 		const usdLine = lines.find((l) => l.category === category && l.currency === "USD");
 		const ntdLine = lines.find((l) => l.category === category && l.currency === "TWD");
-		const usdRaw = usdLine ? cell(formulas, usdLine.row, MONTH_COLS.usd) : undefined;
-		let ntdRaw = ntdLine ? cell(formulas, ntdLine.row, MONTH_COLS.twd) : undefined;
-		if (ntdLine && typeof ntdRaw === "string" && rateRef.test(ntdRaw)) {
-			if (!blank(cell(formulas, ntdLine.row, MONTH_COLS.usd))) {
-				refuse(`${category}'s TWD budget line (row ${ntdLine.row}) converts a filled USD amount at the rate; move it to a USD line by hand first.`);
+		let usd: string | number = 0;
+		let ntd: string | number = 0;
+		if (usdLine) {
+			const e = cell(formulas, usdLine.row, MONTH_COLS.twd);
+			if (!blank(e) && !isConversion(usdLine.row, e)) {
+				refuse(`${a1(usdLine.row, MONTH_COLS.twd)} isn't ${category}'s USD budget converted at 本月匯率 ("${String(e)}"), and the migration would drop it.`);
 			}
-			ntdRaw = 0;
+			usd = carry(category, usdLine.row, MONTH_COLS.usd);
 		}
-		const asCell = (v: unknown): string | number => (blank(v) ? 0 : typeof v === "number" ? v : String(v));
-		return { category, usd: asCell(usdRaw), ntd: asCell(ntdRaw) };
+		if (ntdLine) {
+			const d = cell(formulas, ntdLine.row, MONTH_COLS.usd);
+			if (isConversion(ntdLine.row, cell(formulas, ntdLine.row, MONTH_COLS.twd))) {
+				if (!blank(d)) {
+					refuse(`${category}'s TWD budget line (row ${ntdLine.row}) converts a filled USD amount at the rate; move it to a USD line by hand first.`);
+				}
+			} else {
+				if (!blank(d)) {
+					refuse(`${a1(ntdLine.row, MONTH_COLS.usd)} holds a USD amount on ${category}'s TWD budget line, which the migration would drop; move it by hand first.`);
+				}
+				ntd = carry(category, ntdLine.row, MONTH_COLS.twd);
+			}
+		}
+		return { category, usd, ntd };
 	});
 
 	// Summary rows, by label.
