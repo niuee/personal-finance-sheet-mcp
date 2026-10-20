@@ -204,6 +204,13 @@ export function registerTailoredTools(server: McpServer, client: SheetsClient): 
 			item: z.string().min(1).describe("項目 of the expense row to delete, exactly as written"),
 			month: monthParam.optional().describe("Target month 1-12 (default: current month)"),
 			row: z.number().int().min(3).optional().describe("1-indexed sheet row, to disambiguate duplicate 項目 names"),
+			tag: z
+				.string()
+				.min(1)
+				.optional()
+				.describe(
+					"Budget months only: the category block to search (e.g. 訂閱). Every block has entries on the same sheet rows, so row alone can't pick one.",
+				),
 		},
 		async (p) => {
 			try {

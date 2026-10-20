@@ -15,9 +15,16 @@
  */
 
 import { serialToIso } from "./conventions";
-import type { AddExpenseParams } from "./finance-ops";
+import type { AddExpenseParams, DeleteExpenseParams } from "./finance-ops";
 import { assertNotTruncated, cellData, quoteTab } from "./finance-ops";
-import { BUDGET_GRID_READ, findBudgetBlocks, findRateRow, firstEmptyEntryRow, resolveBudgetBlock } from "./budget-layout";
+import {
+	blockEntries,
+	BUDGET_GRID_READ,
+	findBudgetBlocks,
+	findRateRow,
+	firstEmptyEntryRow,
+	resolveBudgetBlock,
+} from "./budget-layout";
 import type { SheetsClient } from "./sheets-client";
 
 async function readBudgetGrid(
@@ -109,4 +116,50 @@ export async function addBudgetExpense(
 		date: dateSerialValue === null ? null : serialToIso(dateSerialValue),
 		convertedAtMonthRate,
 	};
+}
+
+/** delete_expense on a budget month: remove one entry, shifting only its own block's entries up. */
+export async function deleteBudgetExpense(
+	client: SheetsClient,
+	tab: string,
+	p: DeleteExpenseParams,
+): Promise<{ tab: string; layout: "budget"; category: string; row: number; item: string; deleted: unknown[] }> {
+	const item = p.item.trim();
+	const values = await readBudgetGrid(client, tab, "FORMULA");
+	const blocks = findBudgetBlocks(values, tab);
+	const searched = p.tag !== undefined ? [resolveBudgetBlock(blocks, p.tag, tab)] : blocks;
+	let candidates = searched.flatMap((block) =>
+		blockEntries(values, block)
+			.filter((e) => e.item === item)
+			.map((e) => ({ block, row: e.row })),
+	);
+	if (p.row !== undefined) candidates = candidates.filter((c) => c.row === p.row);
+	if (candidates.length === 0) {
+		const scope = p.tag !== undefined ? `the ${searched[0]!.category} block` : "any block";
+		throw new Error(`No "${item}" entry${p.row !== undefined ? ` at row ${p.row}` : ""} in ${scope} of ${tab}.`);
+	}
+	if (candidates.length > 1) {
+		// A delete is not reversible by re-running it: never guess.
+		throw new Error(
+			`Multiple "${item}" entries match in ${tab} (${candidates.map((c) => `${c.block.category} row ${c.row}`).join(", ")}) — pass tag (and row) to pick one.`,
+		);
+	}
+	const { block, row } = candidates[0]!;
+	const deleted = (values[row - 1] ?? []).slice(block.startCol, block.startCol + 4);
+	const sheetId = await client.getSheetId(tab);
+	await client.batchUpdate([
+		{
+			deleteRange: {
+				range: {
+					sheetId,
+					startRowIndex: row - 1,
+					endRowIndex: row,
+					startColumnIndex: block.startCol,
+					endColumnIndex: block.startCol + 4,
+				},
+				shiftDimension: "ROWS",
+			},
+		},
+	]);
+	return { tab, layout: "budget", category: block.category, row, item, deleted };
 }

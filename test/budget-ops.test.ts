@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { dateSerial } from "../src/conventions";
-import { addExpense, cellData } from "../src/finance-ops";
+import { addExpense, cellData, deleteExpense } from "../src/finance-ops";
 import type { SheetsClient } from "../src/sheets-client";
 import { budgetGrid } from "./budget-fixtures";
 
@@ -96,5 +96,36 @@ describe("addExpense on budget months", () => {
 			.mockResolvedValueOnce({ range: "x", values: budgetGrid(), truncated: true });
 		await expect(addExpense(client, { item: "x", amount: 1, currency: "TWD", tag: "購物", month: 11 })).rejects.toThrow(/truncated/);
 		expect(client.batchUpdate).not.toHaveBeenCalled();
+	});
+});
+
+describe("deleteExpense on budget months", () => {
+	it("deletes a block-scoped range so only that block's entries shift up", async () => {
+		const client = budgetClient({ "11 月": budgetGrid() });
+		const r = await deleteExpense(client, { item: "iCloud", month: 11 });
+		expect((client.batchUpdate as any).mock.calls[0][0]).toEqual([
+			{
+				deleteRange: {
+					range: { sheetId: 111, startRowIndex: 7, endRowIndex: 8, startColumnIndex: 27, endColumnIndex: 31 },
+					shiftDimension: "ROWS",
+				},
+			},
+		]);
+		expect(r).toMatchObject({ layout: "budget", category: "訂閱", row: 8, item: "iCloud", deleted: [undefined, "iCloud", 9.99, "USD"] });
+	});
+
+	it("refuses an item found in two blocks unless tag picks one", async () => {
+		const g = budgetGrid();
+		g[6]![48] = "Claude"; // a second "Claude" in 其他 (row 7)
+		g[6]![49] = 100;
+		const client = budgetClient({ "11 月": g });
+		await expect(deleteExpense(client, { item: "Claude", month: 11 })).rejects.toThrow(/訂閱.*12.*其他.*7|其他.*7.*訂閱.*12/);
+		expect(client.batchUpdate).not.toHaveBeenCalled();
+		await deleteExpense(client, { item: "Claude", tag: "其他", month: 11 });
+		expect((client.batchUpdate as any).mock.calls[0][0][0].deleteRange.range).toMatchObject({ startRowIndex: 6, startColumnIndex: 47 });
+	});
+
+	it("throws when no entry matches", async () => {
+		await expect(deleteExpense(budgetClient({ "11 月": budgetGrid() }), { item: "Nope", month: 11 })).rejects.toThrow(/No "Nope"/);
 	});
 });

@@ -89,7 +89,7 @@ import {
 } from "./conventions";
 import type { SheetsClient } from "./sheets-client";
 import { isBudgetMonth } from "./budget-layout";
-import { addBudgetExpense } from "./budget-ops";
+import { addBudgetExpense, deleteBudgetExpense } from "./budget-ops";
 
 /** Re-target a single-row formula: "=E5*0.22" from row 5 to row 9 → "=E9*0.22". */
 export function adaptRowFormula(formula: string, fromRow: number, toRow: number): string {
@@ -3044,6 +3044,8 @@ export interface DeleteExpenseParams {
 	month?: number;
 	/** 1-indexed sheet row, to disambiguate duplicate 項目 names. */
 	row?: number;
+	/** Budget months only: the category block to search (old-layout months ignore it). */
+	tag?: string;
 }
 
 /**
@@ -3062,6 +3064,7 @@ export async function deleteExpense(client: SheetsClient, p: DeleteExpenseParams
 
 	const { values, truncated } = await client.readRange(`${quoteTab(tab)}!${FULL_GRID_READ}`, "FORMULA");
 	assertNotTruncated(truncated, tab, FULL_GRID_READ);
+	if (isBudgetMonth(values)) return (await deleteBudgetExpense(client, tab, p)) as never;
 	const { totalRow, start: windowStart, end: windowEnd } = findExpenseWindow(values, tab);
 
 	const candidates: number[] = [];
