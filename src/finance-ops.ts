@@ -12,6 +12,7 @@ import {
 	ADJUSTED_USD_END_BALANCE_LABELS,
 	BANK_BLOCK_LABEL,
 	BUDGET_SUM_LABEL,
+	BUDGET_TEMPLATE_TAB,
 	BUDGET_HEADER_LABEL,
 	CREDIT_BLOCK_COLS,
 	CREDIT_BLOCK_WIDTH,
@@ -94,7 +95,14 @@ import {
 } from "./conventions";
 import type { SheetsClient } from "./sheets-client";
 import { findBudgetIncomeSumifWindow, isBudgetMonth } from "./budget-layout";
-import { addBudgetExpense, addBudgetTransfer, budgetCategories, budgetMonthSummary, deleteBudgetExpense } from "./budget-ops";
+import {
+	addBudgetExpense,
+	addBudgetTransfer,
+	budgetCategories,
+	budgetMonthSummary,
+	deleteBudgetExpense,
+	startBudgetMonth,
+} from "./budget-ops";
 
 /** Re-target a single-row formula: "=E5*0.22" from row 5 to row 9 → "=E9*0.22". */
 export function adaptRowFormula(formula: string, fromRow: number, toRow: number): string {
@@ -2125,12 +2133,36 @@ export async function getCategories(client: SheetsClient, month?: number) {
 	throw new Error(`類別 column validation on "${tab}" is ${rule.type}, not a dropdown list.`);
 }
 
-export async function startMonth(client: SheetsClient, month: number) {
+/** A month's carry: the previous month's negative 本月…收支狀況 (column D of `row`) becomes this month's shortfall; a positive month carries 0. */
+export function carryFormula(prevTab: string, row: number): string {
+	const cell = `${quoteTab(prevTab)}!${colLetter(MONTH_COLS.budgetValue)}${row}`;
+	return `=IF(-(${cell}) > 0, -(${cell}), 0)`;
+}
+
+export async function startMonth(
+	client: SheetsClient,
+	month: number,
+	opts: { replaceOldLayout?: boolean; now?: Date } = {},
+) {
 	const newTab = monthTabName(month);
 	const prevTab = monthTabName(previousMonth(month));
 	const prevPrevTab = monthTabName(previousMonth(previousMonth(month)));
 
 	const tabs = await client.listTabs();
+	// With the template tab present, every new month is a budget month built from it.
+	if (tabs.some((t) => t.title === BUDGET_TEMPLATE_TAB)) {
+		return (await startBudgetMonth(
+			client,
+			month,
+			tabs.map((t) => t.title),
+			{ replaceOldLayout: opts.replaceOldLayout ?? false, now: opts.now ?? new Date() },
+		)) as never;
+	}
+	if (opts.replaceOldLayout) {
+		throw new Error(
+			`replace_old_layout needs the "${BUDGET_TEMPLATE_TAB}" template tab — without it start_month duplicates the previous month and never replaces a tab.`,
+		);
+	}
 	if (tabs.some((t) => t.title === newTab)) {
 		throw new Error(`Tab "${newTab}" already exists — refusing to overwrite it.`);
 	}
@@ -2194,11 +2226,9 @@ export async function startMonth(client: SheetsClient, month: number) {
 			},
 		});
 	};
-	const carryFormula = (netLabels: readonly string[]): string | null => {
+	const carryFormulaFor = (netLabels: readonly string[]): string | null => {
 		const netRow = findRowByLabels(values, MONTH_COLS.budgetLabel, netLabels);
-		if (netRow === null) return null;
-		const cell = `${quoteTab(prevTab)}!${colLetter(MONTH_COLS.budgetValue)}${netRow}`;
-		return `=IF(-(${cell}) > 0, -(${cell}), 0)`;
+		return netRow === null ? null : carryFormula(prevTab, netRow);
 	};
 	const legacyCarryFormula = (fallbackRow: number): string => {
 		const remainderRow = findRowByValue(values, MONTH_COLS.budgetLabel, REMAINDER_LABEL);
@@ -2215,10 +2245,10 @@ export async function startMonth(client: SheetsClient, month: number) {
 			// Degenerate (previous month predates the 收支狀況 view): nothing to
 			// anchor the USD side on — carry 0. The row's E conversion formula is
 			// row-relative and survives duplication; only D is rewritten.
-			carryWrite(usdCarryRow, MONTH_COLS.usd, carryFormula(MONTH_USD_NET_LABELS) ?? 0);
+			carryWrite(usdCarryRow, MONTH_COLS.usd, carryFormulaFor(MONTH_USD_NET_LABELS) ?? 0);
 		}
 		if (ntdCarryRow !== null) {
-			carryWrite(ntdCarryRow, MONTH_COLS.twd, carryFormula(MONTH_NTD_NET_LABELS) ?? legacyCarryFormula(ntdCarryRow));
+			carryWrite(ntdCarryRow, MONTH_COLS.twd, carryFormulaFor(MONTH_NTD_NET_LABELS) ?? legacyCarryFormula(ntdCarryRow));
 		} else {
 			// Mid-backfill tab (USD row inserted, old row not yet renamed): re-anchor the legacy TWD carry to this month rather than leave it pointing two months back.
 			const legacyRow = findRowByValue(values, MONTH_COLS.item, OVERDRAFT_LABEL);

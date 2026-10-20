@@ -284,11 +284,19 @@ export function registerTailoredTools(server: McpServer, client: SheetsClient): 
 
 	server.tool(
 		"start_month",
-		"Open a new month: duplicates the previous month's tab (keeping all formulas and recurring items like subscriptions), rewires the 上月…透支 carries to the month just ended's 本月…收支狀況 cells and 本月初新臺幣餘額 to its 本月底新臺幣餘額, clears one-off expenses and ad-hoc income, empties the 午餐預算 lunch log so the budget's 剩餘 resets, rolls the 信用卡帳單對帳區 forward (結帳日/繳款日 +1 month, 本月需繳款 rewired across the two months it covers), and pads every card bucket's spill area to 20 blank rows — headroom for hand-entered card rows, which no tool write would otherwise grow a bucket for. Refuses if the tab already exists.",
-		{ month: monthParam.describe("The month to create, 1-12") },
-		async ({ month }) => {
+		"Open a new month: duplicates the previous month's tab (keeping all formulas and recurring items like subscriptions), rewires the 上月…透支 carries to the month just ended's 本月…收支狀況 cells and 本月初新臺幣餘額 to its 本月底新臺幣餘額, clears one-off expenses and ad-hoc income, empties the 午餐預算 lunch log so the budget's 剩餘 resets, rolls the 信用卡帳單對帳區 forward (結帳日/繳款日 +1 month, 本月需繳款 rewired across the two months it covers), and pads every card bucket's spill area to 20 blank rows — headroom for hand-entered card rows, which no tool write would otherwise grow a bucket for. Refuses if the tab already exists. When a 'Budget Based' tab exists (budget months, from 11 月 2026), it builds the month by COPYING THAT TEMPLATE instead: the template's starting entries and budgets carry over as they are, the title is set, 上月美金透支/上月新臺幣透支 point at the previous month's 本月…收支狀況 cells (0 when that tab is missing), and 本月匯率 gets a formula that shows the live USDTWD rate until the 1st and then locks to the 1st's rate.",
+		{
+			month: monthParam.describe("The month to create, 1-12"),
+			replace_old_layout: z
+				.boolean()
+				.optional()
+				.describe(
+					"Budget template only: rebuild an EXISTING old-layout month from the template — the old tab is renamed 'N 月 DEP' first. Never replaces a budget-layout month, and refuses when 'N 月 DEP' already exists.",
+				),
+		},
+		async ({ month, replace_old_layout }) => {
 			try {
-				return ok(await startMonth(client, month));
+				return ok(await startMonth(client, month, { replaceOldLayout: replace_old_layout }));
 			} catch (e) {
 				return toError(e);
 			}

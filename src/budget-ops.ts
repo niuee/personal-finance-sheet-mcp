@@ -16,13 +16,17 @@
 
 import {
 	BUDGET_SUM_LABEL,
+	BUDGET_TEMPLATE_TAB,
+	DEP_SUFFIX,
 	MONTH_COLS,
 	MONTH_NTD_NET_LABELS,
 	MONTH_USD_NET_LABELS,
+	monthTabName,
 	OVERSPEND_LABEL,
 	OVERSPEND_NET_LABEL,
 	PREV_NTD_OVERDRAFT_LABEL,
 	PREV_USD_OVERDRAFT_LABEL,
+	previousMonth,
 	RATE_LABEL,
 	serialToIso,
 	TOTAL_SPENDING_LABEL,
@@ -30,10 +34,12 @@ import {
 import type { AddExpenseParams, AddTransferParams, AddTransferResult, DeleteExpenseParams } from "./finance-ops";
 import {
 	assertNotTruncated,
+	carryFormula,
 	cellData,
 	findIncomeWindow,
 	findRowByLabels,
 	findRowByValue,
+	FULL_GRID_READ,
 	pinTransferRate,
 	quoteTab,
 	round2,
@@ -47,6 +53,9 @@ import {
 	findBudgetTransferSection,
 	findRateRow,
 	firstEmptyEntryRow,
+	isBudgetMonth,
+	rateFormula,
+	rateYear,
 	RATE_VALUE_COL,
 	resolveBudgetBlock,
 } from "./budget-layout";
@@ -333,4 +342,116 @@ export async function budgetCategories(
 ): Promise<{ tab: string; categories: string[]; source: "BUDGET_BLOCKS" }> {
 	const values = await readBudgetGrid(client, tab, "FORMULA");
 	return { tab, categories: findBudgetBlocks(values, tab).map((b) => b.category), source: "BUDGET_BLOCKS" };
+}
+
+export interface StartBudgetMonthResult {
+	tab: string;
+	layout: "budget";
+	template: typeof BUDGET_TEMPLATE_TAB;
+	/** The previous month the carries point at; null when that tab doesn't exist (both carries 0). */
+	carriesFrom: string | null;
+	/** "N 月 DEP" when an old-layout "N 月" was moved out of the way. */
+	replacedTab: string | null;
+	rateFormula: string;
+	/** Each block's starting entries (項目), as copied from the template. */
+	startingEntries: Record<string, string[]>;
+}
+
+/**
+ * start_month when the "Budget Based" template exists: copy it as "N 月",
+ * then write the title, both carries (against the previous month's
+ * 收支狀況 cells, whatever its layout) and the self-locking 本月匯率 formula.
+ * An existing old-layout "N 月" is renamed "N 月 DEP" first — only when
+ * asked; a budget month is never replaced.
+ */
+export async function startBudgetMonth(
+	client: SheetsClient,
+	month: number,
+	tabTitles: string[],
+	opts: { replaceOldLayout: boolean; now: Date },
+): Promise<StartBudgetMonthResult> {
+	const newTab = monthTabName(month);
+	const prevTab = monthTabName(previousMonth(month));
+	const depTab = `${newTab}${DEP_SUFFIX}`;
+
+	let replacedTab: string | null = null;
+	if (tabTitles.includes(newTab)) {
+		if (!opts.replaceOldLayout) {
+			throw new Error(
+				`Tab "${newTab}" already exists — refusing to overwrite it. To rebuild an old-layout month from the "${BUDGET_TEMPLATE_TAB}" template, pass replace_old_layout (the old tab is kept as "${depTab}").`,
+			);
+		}
+		const { values, truncated } = await client.readRange(`${quoteTab(newTab)}!${FULL_GRID_READ}`, "FORMULA");
+		assertNotTruncated(truncated, newTab, FULL_GRID_READ);
+		if (isBudgetMonth(values)) {
+			throw new Error(`"${newTab}" is already a budget month — start_month never replaces a budget month.`);
+		}
+		if (tabTitles.includes(depTab)) {
+			throw new Error(`"${depTab}" already exists — rename or delete it before rebuilding "${newTab}".`);
+		}
+		const oldSheetId = await client.getSheetId(newTab);
+		await client.batchUpdate([{ updateSheetProperties: { properties: { sheetId: oldSheetId, title: depTab }, fields: "title" } }]);
+		replacedTab = depTab;
+	}
+
+	const templateId = await client.getSheetId(BUDGET_TEMPLATE_TAB);
+	const dup = await client.batchUpdate([
+		{ duplicateSheet: { sourceSheetId: templateId, insertSheetIndex: 0, newSheetName: newTab } },
+	]);
+	const sheetId = dup.replies?.[0]?.duplicateSheet?.properties?.sheetId;
+	if (sheetId == null) throw new Error("duplicateSheet did not return the new tab's sheetId.");
+
+	const values = await readBudgetGrid(client, newTab, "FORMULA");
+	const unfinished = (what: string) =>
+		new Error(
+			`${newTab} was created from the "${BUDGET_TEMPLATE_TAB}" template but not finished: ${what} — delete it, fix the template, and re-run start_month.`,
+		);
+	const usdCarryRow = findRowByValue(values, MONTH_COLS.item, PREV_USD_OVERDRAFT_LABEL);
+	if (usdCarryRow === null) throw unfinished(`no ${PREV_USD_OVERDRAFT_LABEL} row`);
+	const ntdCarryRow = findRowByValue(values, MONTH_COLS.item, PREV_NTD_OVERDRAFT_LABEL);
+	if (ntdCarryRow === null) throw unfinished(`no ${PREV_NTD_OVERDRAFT_LABEL} row`);
+	const rateRow = findRowByValue(values, MONTH_COLS.budgetLabel, RATE_LABEL);
+	if (rateRow === null) throw unfinished(`no ${RATE_LABEL} row`);
+
+	let usdCarry: string | number = 0;
+	let ntdCarry: string | number = 0;
+	let carriesFrom: string | null = null;
+	if (tabTitles.includes(prevTab)) {
+		const prev = await client.readRange(`${quoteTab(prevTab)}!${FULL_GRID_READ}`, "FORMULA");
+		assertNotTruncated(prev.truncated, prevTab, FULL_GRID_READ);
+		const usdNet = findRowByLabels(prev.values, MONTH_COLS.budgetLabel, MONTH_USD_NET_LABELS);
+		const ntdNet = findRowByLabels(prev.values, MONTH_COLS.budgetLabel, MONTH_NTD_NET_LABELS);
+		if (usdNet !== null) usdCarry = carryFormula(prevTab, usdNet);
+		if (ntdNet !== null) ntdCarry = carryFormula(prevTab, ntdNet);
+		carriesFrom = prevTab;
+	}
+
+	const write = (row: number, col: number, value: string | number) => ({
+		updateCells: {
+			start: { sheetId, rowIndex: row - 1, columnIndex: col },
+			rows: [{ values: [cellData(value)] }],
+			fields: "userEnteredValue",
+		},
+	});
+	const formula = rateFormula(rateYear(month, opts.now), month);
+	await client.batchUpdate([
+		write(1, 0, `${month} 月花費`),
+		write(usdCarryRow, MONTH_COLS.usd, usdCarry),
+		write(ntdCarryRow, MONTH_COLS.twd, ntdCarry),
+		write(rateRow, RATE_VALUE_COL, formula),
+	]);
+
+	const startingEntries: Record<string, string[]> = {};
+	for (const block of findBudgetBlocks(values, newTab)) {
+		startingEntries[block.category] = blockEntries(values, block).map((e) => e.item);
+	}
+	return {
+		tab: newTab,
+		layout: "budget",
+		template: BUDGET_TEMPLATE_TAB,
+		carriesFrom,
+		replacedTab,
+		rateFormula: formula,
+		startingEntries,
+	};
 }
