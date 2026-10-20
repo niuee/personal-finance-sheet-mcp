@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { dateSerial } from "../src/conventions";
-import { addExpense, cellData, deleteExpense, setIncome } from "../src/finance-ops";
+import { addExpense, addTransfer, cellData, deleteExpense, setIncome } from "../src/finance-ops";
 import type { SheetsClient } from "../src/sheets-client";
 import { budgetGrid } from "./budget-fixtures";
 
@@ -179,5 +179,39 @@ describe("setIncome on budget months", () => {
 		await expect(setIncome(budgetClient({ "11 月": budgetGrid() }), { item: "本月匯率", amount: 1, currency: "TWD", month: 11 })).rejects.toThrow(
 			/layout label/,
 		);
+	});
+});
+
+describe("addTransfer on budget months", () => {
+	it("writes the first empty 乾坤大挪移 row on a budget month and never rewrites 總和", async () => {
+		const client = budgetClient({ "11 月": budgetGrid() });
+		(client.readRange as any)
+			.mockResolvedValueOnce({ range: "x", values: budgetGrid(), truncated: false })
+			.mockResolvedValueOnce({ range: "x", values: budgetGrid(), truncated: false })
+			.mockResolvedValueOnce({ range: "x", values: [[32.5]], truncated: false });
+		const r = await addTransfer(client, { ntd: 32000, usd: 980, fee: 15, date: "2026-11-03", month: 11 });
+		const [scratch, write] = (client.batchUpdate as any).mock.calls.map((c: any) => c[0]);
+		expect(scratch).toEqual([
+			{
+				updateCells: {
+					start: { sheetId: 111, rowIndex: 6, columnIndex: 54 },
+					rows: [{ values: [cellData('=GOOGLEFINANCE("CURRENCY:USDTWD")')] }],
+					fields: "userEnteredValue",
+				},
+			},
+		]);
+		expect(write).toContainEqual({
+			updateCells: {
+				start: { sheetId: 111, rowIndex: 6, columnIndex: 53 },
+				rows: [
+					{
+						values: [cellData(32000), cellData("=BB7/32.5"), cellData(980), cellData("=(BC7-BD7)*32.5"), cellData(15), cellData("=BE7+BF7")],
+					},
+				],
+				fields: "userEnteredValue",
+			},
+		});
+		expect(JSON.stringify(write)).not.toContain('"rowIndex":4'); // 總和 row untouched
+		expect(r).toMatchObject({ layout: "budget", row: 7, usd: 980, rate: 32.5 });
 	});
 });

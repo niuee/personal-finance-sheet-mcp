@@ -94,7 +94,7 @@ import {
 } from "./conventions";
 import type { SheetsClient } from "./sheets-client";
 import { findBudgetIncomeSumifWindow, isBudgetMonth } from "./budget-layout";
-import { addBudgetExpense, deleteBudgetExpense } from "./budget-ops";
+import { addBudgetExpense, addBudgetTransfer, deleteBudgetExpense } from "./budget-ops";
 
 /** Re-target a single-row formula: "=E5*0.22" from row 5 to row 9 → "=E9*0.22". */
 export function adaptRowFormula(formula: string, fromRow: number, toRow: number): string {
@@ -1437,7 +1437,12 @@ export interface AddTransferResult {
 	spotUsd?: number;
 	jpy?: number;
 	spotJpy?: number;
-	wiredMonthTab?: string;
+	/** jpy only — the month tab the NTD side was wired into; null when that month is a budget month (not wired). */
+	wiredMonthTab?: string | null;
+	/** jpy only — why the month wiring was skipped. */
+	wiringNote?: string;
+	/** Set when the entry went into a budget month's 乾坤大挪移 log. */
+	layout?: "budget";
 	/** usd only — the month-tab 對帳區 audit's outcome (see auditCreditBuckets). */
 	bucketWarning?: string;
 	bucketsGrown?: BucketGrowth[];
@@ -1457,9 +1462,11 @@ async function wireJpyTransferIntoMonth(
 	monthTab: string,
 	tripTab: string,
 	entryRow: number,
-): Promise<void> {
+): Promise<boolean> {
 	const { values, truncated } = await client.readRange(`${quoteTab(monthTab)}!${FULL_GRID_READ}`, "FORMULA");
 	assertNotTruncated(truncated, monthTab, FULL_GRID_READ);
+	// Budget months have none of the bank rows these terms append to.
+	if (isBudgetMonth(values)) return false;
 	const ntdRef = `${quoteTab(tripTab)}!${colLetter(TRANSFER_JPY_COLS.ntd)}${entryRow}`;
 	const feeRef = `${quoteTab(tripTab)}!${colLetter(TRANSFER_JPY_COLS.fee)}${entryRow}`;
 	const targets: Array<{ label: string; term: string }> = [
@@ -1491,6 +1498,67 @@ async function wireJpyTransferIntoMonth(
 	// Heal any hand-entered 對帳區 bucket drift while we're writing the tab anyway.
 	requests.push(...auditCreditBuckets(values, monthTab, sheetId).requests);
 	await client.batchUpdate(requests);
+	return true;
+}
+
+/**
+ * Pin a transfer's rate: the entry's own 當下美金/當下日幣 cell doubles as the
+ * scratch — a live GOOGLEFINANCE written in ONE batch after `preRequests`,
+ * read once, then (by the caller) overwritten with the pinned formula. An
+ * unusable rate clears the scratch cell and throws.
+ */
+export async function pinTransferRate(
+	client: SheetsClient,
+	tab: string,
+	sheetId: number,
+	preRequests: object[],
+	row: number,
+	spotCol: number,
+	pair: "USDTWD" | "JPYTWD",
+): Promise<number> {
+	const scratchWrite = {
+		updateCells: {
+			start: { sheetId, rowIndex: row - 1, columnIndex: spotCol },
+			rows: [{ values: [cellData(`=GOOGLEFINANCE("CURRENCY:${pair}")`)] }],
+			fields: "userEnteredValue",
+		},
+	};
+	await client.batchUpdate([...preRequests, scratchWrite]);
+
+	const scratchCell = `${colLetter(spotCol)}${row}`;
+	const read = await client.readRange(`${quoteTab(tab)}!${scratchCell}`, "UNFORMATTED_VALUE");
+	const rate = read.values[0]?.[0];
+	if (typeof rate !== "number" || !Number.isFinite(rate) || rate <= 0) {
+		await client.batchUpdate([{ updateCells: { ...scratchWrite.updateCells, rows: [{ values: [{}] }] } }]);
+		throw new Error(
+			`GOOGLEFINANCE("CURRENCY:${pair}") did not return a usable rate (got ${JSON.stringify(rate)}); the scratch cell ${scratchCell} was cleared — try again in a moment.`,
+		);
+	}
+	return rate;
+}
+
+/** The six value cells 新臺幣…當筆總額外花費 of transfer entry `row`, rate pinned as a literal. */
+export function transferRowCells(
+	cols: TransferSectionConfig["cols"],
+	row: number,
+	ntd: number,
+	received: number,
+	rate: number,
+	fee: number,
+): object[] {
+	const B = colLetter(cols.ntd);
+	const C = colLetter(cols.spot);
+	const D = colLetter(cols.actual);
+	const E = colLetter(cols.spread);
+	const F = colLetter(cols.fee);
+	return [
+		cellData(ntd), // 新臺幣
+		cellData(`=${B}${row}/${rate}`), // 當下美金/日幣, rate pinned at entry
+		cellData(received), // 實際美金/日幣
+		cellData(`=(${C}${row}-${D}${row})*${rate}`), // 匯差 in NTD
+		cellData(fee), // 手續費
+		cellData(`=${E}${row}+${F}${row}`), // 當筆總額外花費
+	];
 }
 
 export async function addTransfer(client: SheetsClient, p: AddTransferParams): Promise<AddTransferResult> {
@@ -1515,6 +1583,7 @@ export async function addTransfer(client: SheetsClient, p: AddTransferParams): P
 
 	const { values, truncated } = await client.readRange(`${quoteTab(tab)}!${cfg.gridRead}`, "FORMULA");
 	assertNotTruncated(truncated, tab, cfg.gridRead);
+	if (currency === "usd" && isBudgetMonth(values)) return addBudgetTransfer(client, tab, p, dateSerialValue);
 	const { headerRow, totalRow } = findTransferSection(values, tab, cfg);
 
 	// First row between the header and 總和 that is empty across the section's columns.
@@ -1549,42 +1618,10 @@ export async function addTransfer(client: SheetsClient, p: AddTransferParams): P
 		finalTotalRow = totalRow + 1;
 		scratchRequests.push(bandInsert(sheetId, targetRow, 1, cfg.cols.date, cfg.cols.extra + 1));
 	}
-	// The entry's own 當下美金/當下日幣 cell doubles as the rate scratch: live GOOGLEFINANCE,
-	// read once, then overwritten with the pinned formula.
-	const scratchWrite = {
-		updateCells: {
-			start: { sheetId, rowIndex: targetRow - 1, columnIndex: cfg.cols.spot },
-			rows: [{ values: [cellData(`=GOOGLEFINANCE("CURRENCY:${cfg.pair}")`)] }],
-			fields: "userEnteredValue",
-		},
-	};
-	scratchRequests.push(scratchWrite);
-	await client.batchUpdate(scratchRequests);
-
-	const scratchCell = `${colLetter(cfg.cols.spot)}${targetRow}`;
-	const read = await client.readRange(`${quoteTab(tab)}!${scratchCell}`, "UNFORMATTED_VALUE");
-	const rate = read.values[0]?.[0];
-	if (typeof rate !== "number" || !Number.isFinite(rate) || rate <= 0) {
-		await client.batchUpdate([{ updateCells: { ...scratchWrite.updateCells, rows: [{ values: [{}] }] } }]);
-		throw new Error(
-			`GOOGLEFINANCE("CURRENCY:${cfg.pair}") did not return a usable rate (got ${JSON.stringify(rate)}); the scratch cell ${scratchCell} was cleared — try again in a moment.`,
-		);
-	}
+	const rate = await pinTransferRate(client, tab, sheetId, scratchRequests, targetRow, cfg.cols.spot, cfg.pair);
 
 	const r = targetRow;
-	const B = colLetter(cfg.cols.ntd);
-	const C = colLetter(cfg.cols.spot);
-	const D = colLetter(cfg.cols.actual);
-	const E = colLetter(cfg.cols.spread);
-	const F = colLetter(cfg.cols.fee);
-	const rowCells = [
-		cellData(p.ntd), // 新臺幣
-		cellData(`=${B}${r}/${rate}`), // 當下美金/日幣, rate pinned at entry
-		cellData(received), // 實際美金/日幣
-		cellData(`=(${C}${r}-${D}${r})*${rate}`), // 匯差 in NTD
-		cellData(p.fee), // 手續費
-		cellData(`=${E}${r}+${F}${r}`), // 當筆總額外花費
-	];
+	const rowCells = transferRowCells(cfg.cols, r, p.ntd, received, rate, p.fee);
 	// Rewrite 總和 over the whole data window: the sheet's original single-cell
 	// =sum(...) cannot auto-extend, so the op owns the range from now on.
 	const sumCells = [];
@@ -1662,14 +1699,21 @@ export async function addTransfer(client: SheetsClient, p: AddTransferParams): P
 	if (currency === "jpy") {
 		const monthNum = Number(serialToIso(dateSerialValue).slice(5, 7));
 		const monthTab = monthTabName(monthNum);
+		let wired: boolean;
 		try {
-			await wireJpyTransferIntoMonth(client, monthTab, tab, r);
+			wired = await wireJpyTransferIntoMonth(client, monthTab, tab, r);
 		} catch (e) {
 			throw new Error(
 				`The transfer row ${tab}!${colLetter(cfg.cols.date)}${r} was already written, but wiring it into ${monthTab} failed: ${e instanceof Error ? e.message : String(e)} — fix the three bank formulas by hand (−新臺幣 into 本月底/保守預計, +手續費 into 本月新臺幣支出) or delete the row and retry.`,
 			);
 		}
-		return { ...base, jpy: received, spotJpy: round2(p.ntd / rate), wiredMonthTab: monthTab };
+		return {
+			...base,
+			jpy: received,
+			spotJpy: round2(p.ntd / rate),
+			wiredMonthTab: wired ? monthTab : null,
+			...(wired ? {} : { wiringNote: `${monthTab} is a budget month — the JPY transfer's NTD side was not linked into it.` }),
+		};
 	}
 	return {
 		...base,

@@ -15,12 +15,13 @@
  */
 
 import { serialToIso } from "./conventions";
-import type { AddExpenseParams, DeleteExpenseParams } from "./finance-ops";
-import { assertNotTruncated, cellData, quoteTab } from "./finance-ops";
+import type { AddExpenseParams, AddTransferParams, AddTransferResult, DeleteExpenseParams } from "./finance-ops";
+import { assertNotTruncated, cellData, pinTransferRate, quoteTab, round2, transferRowCells } from "./finance-ops";
 import {
 	blockEntries,
 	BUDGET_GRID_READ,
 	findBudgetBlocks,
+	findBudgetTransferSection,
 	findRateRow,
 	firstEmptyEntryRow,
 	resolveBudgetBlock,
@@ -162,4 +163,70 @@ export async function deleteBudgetExpense(
 		},
 	]);
 	return { tab, layout: "budget", category: block.category, row, item, deleted };
+}
+
+/** add_transfer (USD) on a budget month: first empty row of the 乾坤大挪移 log; its 總和 is open-ended, so it is never rewritten. */
+export async function addBudgetTransfer(
+	client: SheetsClient,
+	tab: string,
+	p: AddTransferParams,
+	dateSerialValue: number,
+): Promise<AddTransferResult> {
+	const received = p.usd!;
+	const values = await readBudgetGrid(client, tab, "FORMULA");
+	const { dateCol, headerRow } = findBudgetTransferSection(values, tab);
+	let row = headerRow + 1;
+	while ((values[row - 1] ?? []).slice(dateCol, dateCol + 7).some((c) => c !== "" && c != null)) row++;
+
+	const cols = {
+		date: dateCol,
+		ntd: dateCol + 1,
+		spot: dateCol + 2,
+		actual: dateCol + 3,
+		spread: dateCol + 4,
+		fee: dateCol + 5,
+		extra: dateCol + 6,
+	};
+	const sheetId = await client.getSheetId(tab);
+	const rate = await pinTransferRate(client, tab, sheetId, [], row, cols.spot, "USDTWD");
+	await client.batchUpdate([
+		{
+			updateCells: {
+				start: { sheetId, rowIndex: row - 1, columnIndex: cols.date },
+				rows: [
+					{
+						values: [
+							{
+								userEnteredValue: { numberValue: dateSerialValue },
+								userEnteredFormat: { numberFormat: { type: "DATE", pattern: "mm/dd" } },
+							},
+						],
+					},
+				],
+				fields: "userEnteredValue,userEnteredFormat.numberFormat",
+			},
+		},
+		{
+			updateCells: {
+				start: { sheetId, rowIndex: row - 1, columnIndex: cols.ntd },
+				rows: [{ values: transferRowCells(cols, row, p.ntd, received, rate, p.fee) }],
+				fields: "userEnteredValue",
+			},
+		},
+	]);
+	const spread = p.ntd - received * rate;
+	return {
+		tab,
+		layout: "budget",
+		row,
+		inserted: false,
+		date: serialToIso(dateSerialValue),
+		ntd: p.ntd,
+		rate,
+		spread: round2(spread),
+		fee: p.fee,
+		extraCost: round2(spread + p.fee),
+		usd: received,
+		spotUsd: round2(p.ntd / rate),
+	};
 }

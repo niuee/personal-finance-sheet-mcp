@@ -45,6 +45,7 @@ import {
 } from "../src/finance-ops";
 import { currentMonthTab, dateSerial, MONTH_COLS, todaySerial } from "../src/conventions";
 import type { SheetsClient } from "../src/sheets-client";
+import { budgetGrid } from "./budget-fixtures";
 
 describe("formula surgery", () => {
 	it("does not touch digit-bearing function names when re-targeting rows", () => {
@@ -1669,6 +1670,14 @@ describe("addTransfer (jpy) month wiring", () => {
 		await expect(
 			addTransfer(client, { currency: "jpy", tab: TRIP, ntd: 100, jpy: 470, fee: 0, date: "7/10" }),
 		).rejects.toThrow(/A71.*already written|already written.*A71/s);
+	});
+
+	it("writes the trip row but skips the wiring when the date's month is a budget month", async () => {
+		const client = jpyWiringClient(jpyTransferGrid(), budgetGrid());
+		const result = await addTransfer(client, { currency: "jpy", tab: TRIP, ntd: 100, jpy: 470, fee: 0, date: "2026-11-02" });
+		expect(result.wiredMonthTab).toBeNull();
+		expect((result as any).wiringNote).toMatch(/11 月.*budget month/);
+		expect((client.batchUpdate as any).mock.calls).toHaveLength(2); // scratch + write, no wiring batch
 	});
 
 	it("refuses to touch a non-formula bank cell", async () => {
