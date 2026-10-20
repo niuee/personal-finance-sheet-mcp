@@ -231,6 +231,32 @@ describe("SheetsClient generic additions", () => {
 		expect(fetchMock.mock.calls[0][0]).toBe(`${BASE}?fields=sheets.properties`);
 	});
 
+	it("renameTab renames by sheetId in one updateSheetProperties request", async () => {
+		const fetchMock = vi.fn<FetchMock>(async (url) =>
+			url.endsWith(":batchUpdate")
+				? jsonResponse({ replies: [{}] })
+				: jsonResponse({ sheets: [{ properties: { title: "10 月", sheetId: 111 } }, { properties: { title: "火車模型", sheetId: 222 } }] }),
+		);
+		vi.stubGlobal("fetch", fetchMock);
+
+		expect(await makeClient().renameTab("10 月", "2026 年 10 月")).toEqual({ from: "10 月", to: "2026 年 10 月", sheetId: 111 });
+		expect(fetchMock.mock.calls[1][0]).toBe(`${BASE}:batchUpdate`);
+		expect(parsedBody(fetchMock.mock.calls[1][1])).toEqual({
+			requests: [{ updateSheetProperties: { properties: { sheetId: 111, title: "2026 年 10 月" }, fields: "title" } }],
+		});
+	});
+
+	it("renameTab refuses a missing tab or a name that is taken, before writing", async () => {
+		const fetchMock = vi.fn<FetchMock>(async () =>
+			jsonResponse({ sheets: [{ properties: { title: "10 月", sheetId: 111 } }, { properties: { title: "11 月", sheetId: 222 } }] }),
+		);
+		vi.stubGlobal("fetch", fetchMock);
+
+		await expect(makeClient().renameTab("Nope", "x")).rejects.toThrow('Tab "Nope" not found');
+		await expect(makeClient().renameTab("10 月", "11 月")).rejects.toThrow('A tab named "11 月" already exists');
+		expect(fetchMock.mock.calls.every((c) => !String(c[0]).endsWith(":batchUpdate"))).toBe(true);
+	});
+
 	it("getSheetId throws a SheetsApiError naming the missing tab", async () => {
 		vi.stubGlobal("fetch", vi.fn<FetchMock>(async () => jsonResponse({ sheets: [] })));
 

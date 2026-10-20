@@ -461,13 +461,13 @@ describe("startMonth from the Budget Based template", () => {
 		// One atomic batch: the duplicate (with a pre-chosen sheetId) and every write into the copy.
 		expect(calls).toHaveLength(1);
 		expect(calls[0]).toEqual([
-			{ duplicateSheet: { sourceSheetId: 900, insertSheetIndex: 0, newSheetName: "11 月", newSheetId: 555 } },
+			{ duplicateSheet: { sourceSheetId: 900, insertSheetIndex: 0, newSheetName: "2026 年 11 月", newSheetId: 555 } },
 			write(0, 0, "11 月花費"),
 			write(2, 3, "=IF(-('10 月'!D43) > 0, -('10 月'!D43), 0)"),
 			write(3, 4, "=IF(-('10 月'!D44) > 0, -('10 月'!D44), 0)"),
 			write(22, 2, rateFormula(2026, 11)),
 		]);
-		expect(r).toMatchObject({ tab: "11 月", layout: "budget", template: "Budget Based", carriesFrom: "10 月" });
+		expect(r).toMatchObject({ tab: "2026 年 11 月", layout: "budget", template: "Budget Based", carriesFrom: "10 月" });
 		expect(r).not.toHaveProperty("replacedTab");
 		expect((r as any).startingEntries["訂閱"]).toEqual(["ElevenLabs", "iCloud", "Google One", "Netflix", "ChatGPT", "Claude"]);
 	});
@@ -491,10 +491,40 @@ describe("startMonth from the Budget Based template", () => {
 		expect(r).toMatchObject({ carriesFrom: null });
 	});
 
-	it("start_month(1) in December locks to DATE(2027,1,1)", async () => {
-		const client = budgetClient({ "Budget Based": budgetGrid(), "12 月": oldMonthGrid(), "1 月": budgetGrid() }, ["Budget Based", "12 月"]);
-		await startMonth(client, 1, { now: new Date("2026-12-15T04:00:00Z"), newSheetId: 555 });
-		expect((client.batchUpdate as any).mock.calls[0][0]).toEqual(expect.arrayContaining([write(22, 2, rateFormula(2027, 1))]));
+	it("start_month(1) in December builds 2027 年 1 月, carrying from 2026's bare 12 月, locked to DATE(2027,1,1)", async () => {
+		const client = budgetClient({ "Budget Based": budgetGrid(), "12 月": oldMonthGrid() }, ["Budget Based", "12 月", "1 月"]);
+		const r = await startMonth(client, 1, { now: new Date("2026-12-15T04:00:00Z"), newSheetId: 555 });
+		const batch = (client.batchUpdate as any).mock.calls[0][0];
+		expect(batch[0].duplicateSheet.newSheetName).toBe("2027 年 1 月");
+		expect(batch).toEqual(
+			expect.arrayContaining([write(2, 3, "=IF(-('12 月'!D43) > 0, -('12 月'!D43), 0)"), write(22, 2, rateFormula(2027, 1))]),
+		);
+		expect(r).toMatchObject({ tab: "2027 年 1 月", carriesFrom: "12 月" });
+	});
+
+	it("May 2027 is built next to 2026's 5 月, carrying from 2027 年 4 月", async () => {
+		const tabs = ["Budget Based", "5 月", "2027 年 4 月"];
+		const client = budgetClient({ "Budget Based": budgetGrid(), "5 月": oldMonthGrid(), "2027 年 4 月": budgetGrid() }, tabs);
+		const r = await startMonth(client, 5, { now: new Date("2027-04-25T04:00:00Z"), newSheetId: 555 });
+		const batch = (client.batchUpdate as any).mock.calls[0][0];
+		expect(batch[0].duplicateSheet.newSheetName).toBe("2027 年 5 月");
+		expect(batch).toEqual(
+			expect.arrayContaining([
+				write(2, 3, "=IF(-('2027 年 4 月'!D32) > 0, -('2027 年 4 月'!D32), 0)"),
+				write(3, 4, "=IF(-('2027 年 4 月'!D33) > 0, -('2027 年 4 月'!D33), 0)"),
+				write(22, 2, rateFormula(2027, 5)),
+			]),
+		);
+		expect(r).toMatchObject({ tab: "2027 年 5 月", carriesFrom: "2027 年 4 月" });
+	});
+
+	it("an explicit year builds that year's month", async () => {
+		const client = budgetClient({ "Budget Based": budgetGrid(), "5 月": oldMonthGrid() }, ["Budget Based", "5 月"]);
+		const r = await startMonth(client, 5, { ...NOW, year: 2027 });
+		const batch = (client.batchUpdate as any).mock.calls[0][0];
+		expect(batch[0].duplicateSheet.newSheetName).toBe("2027 年 5 月");
+		expect(batch).toEqual(expect.arrayContaining([write(2, 3, 0), write(3, 4, 0), write(22, 2, rateFormula(2027, 5))]));
+		expect(r).toMatchObject({ tab: "2027 年 5 月", carriesFrom: null });
 	});
 
 	it("refuses an existing month, old layout or budget, writing nothing", async () => {
@@ -503,11 +533,55 @@ describe("startMonth from the Budget Based template", () => {
 			await expect(startMonth(client, 11, NOW)).rejects.toThrow('Tab "11 月" already exists — refusing to overwrite it.');
 			expect(client.batchUpdate).not.toHaveBeenCalled();
 		}
+		const named = budgetClient({ "Budget Based": budgetGrid(), "2026 年 11 月": budgetGrid() }, ["Budget Based", "2026 年 11 月"]);
+		await expect(startMonth(named, 11, NOW)).rejects.toThrow('Tab "2026 年 11 月" already exists — refusing to overwrite it.');
+		expect(named.batchUpdate).not.toHaveBeenCalled();
 	});
 
 	it("refuses without the Budget Based template instead of duplicating the previous month, writing nothing", async () => {
 		const client = budgetClient({ "9 月": oldMonthGrid(), "10 月": oldMonthGrid() }, ["9 月"]);
 		await expect(startMonth(client, 10)).rejects.toThrow('No "Budget Based" template tab — start_month builds every month from it.');
 		expect(client.batchUpdate).not.toHaveBeenCalled();
+	});
+});
+
+describe("year-named month tabs", () => {
+	it("a tool given month and year writes into that year's tab", async () => {
+		const client = budgetClient({ "2027 年 5 月": budgetGrid(), "5 月": oldMonthGrid() }, ["5 月", "2027 年 5 月"]);
+		await addExpense(client, { item: "晚餐", amount: 200, currency: "TWD", tag: "吃喝", month: 5, year: 2027 });
+		const reads = (client.readRange as any).mock.calls.map((c: any) => c[0] as string);
+		expect(reads.every((r: string) => r.startsWith("'2027 年 5 月'!"))).toBe(true);
+		expect(client.batchUpdate).toHaveBeenCalledTimes(1);
+	});
+
+	it("a month alone resolves to its nearest year: no month param means this month", async () => {
+		// test/setup.ts pins today at 2026-10-20
+		const client = budgetClient({ "2026 年 10 月": budgetGrid() });
+		await addExpense(client, { item: "晚餐", amount: 200, currency: "TWD", tag: "吃喝" });
+		expect((client.readRange as any).mock.calls[0][0]).toMatch(/^'2026 年 10 月'!/);
+	});
+
+	it("a month whose tab doesn't exist yet is refused before any read, naming the tab start_month would create", async () => {
+		const client = budgetClient({ "5 月": oldMonthGrid() });
+		await expect(addExpense(client, { item: "晚餐", amount: 200, currency: "TWD", tag: "吃喝", month: 5, year: 2027 })).rejects.toThrow(
+			'No "2027 年 5 月" tab — start_month creates it.',
+		);
+		await expect(monthSummary(client, 5, 2027)).rejects.toThrow('No "2027 年 5 月" tab');
+		expect(client.readRange).not.toHaveBeenCalled();
+		expect(client.batchUpdate).not.toHaveBeenCalled();
+	});
+
+	it("month_summary reads a 2026 month under its bare name", async () => {
+		const client = budgetClient({ "5 月": oldMonthGrid() });
+		const s = (await monthSummary(client, 5, 2026)) as any;
+		expect(s.tab).toBe("5 月");
+	});
+
+	it("a yen transfer takes no year, like it takes no month", async () => {
+		const client = budgetClient({});
+		await expect(
+			addTransfer(client, { currency: "jpy", tab: "2026/07/25 京都東京", ntd: 100, jpy: 470, fee: 0, year: 2026 } as any),
+		).rejects.toThrow(/year/);
+		expect(client.readRange).not.toHaveBeenCalled();
 	});
 });

@@ -203,6 +203,18 @@ export class SheetsClient {
 		return { deletedAt: row, count };
 	}
 
+	/** Rename a tab. Sheets rewrites every formula that refers to it, on any tab. Refuses a missing tab or a taken name. */
+	async renameTab(from: string, to: string): Promise<{ from: string; to: string; sheetId: number }> {
+		const data = await this.request("?fields=sheets.properties");
+		const sheets: Array<{ properties: { title: string; sheetId: number } }> = data.sheets ?? [];
+		const sheet = sheets.find((s) => s.properties.title === from);
+		if (!sheet) throw new SheetsApiError(`Tab "${from}" not found`, 404);
+		if (sheets.some((s) => s.properties.title === to)) throw new SheetsApiError(`A tab named "${to}" already exists`, 409);
+		const sheetId = sheet.properties.sheetId;
+		await this.batchUpdate([{ updateSheetProperties: { properties: { sheetId, title: to }, fields: "title" } }]);
+		return { from, to, sheetId };
+	}
+
 	async addTab(title: string): Promise<{ title: string; sheetId: number }> {
 		const data = await this.batchUpdate([{ addSheet: { properties: { title } } }]);
 		const props = data.replies?.[0]?.addSheet?.properties;

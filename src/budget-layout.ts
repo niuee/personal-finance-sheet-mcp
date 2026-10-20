@@ -25,7 +25,6 @@ import {
 	MONTH_COLS,
 	MONTH_USD_NET_LABELS,
 	RATE_LABEL,
-	SHEET_TIMEZONE,
 	TRANSFER_SECTION_LABEL,
 	TRANSFER_TOTAL_LABEL,
 } from "./conventions";
@@ -264,30 +263,6 @@ export function findRateRow(values: unknown[][], tab: string): number {
 	const row = findRowByValue(values, MONTH_COLS.budgetLabel, RATE_LABEL);
 	if (row === null) throw new Error(`No ${RATE_LABEL} row in ${tab} (column ${colLetter(MONTH_COLS.budgetLabel)}).`);
 	return row;
-}
-
-/**
- * The year a month tab belongs to: the occurrence of `month` nearest to the
- * current Taipei month. Months are usually created ahead of time (January
- * built in December is next year's), but a month built late — after it
- * started, or just after it ended (November built in December) — is this
- * year's. Six months either way resolves to the coming one.
- */
-export function rateYear(month: number, now: Date = new Date()): number {
-	const parts = new Intl.DateTimeFormat("en-US", { timeZone: SHEET_TIMEZONE, year: "numeric", month: "numeric" }).formatToParts(now);
-	const year = Number(parts.find((p) => p.type === "year")?.value);
-	const current = Number(parts.find((p) => p.type === "month")?.value);
-	let best = year;
-	let bestDistance = Number.POSITIVE_INFINITY;
-	for (const candidate of [year - 1, year, year + 1]) {
-		const offset = candidate * 12 + month - (year * 12 + current);
-		const distance = Math.abs(offset);
-		if (distance < bestDistance || (distance === bestDistance && offset > 0)) {
-			best = candidate;
-			bestDistance = distance;
-		}
-	}
-	return best;
 }
 
 /** 本月匯率: the live rate up to and including the 1st, then locked to the 1st's close. */

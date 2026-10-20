@@ -2,7 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
 	BUDGET_HEADER_LABEL,
 	CONVENTIONS_TEXT,
-	currentMonthTab,
+	bareMonthTabName,
+	currentYearMonth,
 	dateSerial,
 	KNOWN_TAGS,
 	LUNCH_ADJUST_LABEL,
@@ -24,7 +25,9 @@ import {
 	OVERDRAFT_LABEL,
 	PREV_NTD_OVERDRAFT_LABEL,
 	PREV_USD_OVERDRAFT_LABEL,
-	previousMonth,
+	nearestYear,
+	previousYearMonth,
+	resolveYearMonth,
 	REMAINDER_LABEL,
 	REPAYMENT_LABEL,
 	SALARY_LABEL,
@@ -42,31 +45,57 @@ import {
 } from "../src/conventions";
 
 describe("conventions", () => {
-	it("builds month tab names with the space Vincent uses", () => {
-		expect(monthTabName(9)).toBe("9 月");
-		expect(monthTabName(12)).toBe("12 月");
+	it("names month tabs with their year", () => {
+		expect(monthTabName({ year: 2027, month: 5 })).toBe("2027 年 5 月");
+		expect(monthTabName({ year: 2026, month: 12 })).toBe("2026 年 12 月");
 	});
 
-	it("rejects invalid months", () => {
-		expect(() => monthTabName(0)).toThrow("Invalid month");
-		expect(() => monthTabName(13)).toThrow("Invalid month");
-		expect(() => monthTabName(1.5)).toThrow("Invalid month");
+	it("keeps the bare names 2026's tabs were created with", () => {
+		expect(bareMonthTabName(9)).toBe("9 月");
+		expect(bareMonthTabName(12)).toBe("12 月");
 	});
 
-	it("derives the current month tab from a date", () => {
-		expect(currentMonthTab(new Date("2026-07-02T12:00:00"))).toBe("7 月");
-		expect(currentMonthTab(new Date("2026-12-31T12:00:00"))).toBe("12 月");
+	it("rejects invalid months and years", () => {
+		expect(() => monthTabName({ year: 2027, month: 0 })).toThrow("Invalid month");
+		expect(() => monthTabName({ year: 2027, month: 13 })).toThrow("Invalid month");
+		expect(() => monthTabName({ year: 2027, month: 1.5 })).toThrow("Invalid month");
+		expect(() => monthTabName({ year: 2027.5, month: 1 })).toThrow("Invalid year");
 	});
 
-	it("resolves the month in Taipei time, not UTC", () => {
+	it("reads the current year and month in Taipei time, not UTC", () => {
+		expect(currentYearMonth(new Date("2026-07-02T12:00:00"))).toEqual({ year: 2026, month: 7 });
 		// 2026-07-31T17:00:00Z is already August 1st, 01:00 in Taipei
-		expect(currentMonthTab(new Date("2026-07-31T17:00:00Z"))).toBe("8 月");
-		expect(currentMonthTab(new Date("2026-07-31T15:59:00Z"))).toBe("7 月");
+		expect(currentYearMonth(new Date("2026-07-31T17:00:00Z"))).toEqual({ year: 2026, month: 8 });
+		expect(currentYearMonth(new Date("2026-07-31T15:59:00Z"))).toEqual({ year: 2026, month: 7 });
+		expect(currentYearMonth(new Date("2026-12-31T17:00:00Z"))).toEqual({ year: 2027, month: 1 });
 	});
 
-	it("wraps January's previous month to December", () => {
-		expect(previousMonth(1)).toBe(12);
-		expect(previousMonth(10)).toBe(9);
+	it("nearestYear: this year from the current month on, next year before it (Taipei)", () => {
+		const oct20 = new Date("2026-10-20T04:00:00Z");
+		expect(nearestYear(11, oct20)).toBe(2026);
+		expect(nearestYear(10, oct20)).toBe(2026);
+		expect(nearestYear(1, new Date("2026-12-15T04:00:00Z"))).toBe(2027);
+		expect(nearestYear(1, new Date("2026-12-31T17:00:00Z"))).toBe(2027); // already 2027-01-01 in Taipei → current month
+	});
+
+	it("nearestYear picks the nearest occurrence, so a just-ended month keeps its year", () => {
+		expect(nearestYear(11, new Date("2026-12-15T04:00:00Z"))).toBe(2026); // November built late, in December
+		expect(nearestYear(12, new Date("2027-01-10T04:00:00Z"))).toBe(2026);
+		expect(nearestYear(4, new Date("2026-10-20T04:00:00Z"))).toBe(2027); // six months either way → the coming one
+	});
+
+	it("resolveYearMonth: no month = this month; month alone = its nearest year; both = as given", () => {
+		const oct20 = new Date("2026-10-20T04:00:00Z");
+		expect(resolveYearMonth(undefined, undefined, oct20)).toEqual({ year: 2026, month: 10 });
+		expect(resolveYearMonth(5, undefined, new Date("2027-05-02T04:00:00Z"))).toEqual({ year: 2027, month: 5 });
+		expect(resolveYearMonth(1, undefined, new Date("2026-12-15T04:00:00Z"))).toEqual({ year: 2027, month: 1 });
+		expect(resolveYearMonth(5, 2026, new Date("2027-05-02T04:00:00Z"))).toEqual({ year: 2026, month: 5 });
+		expect(() => resolveYearMonth(undefined, 2026, oct20)).toThrow("year needs month");
+	});
+
+	it("steps back a month across the year boundary", () => {
+		expect(previousYearMonth({ year: 2027, month: 1 })).toEqual({ year: 2026, month: 12 });
+		expect(previousYearMonth({ year: 2026, month: 10 })).toEqual({ year: 2026, month: 9 });
 	});
 
 	it("knows the old layout's total-row anchor", () => {
@@ -196,7 +225,13 @@ describe("conventions", () => {
 		expect(CONVENTIONS_TEXT).toContain("OLD MONTHS");
 		expect(old).toContain("read-only");
 		expect(old).toContain("month_summary");
-		expect(old).toContain("N 月 DEP");
+		expect(old).toContain("10 月 DEP");
+	});
+
+	it("names month tabs with their year and explains 2026's bare names", () => {
+		for (const needle of ['"YYYY 年 M 月"', '"2027 年 5 月"', "bare", "year", "rename_tab"]) {
+			expect(CONVENTIONS_TEXT).toContain(needle);
+		}
 	});
 
 	it("no longer offers the removed tools or the old write paths", () => {
