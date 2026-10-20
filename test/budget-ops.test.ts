@@ -375,20 +375,36 @@ describe("monthSummary and getCategories on budget months", () => {
 	});
 
 	it("get_categories lists the blocks on a budget month", async () => {
-		const client = { ...budgetClient({ "11 月": budgetGrid() }), getDataValidation: vi.fn() } as unknown as SheetsClient;
+		const client = budgetClient({ "11 月": budgetGrid() });
 		expect(await getCategories(client, 11)).toEqual({
 			tab: "11 月",
 			source: "BUDGET_BLOCKS",
 			categories: ["中餐", "購物", "吃喝", "生活用品", "訂閱", "交通", "娛樂", "學貸", "其他"],
 		});
-		expect((client as any).getDataValidation).not.toHaveBeenCalled();
+	});
+
+	it("set_income, delete_expense and get_categories refuse a truncated read, writing nothing", async () => {
+		const truncated = () => {
+			const client = budgetClient({ "11 月": budgetGrid() });
+			(client.readRange as any).mockResolvedValue({ range: "x", values: budgetGrid(), truncated: true });
+			return client;
+		};
+		const ops: Array<(c: SheetsClient) => Promise<unknown>> = [
+			(c) => setIncome(c, { item: "沛還", amount: 700, currency: "USD", month: 11 }),
+			(c) => deleteExpense(c, { item: "Claude", month: 11 }),
+			(c) => getCategories(c, 11),
+		];
+		for (const op of ops) {
+			const client = truncated();
+			await expect(op(client)).rejects.toThrow(/truncated/);
+			expect(client.batchUpdate).not.toHaveBeenCalled();
+		}
 	});
 });
 
 describe("old-layout months are read-only", () => {
 	const READ_ONLY = "9 月 is on the old layout, which is read-only now — month_summary still reads it; no tool writes to it.";
-	const oldClient = () =>
-		({ ...budgetClient({ "9 月": oldMonthGrid() }), getDataValidation: vi.fn(async () => null) }) as unknown as SheetsClient;
+	const oldClient = () => budgetClient({ "9 月": oldMonthGrid() });
 
 	it("add_expense refuses and writes nothing", async () => {
 		const client = oldClient();
@@ -414,10 +430,10 @@ describe("old-layout months are read-only", () => {
 		expect(client.batchUpdate).not.toHaveBeenCalled();
 	});
 
-	it("get_categories refuses instead of reading the old 類別 dropdown", async () => {
+	it("get_categories refuses after the one layout read", async () => {
 		const client = oldClient();
 		await expect(getCategories(client, 9)).rejects.toThrow(READ_ONLY);
-		expect((client as any).getDataValidation).not.toHaveBeenCalled();
+		expect(client.readRange).toHaveBeenCalledTimes(1);
 	});
 
 	it("month_summary still reads an old-layout month", async () => {

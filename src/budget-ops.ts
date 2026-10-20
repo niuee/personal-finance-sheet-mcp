@@ -1,8 +1,8 @@
 /**
  * Client-calling operations on budget months. Each public op in finance-ops
- * reads its tab as usual, and when isBudgetMonth() says so, hands off here;
- * these re-read the wider BUDGET_GRID_READ (the blocks and 乾坤大挪移 sit far
- * to the right of the old A1:S window).
+ * reads its tab, refuses an old-layout month (assertBudgetMonth) and hands
+ * off here; these re-read the wider BUDGET_GRID_READ (the blocks and
+ * 乾坤大挪移 sit far to the right of the A1:S window).
  *
  * Every write is scoped to one section's own columns — the budget list,
  * income and nine blocks share sheet rows, so a whole-row insert or delete

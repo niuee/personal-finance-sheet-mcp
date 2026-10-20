@@ -150,8 +150,6 @@ export interface TransferSectionConfig {
 	pair: "USDTWD" | "JPYTWD";
 	/** Appended to the missing-section error. */
 	missingHint: string;
-	/** Titles of the sections stacked BELOW this one in the same column — the 總和 scan stops there instead of running into them. */
-	nextSectionLabels: readonly string[];
 }
 
 /** The trip tab's NTD→JPY 乾坤大挪移 log (columns A–G, below all trip content). */
@@ -160,8 +158,6 @@ export const JPY_TRANSFER_SECTION: TransferSectionConfig = {
 	gridRead: TRANSFER_JPY_GRID_READ,
 	pair: "JPYTWD",
 	missingHint: "the NTD→JPY log lives on the trip tab — create the section (title/header/總和, columns A–G, below all trip content) before logging.",
-	// The JPY log is the last thing on a trip tab.
-	nextSectionLabels: [],
 };
 
 export interface TransferSection {
@@ -184,16 +180,13 @@ export function findTransferSection(
 			`No ${TRANSFER_SECTION_LABEL} section in ${tab} (searched column ${colLetter(dateCol)} of ${cfg.gridRead}) — ${cfg.missingHint}`,
 		);
 	}
-	// Bottom boundary first: the 總和 row, or the title of the section stacked
-	// below when the 總和 is gone — never past it into a neighbouring block.
+	// Bottom boundary first: the 總和 row (the log is the last thing in its column).
 	let totalRow: number | null = null;
 	for (let r = anchorRow + 1; r <= values.length; r++) {
-		const v = String(values[r - 1]?.[dateCol] ?? "").trim();
-		if (v === TRANSFER_TOTAL_LABEL) {
+		if (String(values[r - 1]?.[dateCol] ?? "").trim() === TRANSFER_TOTAL_LABEL) {
 			totalRow = r;
 			break;
 		}
-		if (cfg.nextSectionLabels.includes(v)) break;
 	}
 	if (totalRow === null) {
 		throw new Error(`No ${TRANSFER_TOTAL_LABEL} row under the ${TRANSFER_SECTION_LABEL} header in ${tab}.`);
@@ -237,12 +230,9 @@ export function findLunchSection(values: unknown[][], tab: string): LunchSection
 			`No ${LUNCH_SECTION_LABEL} section in ${tab} (searched column ${colLetter(dateCol)} of ${FULL_GRID_READ}) — the lunch-budget log exists from 7月 2026 on.`,
 		);
 	}
-	// add_transfer's full-section path inserts a whole sheet row directly above
-	// the transfer 總和 row; on live geometry that lands between this section's
-	// label row and its values row, opening a blank row here. A fixed
-	// anchor+3 offset would then miss the header, so scan for it — bounded by
-	// the section's own 總和 row rather than by a row count, since any number of
-	// rows can be opened above the header.
+	// A row opened by hand between the label row and the values row would make
+	// a fixed anchor+3 offset miss the header, so scan for it — bounded by the
+	// section's own 總和 row rather than by a row count.
 	let totalRow: number | null = null;
 	for (let r = anchorRow + 1; r <= values.length; r++) {
 		if (String(values[r - 1]?.[LUNCH_COLS.item] ?? "").trim() === LUNCH_TOTAL_LABEL) {

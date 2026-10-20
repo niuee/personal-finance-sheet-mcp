@@ -1,5 +1,5 @@
 /**
- * Pure finders for budget-month tabs (from 11 月 2026): the budget list and
+ * Pure finders for budget-month tabs (from 10 月 2026): the budget list and
  * income on the left (A–F), one block per category to the right (H…AY), and
  * the 乾坤大挪移 log after the last block (BA–BG). Every block keeps its money
  * ABOVE an open-ended entry list — a 美金 row and a 新臺幣 row, each with

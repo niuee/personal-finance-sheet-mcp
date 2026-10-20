@@ -225,6 +225,24 @@ describe("findTransferSection (jpy config)", () => {
 			/乾坤大挪移.*trip tab/,
 		);
 	});
+
+	it("throws when the header row under the title is missing", () => {
+		const g = jpyTransferGrid();
+		g[69] = [];
+		expect(() => findTransferSection(g, "2026/07/25 京都東京", JPY_TRANSFER_SECTION)).toThrow("日期");
+	});
+
+	it("throws when there is no 總和 row", () => {
+		const g = jpyTransferGrid();
+		g[71] = [];
+		expect(() => findTransferSection(g, "2026/07/25 京都東京", JPY_TRANSFER_SECTION)).toThrow("總和");
+	});
+
+	it("scans for the header instead of assuming it sits directly under the title", () => {
+		const g = jpyTransferGrid();
+		g.splice(69, 0, [], []); // two rows opened between the title and the 日期 header
+		expect(findTransferSection(g, "2026/07/25 京都東京", JPY_TRANSFER_SECTION)).toEqual({ headerRow: 72, totalRow: 74 });
+	});
 });
 
 describe("findLunchSection", () => {
@@ -418,6 +436,34 @@ describe("addTransfer (jpy)", () => {
 		);
 		const calls = (client.batchUpdate as any).mock.calls;
 		expect(calls[1][0][0].updateCells.rows[0].values).toEqual([{}]);
+	});
+
+	it("dates the entry today (Taipei) when no date is given", async () => {
+		vi.useFakeTimers();
+		try {
+			vi.setSystemTime(new Date("2026-10-20T04:00:00Z"));
+			const client = transferClient(jpyTransferGrid(), 0.208);
+			const result = await addTransfer(client, { currency: "jpy", tab: TRIP, ntd: 100, jpy: 470, fee: 0 });
+			expect(result.date).toBe("2026-10-20");
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("rejects a bad date before reading or writing anything", async () => {
+		const client = transferClient(jpyTransferGrid(), 0.208);
+		await expect(addTransfer(client, { currency: "jpy", tab: TRIP, ntd: 100, jpy: 470, fee: 0, date: "13/45" })).rejects.toThrow();
+		await expect(addTransfer(client, { ntd: 100, usd: 3, fee: 0, month: 10, date: "13/45" })).rejects.toThrow();
+		expect(client.readRange).not.toHaveBeenCalled();
+		expect(client.batchUpdate).not.toHaveBeenCalled();
+	});
+
+	it("refuses a truncated read on either branch, writing nothing", async () => {
+		const client = transferClient(jpyTransferGrid(), 0.208);
+		(client.readRange as any).mockResolvedValue({ range: "x", values: jpyTransferGrid(), truncated: true });
+		await expect(addTransfer(client, { currency: "jpy", tab: TRIP, ntd: 100, jpy: 470, fee: 0, date: "10/2" })).rejects.toThrow(/truncated/);
+		await expect(addTransfer(client, { ntd: 100, usd: 3, fee: 0, month: 10, date: "10/2" })).rejects.toThrow(/truncated/);
+		expect(client.batchUpdate).not.toHaveBeenCalled();
 	});
 
 	it("refuses when the trip tab has no section, with the create-it hint", async () => {

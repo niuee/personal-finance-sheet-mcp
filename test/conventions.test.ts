@@ -123,10 +123,9 @@ describe("conventions", () => {
 		expect(MONTH_COLS.paidMethod).toBe(6); // G — 支付方式
 	});
 
-	it("documents the 類別 tags seen in the sheet", () => {
-		for (const tag of ["訂閱", "吃喝", "交通", "生活用品", "娛樂", "購物", "其他", "透支", "學貸"]) {
-			expect(KNOWN_TAGS).toContain(tag);
-		}
+	it("lists the nine budget categories, each one a block", () => {
+		expect([...KNOWN_TAGS].sort()).toEqual(["中餐", "交通", "其他", "吃喝", "娛樂", "學貸", "生活用品", "訂閱", "購物"].sort());
+		expect(KNOWN_TAGS).not.toContain("透支");
 	});
 
 	it("converts calendar dates to Sheets serials", () => {

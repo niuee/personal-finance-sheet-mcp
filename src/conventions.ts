@@ -17,20 +17,17 @@ export const TOTAL_ROW_LABEL = "花費總額";
  */
 export const DATE_HEADER_LABEL = "日期";
 
-/** 類別 tags seen in the sheet's column C. Documentation, not validation — the cell is free text. */
-export const KNOWN_TAGS = ["訂閱", "吃喝", "交通", "生活用品", "娛樂", "購物", "其他", "透支", "學貸"] as const;
+/** The nine budget categories — the 類別 of the budget list and one block each (中餐's block is titled 午餐支出). The live list comes from get_categories. */
+export const KNOWN_TAGS = ["生活用品", "吃喝", "購物", "訂閱", "交通", "娛樂", "學貸", "其他", "中餐"] as const;
 
 /** Column-A anchor labels for the budget/income section (values in the adjacent column). */
 export const OVERDRAFT_LABEL = "上月透支";
 /**
- * Per-currency carry rows (rows 3-4 from 7月 2026): each currency's negative
- * 本月…收支狀況 from last month rolls in as this month's expense —
+ * Per-currency carry rows (rows 3-4): each currency's negative 本月…收支狀況
+ * from last month rolls in as this month's shortfall —
  * =IF(-('prev'!D<收支狀況 row>) > 0, -(…), 0). 上月美金透支 carries USD in
- * column D (F=USD, so it debits the USD ledger like any USD row);
- * 上月新臺幣透支 carries TWD in column E (F=TWD). Tabs predating the split
- * keep the single TWD 上月透支 row. The carries are BUDGET-view devices
- * (收支狀況 counts covering them toward this month's performance); the
- * balance ledger adds them back — see the 銀行餘額 comment below.
+ * column D, 上月新臺幣透支 TWD in column E, and each 收支狀況 line subtracts
+ * its own. Old months before 7月 2026 keep a single TWD 上月透支 row.
  */
 export const PREV_USD_OVERDRAFT_LABEL = "上月美金透支";
 export const PREV_NTD_OVERDRAFT_LABEL = "上月新臺幣透支";
@@ -45,13 +42,11 @@ export const INCOME_HEADER_LABEL = "項目";
 
 /**
  * Month-view rows (labels in column B, values in column D):
- * 本月美金收支狀況/本月新臺幣收支狀況 are THIS month's 收入−支出 per
- * currency, wired to the 銀行餘額 block's cells; the NTD one additionally
- * adds 午餐超支或回補 so the lunch leftover counts toward the month's own
- * performance. The sheet now uses the 收支狀況 titles; the 本月美金餘額/
- * 本月新臺幣餘額 titles remain as a legacy fallback for tabs that predate
- * the rename — the finders accept both. They replace the old 剩餘 / 美金支付
- * / 新臺幣支付 rows; the interim 月剩餘 / 透支沖銷 rows are gone from the sheet.
+ * 本月美金收支狀況/本月新臺幣收支狀況, THIS month's result per currency (on a
+ * budget month: income − carry − that currency's budget lines + its
+ * overspend; on an old month: 收入 − 支出 from the 銀行餘額 block). The next
+ * month's carries point at them. Old 7月 tabs title them 本月美金餘額 /
+ * 本月新臺幣餘額 — the finders accept both; 6月 and earlier end at 剩餘.
  */
 export const MONTH_USD_NET_LABEL = "本月美金收支狀況";
 export const MONTH_NTD_NET_LABEL = "本月新臺幣收支狀況";
@@ -60,7 +55,7 @@ export const MONTH_USD_NET_LABELS = [MONTH_USD_NET_LABEL, "本月美金餘額"] 
 export const MONTH_NTD_NET_LABELS = [MONTH_NTD_NET_LABEL, "本月新臺幣餘額"] as const;
 
 /**
- * Budget months (from 11 月 2026): one block per category instead of one
+ * Budget months (from 10 月 2026): one block per category instead of one
  * expense list. start_month builds them by copying the template tab.
  */
 export const BUDGET_TEMPLATE_TAB = "Budget Based";
@@ -159,7 +154,7 @@ export const MONTH_COLS = {
 	twd: 4,
 	/** F — 支付幣別, which real account paid the row (USD/TWD). */
 	paidWith: 5,
-	/** G — 支付方式, which credit card charged the row (a CREDIT_CARDS name); blank = cash/transfer. */
+	/** G — 支付方式 on old months: the card or 現金 that paid the row. */
 	paidMethod: 6,
 	/** D — the 花費總額 label. */
 	totalLabel: 3,

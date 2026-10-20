@@ -143,7 +143,7 @@ export function registerTailoredTools(server: McpServer, client: SheetsClient): 
 				.min(1)
 				.optional()
 				.describe(
-					`Required: the category block — call get_categories for the month's blocks (typically ${KNOWN_TAGS.join(", ")}; 中餐 and 午餐 both mean the lunch block).`,
+					`Required: the category block — one of ${KNOWN_TAGS.join(", ")} (午餐 also means the 中餐 block); get_categories lists the month's blocks.`,
 				),
 			date: z
 				.string()
