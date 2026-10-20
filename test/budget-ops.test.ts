@@ -16,7 +16,7 @@ import {
 } from "../src/finance-ops";
 import type { SheetsClient } from "../src/sheets-client";
 import { rateFormula } from "../src/budget-layout";
-import { budgetGrid, oldMonthGrid } from "./budget-fixtures";
+import { budgetGrid, legacyBudgetGrid, oldMonthGrid } from "./budget-fixtures";
 
 /** Tab name out of an A1 range like "'11 月'!A1:BJ". */
 function tabOf(range: string): string {
@@ -33,6 +33,7 @@ function budgetClient(grids: Record<string, unknown[][]>, tabs?: string[]): Shee
 			reqs[0]?.duplicateSheet ? { replies: [{ duplicateSheet: { properties: { sheetId: 555 } } }] } : { replies: [{}] },
 		),
 		listTabs: vi.fn(async () => (tabs ?? Object.keys(grids)).map((title) => ({ title, rowCount: 1000, columnCount: 62 }))),
+		dataValidationRows: vi.fn(async () => []),
 	} as unknown as SheetsClient;
 }
 
@@ -74,11 +75,11 @@ describe("addExpense on budget months", () => {
 		expect((client.batchUpdate as any).mock.calls[0][0]).toContainEqual({
 			updateCells: {
 				start: { sheetId: 111, rowIndex: 6, columnIndex: 38 },
-				rows: [{ values: [cellData("GTA 6"), cellData("=99.99*$C$15"), cellData("TWD")] }],
+				rows: [{ values: [cellData("GTA 6"), cellData("=99.99*$C$23"), cellData("TWD")] }],
 				fields: "userEnteredValue",
 			},
 		});
-		expect(r).toMatchObject({ currency: "TWD", amount: "=99.99*$C$15", convertedAtMonthRate: true, date: null });
+		expect(r).toMatchObject({ currency: "TWD", amount: "=99.99*$C$23", convertedAtMonthRate: true, date: null });
 	});
 
 	it("writes a USD expense paid in USD as USD", async () => {
@@ -92,6 +93,33 @@ describe("addExpense on budget months", () => {
 				fields: "userEnteredValue",
 			},
 		});
+	});
+
+	it("copies the 幣別 dropdown from the nearest entry above, filling the rows added without it", async () => {
+		const client = budgetClient({ "11 月": budgetGrid() });
+		// 訂閱 (幣別 in AE) holds entries in rows 7-12; only the template's rows 7-10 carry the dropdown.
+		(client.dataValidationRows as any).mockResolvedValueOnce([7, 8, 9, 10]);
+		const r = await addExpense(client, { item: "Spotify", amount: 149, currency: "TWD", tag: "訂閱", month: 11 });
+		expect(r).toMatchObject({ row: 13 });
+		expect(client.dataValidationRows).toHaveBeenCalledWith("11 月", "AE", 7, 13);
+		expect((client.batchUpdate as any).mock.calls[0][0]).toContainEqual({
+			copyPaste: {
+				source: { sheetId: 111, startRowIndex: 9, endRowIndex: 10, startColumnIndex: 30, endColumnIndex: 31 },
+				destination: { sheetId: 111, startRowIndex: 10, endRowIndex: 13, startColumnIndex: 30, endColumnIndex: 31 },
+				pasteType: "PASTE_DATA_VALIDATION",
+			},
+		});
+	});
+
+	it("leaves the 幣別 dropdown alone when the target row already has it, or when the block has none", async () => {
+		const withRule = budgetClient({ "11 月": budgetGrid() });
+		(withRule.dataValidationRows as any).mockResolvedValueOnce([7, 8]);
+		await addExpense(withRule, { item: "Kato 500系", amount: 8940, currency: "TWD", tag: "購物", month: 11 });
+		expect(JSON.stringify((withRule.batchUpdate as any).mock.calls[0][0])).not.toContain("copyPaste");
+
+		const noRule = budgetClient({ "11 月": budgetGrid() });
+		await addExpense(noRule, { item: "Kato 500系", amount: 8940, currency: "TWD", tag: "購物", month: 11 });
+		expect(JSON.stringify((noRule.batchUpdate as any).mock.calls[0][0])).not.toContain("copyPaste");
 	});
 
 	it("refuses card and a missing tag on budget months, writing nothing", async () => {
@@ -194,6 +222,12 @@ describe("setIncome on budget months", () => {
 			/layout label/,
 		);
 	});
+
+	it.each(["本月新臺幣超支", "本月美金超支", "本月美金超支（加上回補）", "本月新臺幣超支（加上回補）"])("refuses %s as an income item", async (item) => {
+		await expect(setIncome(budgetClient({ "11 月": budgetGrid() }), { item, amount: 1, currency: "TWD", month: 11 })).rejects.toThrow(
+			/layout label/,
+		);
+	});
 });
 
 describe("addTransfer on budget months", () => {
@@ -231,22 +265,25 @@ describe("addTransfer on budget months", () => {
 });
 
 describe("monthSummary and getCategories on budget months", () => {
-	it("month_summary reports budgets per block and both 收支狀況 lines", async () => {
+	it("month_summary reports each block's 美金 and 新臺幣 money and the split 超支 rows", async () => {
 		const g = budgetGrid();
-		g[3]![7] = 3900; // 午餐 編列預算 (H4)
-		g[4]![9] = 0; // 午餐 總和 (J5)
-		g[3]![9] = 3900; // 午餐 剩餘 (J4)
-		g[3]![27] = 13016.72; // 訂閱 編列預算
-		g[4]![29] = 8808.86; // 訂閱 總和
-		g[3]![29] = 4207.86; // 訂閱 剩餘
+		g[3]![28] = 71.37; // 訂閱 美金: 編列預算 AC4, 總和 AD4, 剩餘 AE4
+		g[3]![29] = 71.37;
+		g[3]![30] = 0;
+		g[4]![28] = 10700; // 訂閱 新臺幣: AC5, AD5, AE5
+		g[4]![29] = 6508;
+		g[4]![30] = 4192;
 		g[2]![3] = 0;
 		g[2]![4] = 0;
 		g[3]![4] = 19281.68;
-		g[14]![4] = 63619.74;
-		g[31]![3] = 183.7;
-		g[32]![3] = -883.62;
-		g[34] = ["", "本月超支", "", 0];
-		g[39] = ["", "總支出", "", 55512.6];
+		g[22]![4] = 63661.4;
+		g[31]![3] = 83.71;
+		g[32]![3] = -6624.21;
+		g[33]![3] = -99.99; // 本月美金超支 (D34)
+		g[34]![3] = -25034.21; // 本月新臺幣超支 (D35)
+		g[35]![3] = -99.99; // 本月美金超支（加上回補） (D36)
+		g[36]![3] = -16942.21; // 本月新臺幣超支（加上回補） (D37)
+		g[39]![3] = 83857.28;
 		g[4]![53] = 0; // 乾坤大挪移 總和: 新臺幣 BB, 實際美金 BD, 手續費 BF, 當筆總額外花費 BG
 		g[4]![55] = 0;
 		g[4]![57] = 0;
@@ -256,19 +293,46 @@ describe("monthSummary and getCategories on budget months", () => {
 			layout: "budget",
 			本月匯率: 32.4607,
 			上月新臺幣透支: 19281.68,
-			預算總額: 63619.74,
-			本月美金收支狀況: 183.7,
-			本月新臺幣收支狀況: -883.62,
-			本月超支: 0,
-			總支出: 55512.6,
+			預算總額: 63661.4,
+			本月美金收支狀況: 83.71,
+			本月新臺幣收支狀況: -6624.21,
+			本月美金超支: -99.99,
+			本月新臺幣超支: -25034.21,
+			"本月美金超支（加上回補）": -99.99,
+			"本月新臺幣超支（加上回補）": -16942.21,
+			總支出: 83857.28,
 			incomes: [
 				{ item: "薪水", currency: "TWD", amount: 65271 },
 				{ item: "沛還", currency: "USD", amount: 700 },
 			],
 			乾坤大挪移: { 新臺幣: 0, 實際美金: 0, 手續費: 0, 當筆總額外花費: 0 },
 		});
-		expect(s.budgets[0]).toEqual({ category: "中餐", 編列預算: 3900, 總和: 0, 剩餘: 3900 });
-		expect(s.budgets[4]).toEqual({ category: "訂閱", 編列預算: 13016.72, 總和: 8808.86, 剩餘: 4207.86 });
+		expect(s.budgets[4]).toEqual({
+			category: "訂閱",
+			美金: { 編列預算: 71.37, 總和: 71.37, 剩餘: 0 },
+			新臺幣: { 編列預算: 10700, 總和: 6508, 剩餘: 4192 },
+		});
+		expect(s).not.toHaveProperty("本月超支");
+		expect(s).not.toHaveProperty("本月超支（加上回補）");
+	});
+
+	it("month_summary returns null for summary rows the tab doesn't have", async () => {
+		const g = budgetGrid();
+		g[35] = [];
+		g[36] = [];
+		const s = (await monthSummary(budgetClient({ "11 月": g }), 11)) as unknown as BudgetMonthSummary;
+		expect(s["本月美金超支（加上回補）"]).toBeNull();
+		expect(s["本月新臺幣超支（加上回補）"]).toBeNull();
+	});
+
+	it("add_expense, delete_expense and month_summary on an old-shape tab point at the migration", async () => {
+		const adding = budgetClient({ "11 月": legacyBudgetGrid() });
+		await expect(addExpense(adding, { item: "x", amount: 1, currency: "TWD", tag: "購物", month: 11 })).rejects.toThrow(/migrate_budget_split/);
+		const deleting = budgetClient({ "11 月": legacyBudgetGrid() });
+		await expect(deleteExpense(deleting, { item: "Claude", month: 11 })).rejects.toThrow(/migrate_budget_split/);
+		await expect(monthSummary(budgetClient({ "11 月": legacyBudgetGrid() }), 11)).rejects.toThrow(/migrate_budget_split/);
+		expect(adding.batchUpdate).not.toHaveBeenCalled();
+		expect(deleting.batchUpdate).not.toHaveBeenCalled();
 	});
 
 	it("get_categories lists the blocks on a budget month", async () => {
@@ -324,7 +388,7 @@ describe("startMonth from the Budget Based template", () => {
 			write(0, 0, "11 月花費"),
 			write(2, 3, "=IF(-('10 月'!D43) > 0, -('10 月'!D43), 0)"),
 			write(3, 4, "=IF(-('10 月'!D44) > 0, -('10 月'!D44), 0)"),
-			write(14, 2, rateFormula(2026, 11)),
+			write(22, 2, rateFormula(2026, 11)),
 		]);
 		expect(r).toMatchObject({ tab: "11 月", layout: "budget", template: "Budget Based", carriesFrom: "10 月", replacedTab: null });
 		expect((r as any).startingEntries["訂閱"]).toEqual(["ElevenLabs", "iCloud", "Google One", "Netflix", "ChatGPT", "Claude"]);
@@ -356,7 +420,7 @@ describe("startMonth from the Budget Based template", () => {
 	it("start_month(1) in December locks to DATE(2027,1,1)", async () => {
 		const client = budgetClient({ "Budget Based": budgetGrid(), "12 月": oldMonthGrid(), "1 月": budgetGrid() }, ["Budget Based", "12 月"]);
 		await startMonth(client, 1, { now: new Date("2026-12-15T04:00:00Z"), newSheetId: 555 });
-		expect((client.batchUpdate as any).mock.calls[0][0]).toEqual(expect.arrayContaining([write(14, 2, rateFormula(2027, 1))]));
+		expect((client.batchUpdate as any).mock.calls[0][0]).toEqual(expect.arrayContaining([write(22, 2, rateFormula(2027, 1))]));
 	});
 
 	it("existing old-layout 11 月: refuses without the flag; renames to 11 月 DEP with it", async () => {

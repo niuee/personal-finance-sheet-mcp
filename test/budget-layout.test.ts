@@ -11,7 +11,7 @@ import {
 	rateYear,
 	resolveBudgetBlock,
 } from "../src/budget-layout";
-import { budgetGrid, oldMonthGrid } from "./budget-fixtures";
+import { budgetGrid, legacyBudgetGrid, oldMonthGrid } from "./budget-fixtures";
 
 describe("budget-month layout", () => {
 	it("isBudgetMonth: true on the template, false on an old month", () => {
@@ -22,13 +22,17 @@ describe("budget-month layout", () => {
 	it("findBudgetBlocks finds all nine blocks in column order, 午餐支出 as 中餐", () => {
 		const blocks = findBudgetBlocks(budgetGrid(), "11 月");
 		expect(blocks.map((b) => b.category)).toEqual(["中餐", "購物", "吃喝", "生活用品", "訂閱", "交通", "娛樂", "學貸", "其他"]);
-		expect(blocks[4]).toEqual({ category: "訂閱", title: "訂閱支出", startCol: 27, budgetRow: 4, totalRow: 5, headerRow: 6 });
+		expect(blocks[4]).toEqual({ category: "訂閱", title: "訂閱支出", startCol: 27, usdRow: 4, ntdRow: 5, headerRow: 6 });
 	});
 
-	it("findBudgetBlocks throws when a block lost its 總和 label", () => {
+	it("findBudgetBlocks throws when a block lost its 美金 row label", () => {
 		const g = budgetGrid();
-		g[4]![28] = "";
-		expect(() => findBudgetBlocks(g, "11 月")).toThrow(/AB6.*總和|總和.*AB6/);
+		g[3]![27] = "";
+		expect(() => findBudgetBlocks(g, "11 月")).toThrow(/AB6.*美金|美金.*AB6/);
+	});
+
+	it("findBudgetBlocks names the migration on an old-shape tab", () => {
+		expect(() => findBudgetBlocks(legacyBudgetGrid(), "11 月")).toThrow(/old single-currency.*migrate_budget_split/);
 	});
 
 	it("resolveBudgetBlock: alias, trim, unknown tag lists categories", () => {
@@ -52,7 +56,7 @@ describe("budget-month layout", () => {
 		const g = budgetGrid();
 		const entries = blockEntries(g, findBudgetBlocks(g, "11 月")[4]!);
 		expect(entries.map((e) => e.item)).toEqual(["ElevenLabs", "iCloud", "Google One", "Netflix", "ChatGPT", "Claude"]);
-		expect(entries[5]).toEqual({ row: 12, date: undefined, item: "Claude", amount: "=200*$C$15", currency: "TWD" });
+		expect(entries[5]).toEqual({ row: 12, date: undefined, item: "Claude", amount: "=200*$C$23", currency: "TWD" });
 	});
 
 	it("findBudgetTransferSection: 總和 above the header", () => {
@@ -64,7 +68,7 @@ describe("budget-month layout", () => {
 	});
 
 	it("findRateRow finds 本月匯率", () => {
-		expect(findRateRow(budgetGrid(), "11 月")).toBe(15);
+		expect(findRateRow(budgetGrid(), "11 月")).toBe(23);
 	});
 
 	it("rateYear: this year from the current month on, next year before it (Taipei)", () => {

@@ -24,6 +24,7 @@ import {
 	monthTabName,
 	NTD_CONSERVATIVE_END_LABEL,
 	NTD_END_BALANCE_LABEL,
+	NTD_OVERSPEND_LABEL,
 	NTD_PAYMENT_LABEL,
 	NTD_START_BALANCE_LABEL,
 	parseDateInput,
@@ -44,6 +45,7 @@ import {
 	TRIP_MAX_BLOCK_ROWS,
 	TRIP_TOTAL_LABEL,
 	USD_END_BALANCE_LABEL,
+	USD_OVERSPEND_LABEL,
 	USD_PAYMENT_LABEL,
 	USD_START_BALANCE_LABEL,
 } from "../src/conventions";
@@ -237,6 +239,30 @@ describe("conventions", () => {
 		for (const needle of ["BUDGET MONTHS", "本月匯率", "Budget Based", "replace_old_layout", "N 月 DEP", "幣別"]) {
 			expect(CONVENTIONS_TEXT).toContain(needle);
 		}
+	});
+
+	it("says add_expense carries the 幣別 dropdown onto new entries", () => {
+		expect(CONVENTIONS_TEXT).toContain("add_expense copies the 幣別 dropdown rule onto the new row");
+	});
+
+	it("describes per-currency budget months", () => {
+		expect(USD_OVERSPEND_LABEL).toBe("本月美金超支");
+		for (const needle of [
+			"<類別>美金預算",
+			"<類別>新臺幣預算",
+			"a 美金 row and a 新臺幣 row",
+			"本月美金超支（加上回補）",
+			"本月新臺幣超支（加上回補）",
+			"migrate_budget_split",
+			"本月美金收支狀況 (USD income − 上月美金透支 − the USD budget lines + 本月美金超支)",
+		]) {
+			expect(CONVENTIONS_TEXT).toContain(needle);
+		}
+	});
+
+	it("says the NTD line subtracts the NTD-paid overspend", () => {
+		expect(NTD_OVERSPEND_LABEL).toBe("本月新臺幣超支");
+		expect(CONVENTIONS_TEXT).toContain("本月新臺幣收支狀況 (TWD income − 上月新臺幣透支 − the TWD budget lines + 本月新臺幣超支 − the 乾坤大挪移 手續費)");
 	});
 
 	it("exports the trip block anchors", () => {

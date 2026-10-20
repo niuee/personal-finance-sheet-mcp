@@ -1,5 +1,6 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+import { migrateBudgetSplit } from "./budget-migration";
 import { CONVENTIONS_TEXT, KNOWN_TAGS } from "./conventions";
 import {
 	addExpense,
@@ -258,7 +259,7 @@ export function registerTailoredTools(server: McpServer, client: SheetsClient): 
 
 	server.tool(
 		"month_summary",
-		"Get a month's numbers as clean JSON (unformatted): 花費總額, the carried overdrafts (上月美金透支/上月新臺幣透支, or legacy 上月透支), per-類別 tag totals, the 午餐預算 lunch block (編列預算/總和/剩餘) and 午餐超支或回補, the income list (item/幣別/amount), 薪水, 沛還, 本月美金收支狀況/本月新臺幣收支狀況, plus the 銀行餘額 block (本月美金收入/本月美金支出/本月初美金餘額/本月底美金餘額, the NTD counterparts, and 保守預計本月底新臺幣餘額; old tabs report 剩餘 instead). Defaults to the current month. Fields the sheet doesn't have come back null. On BUDGET MONTHS (from 11 月 2026) it returns layout:'budget' instead: per-block 編列預算/總和/剩餘 (budgets), 本月匯率, the carries, 預算總額, the income list, both 收支狀況 lines, 本月超支, 本月超支（加上回補）, 總支出, and the 乾坤大挪移 totals.",
+		"Get a month's numbers as clean JSON (unformatted): 花費總額, the carried overdrafts (上月美金透支/上月新臺幣透支, or legacy 上月透支), per-類別 tag totals, the 午餐預算 lunch block (編列預算/總和/剩餘) and 午餐超支或回補, the income list (item/幣別/amount), 薪水, 沛還, 本月美金收支狀況/本月新臺幣收支狀況, plus the 銀行餘額 block (本月美金收入/本月美金支出/本月初美金餘額/本月底美金餘額, the NTD counterparts, and 保守預計本月底新臺幣餘額; old tabs report 剩餘 instead). Defaults to the current month. Fields the sheet doesn't have come back null. On BUDGET MONTHS (from 11 月 2026) it returns layout:'budget' instead: per-block 美金 and 新臺幣 編列預算/總和/剩餘 (budgets: USD in USD, NTD in NTD), 本月匯率, the carries, 預算總額, the income list, both 收支狀況 lines, 本月美金超支 / 本月新臺幣超支 (each currency's overspend, ≤ 0, already included in its line), 本月美金超支（加上回補） / 本月新臺幣超支（加上回補）, 總支出, and the 乾坤大挪移 totals.",
 		{ month: monthParam.optional().describe("Month 1-12 (default: current month)") },
 		async ({ month }) => {
 			try {
@@ -297,6 +298,19 @@ export function registerTailoredTools(server: McpServer, client: SheetsClient): 
 		async ({ month, replace_old_layout }) => {
 			try {
 				return ok(await startMonth(client, month, { replaceOldLayout: replace_old_layout }));
+			} catch (e) {
+				return toError(e);
+			}
+		},
+	);
+
+	server.tool(
+		"migrate_budget_split",
+		"One-off: move a budget-month tab (the 'Budget Based' template, 11 月, 12 月) to per-currency budgets — 18 budget rows, a 美金 and a 新臺幣 row per block, split 超支 rows. One atomic write; refuses a tab already migrated or anything it doesn't recognise. Reports the 收支狀況 / 超支 / 總支出 figures before and after, which should match.",
+		{ tab: z.string().min(1).describe("Tab name exactly as it appears, e.g. Budget Based or 11 月") },
+		async ({ tab }) => {
+			try {
+				return ok(await migrateBudgetSplit(client, tab));
 			} catch (e) {
 				return toError(e);
 			}
