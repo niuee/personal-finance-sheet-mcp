@@ -1,7 +1,7 @@
 # October on the budget layout, old layout retired — Design
 
 **Date:** 2026-10-20
-**Status:** Draft, awaiting approval
+**Status:** Approved 2026-10-20. Part 1 ran on the live sheet the same day: 10 月 rebuilt (old tab kept as 10 月 DEP), every block matching the old per-類別 totals, 本月美金收支狀況 +18.31, 本月新臺幣收支狀況 −28,291.92; 11 月 and 12 月 unchanged.
 **Builds on:** `2026-10-19-budget-month-layout-design.md` and
 `2026-10-20-per-currency-budget-blocks-design.md`
 

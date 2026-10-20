@@ -213,7 +213,7 @@ export function registerTailoredTools(server: McpServer, client: SheetsClient): 
 
 	server.tool(
 		"month_summary",
-		"Get a month's numbers as clean JSON (unformatted): 花費總額, the carried overdrafts (上月美金透支/上月新臺幣透支, or legacy 上月透支), per-類別 tag totals, the 午餐預算 lunch block (編列預算/總和/剩餘) and 午餐超支或回補, the income list (item/幣別/amount), 薪水, 沛還, 本月美金收支狀況/本月新臺幣收支狀況, plus the 銀行餘額 block (本月美金收入/本月美金支出/本月初美金餘額/本月底美金餘額, the NTD counterparts, and 保守預計本月底新臺幣餘額; old tabs report 剩餘 instead). Defaults to the current month. Fields the sheet doesn't have come back null. On BUDGET MONTHS (from 11 月 2026) it returns layout:'budget' instead: per-block 美金 and 新臺幣 編列預算/總和/剩餘 (budgets: USD in USD, NTD in NTD), 本月匯率, the carries, 預算總額, the income list, both 收支狀況 lines, 本月美金超支 / 本月新臺幣超支 (each currency's overspend, ≤ 0, already included in its line), 本月美金超支（加上回補） / 本月新臺幣超支（加上回補）, 總支出, and the 乾坤大挪移 totals.",
+		"Get a month's numbers as clean JSON (unformatted). Defaults to the current month. A budget month (10 月 2026 on) returns layout:'budget': per-block 美金 and 新臺幣 編列預算/總和/剩餘 (USD in USD, NTD in NTD), 本月匯率, the carries (上月美金透支/上月新臺幣透支), 預算總額, the income list, both 收支狀況 lines, 本月美金超支 / 本月新臺幣超支 (each currency's overspend, ≤ 0, already included in its line), 本月美金超支（加上回補） / 本月新臺幣超支（加上回補）, 總支出, and the 乾坤大挪移 totals. An old-layout month (5 月–9 月, read-only) returns its own shape: 花費總額, the carries (or legacy 上月透支), per-類別 tag totals, the 午餐預算 lunch block and 午餐超支或回補, the income list, 薪水, 沛還, both 收支狀況 lines and the 銀行餘額 block (old tabs report 剩餘 instead); fields the sheet doesn't have come back null.",
 		{ month: monthParam.optional().describe("Month 1-12 (default: current month)") },
 		async ({ month }) => {
 			try {
@@ -293,7 +293,7 @@ export function registerTailoredTools(server: McpServer, client: SheetsClient): 
 
 	server.tool(
 		"add_transfer",
-		"Log a 乾坤大挪移 currency transfer. Default currency:'usd' targets a budget month (default: current month): writes into the 乾坤大挪移 log at BA-BG with 當下美金/匯差 pinned to the USDTWD spot rate at entry time; its 總和 sits above the open-ended list and is never rewritten, and only the 手續費 counts as spending (本月新臺幣收支狀況, 總支出). Old-layout months (5 月–9 月) are read-only and refused. currency:'jpy' targets a TRIP tab (tab required, e.g. 2026/07/25 京都東京): writes into that tab's 乾坤大挪移 section (columns A-G) pinned to the JPYTWD rate, and wires the NTD side per entry into the month the date falls in (−新臺幣 from 本月底/保守預計新臺幣餘額, +手續費 into 本月新臺幣支出); the JPY received is trip cash and joins no bank ledger. A jpy transfer dated in a budget month is written to the trip tab but NOT linked into that month (the result says so in wiringNote). Use this instead of update_range for transfers.",
+		"Log a 乾坤大挪移 currency transfer. Default currency:'usd' targets a budget month (default: current month): writes into the 乾坤大挪移 log at BA-BG with 當下美金/匯差 pinned to the USDTWD spot rate at entry time; its 總和 sits above the open-ended list and is never rewritten, and only the 手續費 counts as spending (本月新臺幣收支狀況, 總支出). Old-layout months (5 月–9 月) are read-only and refused. currency:'jpy' targets a TRIP tab (tab required, e.g. 2026/07/25 京都東京): writes into that tab's 乾坤大挪移 section (columns A-G) pinned to the JPYTWD rate; the JPY received is trip cash and the entry joins no month tab. Use this instead of update_range for transfers.",
 		{
 			currency: z.enum(["usd", "jpy"]).optional().describe("Transfer destination currency (default usd)"),
 			tab: z.string().min(1).optional().describe("Trip tab name, exactly as it appears — required for currency:'jpy'"),
@@ -319,14 +319,14 @@ export function registerTailoredTools(server: McpServer, client: SheetsClient): 
 
 	server.tool(
 		"get_sheet_conventions",
-		"How this spreadsheet is organized: monthly tab layout, anchors like 花費總額, category formulas, trip blocks. Read this before doing raw range operations on unfamiliar tabs.",
+		"How this spreadsheet is organized: the budget-month layout (budget list, 本月匯率, category blocks, 收支狀況 lines), the read-only old months, trip tabs. Read this before doing raw range operations on unfamiliar tabs.",
 		{},
 		async () => ok({ conventions: CONVENTIONS_TEXT }),
 	);
 
 	server.tool(
 		"insert_rows",
-		"Insert empty rows at a 1-indexed position (existing rows shift down; formulas that span the position auto-extend). Prefer add_expense/add_trip_entry for their use cases.",
+		"Insert empty WHOLE rows at a 1-indexed position (existing rows shift down; formulas that span the position auto-extend). Never on a month or trip tab — their side-by-side blocks share sheet rows and a whole-row insert tears them; add_expense and add_trip_entry grow their own sections.",
 		{
 			tab: z.string().min(1),
 			row: z.number().int().min(2).describe("1-indexed row where the first new row will land"),
@@ -343,16 +343,16 @@ export function registerTailoredTools(server: McpServer, client: SheetsClient): 
 
 	server.tool(
 		"delete_rows",
-		"Delete rows for real — the row goes away and everything below moves up, which no other tool does (update_range only blanks cells, leaving an empty row behind). ALWAYS pass columns on a monthly or trip tab: those tabs are mosaics of side-by-side blocks (expense list A-G, 乾坤大挪移 and 信用卡帳單對帳區 H-N, 午餐預算 P-S; trip bands A-G, I-O, Q-W, Z-AF), and a whole-row delete tears every block that shares the row — scoping the delete to one band shifts only that section. Prefer delete_expense for expense rows. Refuses when a formula points straight at a cell being deleted (it would turn into #REF!) unless force:true; SUM/SUMIF ranges spanning the rows are fine, they shrink. Returns deletedValues (with formulas) so the rows can be re-entered.",
+		"Delete rows for real — the row goes away and everything below moves up, which no other tool does (update_range only blanks cells, leaving an empty row behind). ALWAYS pass columns on a month or trip tab: those tabs are mosaics of side-by-side blocks (a month's budget list A-F, nine category blocks of four columns from H, 乾坤大挪移 BA-BG; trip bands A-G, I-O, Q-W, Z-AF), and a whole-row delete tears every block that shares the row — scoping the delete to one band shifts only that section. Prefer delete_expense for a block entry. Refuses when a formula points straight at a cell being deleted (it would turn into #REF!) unless force:true; SUM/SUMIF ranges spanning the rows are fine, they shrink. Returns deletedValues (with formulas) so the rows can be re-entered.",
 		{
-			tab: z.string().min(1).describe("Tab name, e.g. 9 月"),
+			tab: z.string().min(1).describe("Tab name, e.g. 10 月"),
 			row: z.number().int().min(2).describe("1-indexed first row to delete"),
 			count: z.number().int().min(1).max(50).default(1),
 			columns: z
 				.string()
 				.optional()
 				.describe(
-					'Column band to scope the delete to, e.g. "A:G" (expense list), "P:S" (午餐預算), "H:N" (乾坤大挪移 / 對帳區) or a single "R". Omit ONLY on a tab with nothing beside the rows — omitting it deletes the whole sheet row.',
+					'Column band to scope the delete to, e.g. "M:P" (the 購物 block), "BA:BG" (乾坤大挪移), "B:D" (the income list), "I:O" (a trip band) or a single "R". Omit ONLY on a tab with nothing beside the rows — omitting it deletes the whole sheet row.',
 				),
 			force: z
 				.boolean()

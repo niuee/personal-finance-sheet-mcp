@@ -170,51 +170,47 @@ describe("conventions", () => {
 	it("conventions text mentions the anchors Claude needs", () => {
 		for (const needle of [
 			"花費總額",
-			"GOOGLEFINANCE",
-			"上月透支",
 			"上月美金透支",
 			"上月新臺幣透支",
-			"insert",
-			"0.22",
 			"分類總花費",
 			"電子產品",
 			"機票住宿",
 			"find_cells",
 			"expect_empty",
 			"日期",
-			"類別",
-			"新臺幣支付",
-			"支付幣別",
 			"本月美金收支狀況",
 			"本月新臺幣收支狀況",
-			"本月底美金餘額",
-			"本月底新臺幣餘額",
-			"保守預計本月底新臺幣餘額",
 			"學貸",
 			"set_income",
 			"幣別",
 			"乾坤大挪移",
 			"add_transfer",
 			"當筆總額外花費",
-			"中餐預算",
-			"午餐預算",
-			"add_lunch",
-			"午餐超支或回補",
 			"編列預算",
-			"信用卡帳單對帳區",
-			"支付方式",
-			"本月需繳款",
-			"本月需繳",
-			"結帳日前",
-			"小計",
-			"set_expense_date",
 		]) {
 			expect(CONVENTIONS_TEXT).toContain(needle);
 		}
 	});
 
+	it("describes old-layout months as read-only history that month_summary still reads", () => {
+		const old = CONVENTIONS_TEXT.slice(CONVENTIONS_TEXT.indexOf("OLD MONTHS"));
+		expect(CONVENTIONS_TEXT).toContain("OLD MONTHS");
+		expect(old).toContain("read-only");
+		expect(old).toContain("month_summary");
+		expect(old).toContain("N 月 DEP");
+	});
+
+	it("no longer offers the removed tools or the old write paths", () => {
+		for (const gone of ["add_lunch", "set_expense_date", "adjust_balance", "replace_old_layout", "card is refused", "wires the NTD side"]) {
+			expect(CONVENTIONS_TEXT).not.toContain(gone);
+		}
+		// The card buckets survive only as part of the old months' read-only description.
+		const beforeOld = CONVENTIONS_TEXT.slice(0, CONVENTIONS_TEXT.indexOf("OLD MONTHS"));
+		expect(beforeOld).not.toContain("信用卡帳單對帳區");
+	});
+
 	it("describes budget months", () => {
-		for (const needle of ["BUDGET MONTHS", "本月匯率", "Budget Based", "replace_old_layout", "N 月 DEP", "幣別"]) {
+		for (const needle of ["MONTHLY TABS", "本月匯率", "Budget Based", "幣別"]) {
 			expect(CONVENTIONS_TEXT).toContain(needle);
 		}
 	});
