@@ -60,6 +60,28 @@ export const MONTH_USD_NET_LABELS = [MONTH_USD_NET_LABEL, "本月美金餘額"] 
 export const MONTH_NTD_NET_LABELS = [MONTH_NTD_NET_LABEL, "本月新臺幣餘額"] as const;
 
 /**
+ * Budget months (from 11 月 2026): one block per category instead of one
+ * expense list. start_month builds them by copying the template tab.
+ */
+export const BUDGET_TEMPLATE_TAB = "Budget Based";
+/** Column-B label of the month's single USD→TWD rate (value in column C) — also the budget-month anchor. */
+export const RATE_LABEL = "本月匯率";
+/** Column-D label of the budget list's total (value in column E). */
+export const BUDGET_SUM_LABEL = "預算總額";
+export const BUDGET_ALLOCATED_LABEL = "編列預算";
+/** A category block's title is `<category>支出`. */
+export const BUDGET_BLOCK_TITLE_SUFFIX = "支出";
+export const CURRENCY_HEADER_LABEL = "幣別";
+export const AMOUNT_HEADER_LABEL = "金額";
+export const OVERSPEND_LABEL = "本月超支";
+export const OVERSPEND_NET_LABEL = "本月超支（加上回補）";
+export const TOTAL_SPENDING_LABEL = "總支出";
+/** start_month's replace_old_layout keeps the old tab as `N 月 DEP`. */
+export const DEP_SUFFIX = " DEP";
+/** Block titles whose category differs from the title stem: the 午餐支出 block holds the 中餐 budget. */
+export const BUDGET_CATEGORY_ALIASES: Readonly<Record<string, string>> = { 午餐: "中餐" };
+
+/**
  * Labels for the 銀行餘額 block — the month's per-currency money flow, for
  * reality-checking the real USD and NTD bank accounts. All labels live in
  * column B with their values in column D. Since the 調整 layout (2026-07,
