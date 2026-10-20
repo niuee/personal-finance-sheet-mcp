@@ -152,13 +152,26 @@ half-migrated state this design forbids. For each tab, the tool:
    - USD amount: the D cell of the old line whose 支付幣別 is USD, as
      typed (formulas such as `=281.43 + 148.5` stay formulas).
    - NTD amount: the E cell of the old line whose 支付幣別 is TWD, as
-     typed, unless that formula is a conversion that refers to another
-     cell. The template's 吃喝 line is `E6 = D6*$C$15` with 支付幣別 TWD and
-     a blank D6; it evaluates to 0, so carry its computed value.
+     typed. One exception: the template's 吃喝 line is `E6 = D6*$C$15`
+     with 支付幣別 TWD and a **blank** D6, so it evaluates to 0; a TWD line
+     whose E converts a blank D carries 0. A TWD line whose E converts a
+     **filled** D isn't covered, so the tool refuses the tab.
    - A currency a category doesn't have yet becomes 0.
 6. Rewrites rows 3–5 of every block, D32–D37 and D40 as above, and clears
    anything left over from the old rows.
 7. Applies the display formats.
+
+Anything else these rules don't cover makes the tool refuse the tab
+instead of guessing. That includes a category with two budget lines in the
+same currency, a merge on rows 3–5 that reaches outside them (into the
+title row, say), or a block whose rows 3–5 hold something other than
+today's labels and formulas. *(My call: refusing keeps the "no number
+changes" anti-goal safe; a refused tab gets fixed by hand and rerun.)*
+
+`cutPaste` only has to carry references to the rate cell and 預算總額,
+which live on the same tab (entries like `=200*$C$15`, the E-column
+conversions, E3). No other tab refers to them; 12 月's carries point at
+11 月's D32 / D33, which don't move.
 
 Afterwards the tool reports the before/after values of D32, D33, D34, D35
 and D40 so the run can be checked against the anti-goal.
