@@ -75,6 +75,12 @@ describe("budget-month layout", () => {
 		expect(rateYear(1, new Date("2026-12-31T17:00:00Z"))).toBe(2027); // already 2027-01-01 in Taipei → current month
 	});
 
+	it("rateYear picks the nearest occurrence, so rebuilding a just-ended month keeps its year", () => {
+		expect(rateYear(11, new Date("2026-12-15T04:00:00Z"))).toBe(2026); // start_month(11, replace_old_layout) run in December
+		expect(rateYear(12, new Date("2027-01-10T04:00:00Z"))).toBe(2026);
+		expect(rateYear(4, new Date("2026-10-20T04:00:00Z"))).toBe(2027); // six months either way → the coming one
+	});
+
 	it("rateFormula is the exact self-locking formula", () => {
 		expect(rateFormula(2026, 11)).toBe(
 			'=IF(TODAY()<=DATE(2026,11,1),GOOGLEFINANCE("CURRENCY:USDTWD"),INDEX(GOOGLEFINANCE("CURRENCY:USDTWD","price",DATE(2026,11,1)),2,2))',

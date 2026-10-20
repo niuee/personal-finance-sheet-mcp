@@ -226,12 +226,28 @@ export function findRateRow(values: unknown[][], tab: string): number {
 	return row;
 }
 
-/** The year a month tab belongs to: months are created ahead of time, so a month before the current Taipei month is next year's. */
+/**
+ * The year a month tab belongs to: the occurrence of `month` nearest to the
+ * current Taipei month. Months are usually created ahead of time (January
+ * built in December is next year's), but replace_old_layout also rebuilds
+ * months that already started or just ended (November rebuilt in December
+ * is this year's). Six months either way resolves to the coming one.
+ */
 export function rateYear(month: number, now: Date = new Date()): number {
 	const parts = new Intl.DateTimeFormat("en-US", { timeZone: SHEET_TIMEZONE, year: "numeric", month: "numeric" }).formatToParts(now);
 	const year = Number(parts.find((p) => p.type === "year")?.value);
 	const current = Number(parts.find((p) => p.type === "month")?.value);
-	return month >= current ? year : year + 1;
+	let best = year;
+	let bestDistance = Number.POSITIVE_INFINITY;
+	for (const candidate of [year - 1, year, year + 1]) {
+		const offset = candidate * 12 + month - (year * 12 + current);
+		const distance = Math.abs(offset);
+		if (distance < bestDistance || (distance === bestDistance && offset > 0)) {
+			best = candidate;
+			bestDistance = distance;
+		}
+	}
+	return best;
 }
 
 /** 本月匯率: the live rate up to and including the 1st, then locked to the 1st's close. */

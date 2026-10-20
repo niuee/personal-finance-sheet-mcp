@@ -260,7 +260,12 @@ cutoff can't work because tab names carry no year.)*
   template's own placeholder carries. That's harmless, because step 3
   below rewires the new tab's carries.
 
-**Steps:**
+**Steps.** *(After the final review)* every read happens before any
+write: the template itself (the copy is identical), the old tab when
+replacing, and the previous month. The rename, the duplicate (with a
+pre-chosen sheetId) and the writes into the copy then go in ONE
+`batchUpdate`, which Sheets applies all-or-nothing, so a failure never
+leaves a half-built month. In order:
 1. Duplicate the "Budget Based" tab as "N 月". Put it at the front, where
    new months go today.
 2. Write the title `N 月花費`.
@@ -296,9 +301,13 @@ entries per block.
   - 2026-10-01 gave 31.9018.
   - Weekend 1sts (2026-08-01 Sat, 2026-02-01 Sun, 2026-03-01 Sun) all
     returned a rate.
-- **Year:** the Taipei current year if `M` is the current Taipei month
-  or later, otherwise the next year (months are created ahead of time,
-  never after they end).
+- **Year:** the occurrence of `M` nearest to the current Taipei month.
+  January built in December is next year's; November rebuilt with
+  `replace_old_layout` in December is this year's. Six months either way
+  resolves to the coming one. *(Changed after the final review: the first
+  rule, "current year if `M` is now or later, else next year", would lock a
+  month rebuilt after it ended to the wrong year, and its rate would never
+  lock.)*
 - **No IFERROR fallback.** If Google's historical lookup fails, the error
   should show rather than quietly fall back to a drifting live rate.
   *(My call.)*
