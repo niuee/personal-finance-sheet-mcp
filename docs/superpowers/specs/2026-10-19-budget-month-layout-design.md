@@ -52,8 +52,12 @@ exactly as today.
     Every budget covers its category's starting entries, so no category
     starts the month over budget.
 13. Each budget line has its own currency (its 支付幣別). A USD budget line
-    is entered in USD and converted at 本月匯率. Today 學貸 ($429.93) and
-    其他 ($15) are USD; the rest are NTD.
+    is entered in USD and converted at 本月匯率.
+    - A category may have **one line per currency**, both named
+      `<類別>預算`, and its block's 編列預算 adds them up.
+    - 訂閱 is split this way (NTD 10,700 + USD 71.37), so its USD
+      subscriptions are budgeted on the USD side and aren't counted twice.
+    - 學貸 ($429.93) and 其他 ($15) are USD only; the rest are NTD only.
 14. 11 月 and 12 月 become budget months too. `start_month` rebuilds them
     from the template, the old versions are kept as **"11 月 DEP"** and
     **"12 月 DEP"**, and their planned one-off entries are re-added to the
@@ -72,9 +76,9 @@ this codebase, never by fixed rows.
 | A1 | Title, `N 月花費` |
 | B3 / D3 / E3 / F3 | 上月美金透支: D = `=IF(-('prev'!D<收支狀況 row>) > 0, -(…), 0)` against the previous month's 本月美金收支狀況; E = `=D3*$C$15`; F = USD |
 | B4 / E4 / F4 | 上月新臺幣透支: E = same shape against the previous month's 本月新臺幣收支狀況; F = TWD |
-| B5:F13 | Budget list, one row per category: B = `<類別>預算` (e.g. 購物預算, 中餐預算), C = 類別, D = USD amount (USD budgets only), E = NTD amount (`=D*$C$15` for USD budgets), F = 支付幣別 |
-| D14 / E14 | 預算總額 `=sum(E5:E13)` (excludes the two 透支 rows) |
-| B15 / C15 / D15 | **本月匯率** label, the rate, a "← 月初更新" note |
+| B5:F14 | Budget list, one row per category and currency: B = `<類別>預算` (e.g. 購物預算, 中餐預算; 訂閱預算 appears twice), C = 類別, D = USD amount (USD lines only), E = NTD amount (`=D*$C$15` for USD lines), F = 支付幣別 |
+| B15 / C15 | **本月匯率** label and the rate |
+| D15 / E15 | 預算總額 `=SUM(E5:E14)` (excludes the two 透支 rows) |
 | B26 | 總預算 (income section title) |
 | B27:D27 | Income header 項目 / 幣別 / 金額 |
 | B28:D31 | Income rows: 薪水 TWD 65,271 (row 28), 沛還 USD 700 (row 29). D32/D33 read C28:C31 / D28:D31 |
@@ -92,7 +96,7 @@ column: 午餐 H–K, 購物 M–P, 吃喝 R–U, 生活用品 W–Z, 訂閱 AB�
 |---|---|
 | 2 | Title `<category>支出` in `s` (午餐支出, 購物支出, …) |
 | 3 | 編列預算 (merged `s:s+1`), 剩餘 (負數會加回去支出） (merged `s+2:s+3`) |
-| 4 | `s`: `=INDEX($E3:$E23, MATCH("<類別>預算", $B3:$B23, 0))`; `s+2`: `=s4 - (s+2)5` |
+| 4 | `s`: `=SUMIF($B$3:$B$23,"<類別>預算",$E$3:$E$23)` (adds every line of that category, whatever its currency); `s+2`: `=s4 - (s+2)5` |
 | 5 | `s+1`: 總和; `s+2`: `=SUMIF(<幣別>7:<幣別>,"<>USD",<金額>7:<金額>)+SUMIF(<幣別>7:<幣別>,"USD",<金額>7:<金額>)*$C$15` |
 | 6 | Header 日期 / 項目 / 金額 / 幣別 |
 | 7+ | Entries, open-ended. A blank 幣別 counts as TWD. Rows 7–8 carry a pre-typed "TWD" in 幣別 |
@@ -119,7 +123,7 @@ written into the tab:
 | Block | Budget (支付幣別) | Starting entries |
 |---|---|---|
 | 生活用品 | 31,261 (TWD) | 基本生活費 30,000 TWD; 電話費 1,261 TWD |
-| 訂閱 | 13,000 (TWD) | ElevenLabs 6.00, iCloud 9.99, Google One 7.99, Netflix 26.99, ChatGPT 20.40 (all USD); Claude `=200*$C$15` TWD (USD-priced, paid from the NTD account) |
+| 訂閱 | 10,700 (TWD) + 71.37 (USD), about 13,017 in total | ElevenLabs 6.00, iCloud 9.99, Google One 7.99, Netflix 26.99, ChatGPT 20.40 (all USD); Claude `=200*$C$15` TWD (USD-priced, paid from the NTD account) |
 | 學貸 | 429.93 (USD) | ECSI Loan 148.50 USD; Fed Loan 281.43 USD |
 | 交通 | 1,000 (TWD) | 公車儲值 1,000 TWD |
 | 其他 | 15 (USD) | 每月銀行管理 15.00 USD |
