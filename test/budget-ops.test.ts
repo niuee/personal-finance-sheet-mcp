@@ -33,6 +33,7 @@ function budgetClient(grids: Record<string, unknown[][]>, tabs?: string[]): Shee
 			reqs[0]?.duplicateSheet ? { replies: [{ duplicateSheet: { properties: { sheetId: 555 } } }] } : { replies: [{}] },
 		),
 		listTabs: vi.fn(async () => (tabs ?? Object.keys(grids)).map((title) => ({ title, rowCount: 1000, columnCount: 62 }))),
+		dataValidationRows: vi.fn(async () => []),
 	} as unknown as SheetsClient;
 }
 
@@ -92,6 +93,33 @@ describe("addExpense on budget months", () => {
 				fields: "userEnteredValue",
 			},
 		});
+	});
+
+	it("copies the 幣別 dropdown from the nearest entry above, filling the rows added without it", async () => {
+		const client = budgetClient({ "11 月": budgetGrid() });
+		// 訂閱 (幣別 in AE) holds entries in rows 7-12; only the template's rows 7-10 carry the dropdown.
+		(client.dataValidationRows as any).mockResolvedValueOnce([7, 8, 9, 10]);
+		const r = await addExpense(client, { item: "Spotify", amount: 149, currency: "TWD", tag: "訂閱", month: 11 });
+		expect(r).toMatchObject({ row: 13 });
+		expect(client.dataValidationRows).toHaveBeenCalledWith("11 月", "AE", 7, 13);
+		expect((client.batchUpdate as any).mock.calls[0][0]).toContainEqual({
+			copyPaste: {
+				source: { sheetId: 111, startRowIndex: 9, endRowIndex: 10, startColumnIndex: 30, endColumnIndex: 31 },
+				destination: { sheetId: 111, startRowIndex: 10, endRowIndex: 13, startColumnIndex: 30, endColumnIndex: 31 },
+				pasteType: "PASTE_DATA_VALIDATION",
+			},
+		});
+	});
+
+	it("leaves the 幣別 dropdown alone when the target row already has it, or when the block has none", async () => {
+		const withRule = budgetClient({ "11 月": budgetGrid() });
+		(withRule.dataValidationRows as any).mockResolvedValueOnce([7, 8]);
+		await addExpense(withRule, { item: "Kato 500系", amount: 8940, currency: "TWD", tag: "購物", month: 11 });
+		expect(JSON.stringify((withRule.batchUpdate as any).mock.calls[0][0])).not.toContain("copyPaste");
+
+		const noRule = budgetClient({ "11 月": budgetGrid() });
+		await addExpense(noRule, { item: "Kato 500系", amount: 8940, currency: "TWD", tag: "購物", month: 11 });
+		expect(JSON.stringify((noRule.batchUpdate as any).mock.calls[0][0])).not.toContain("copyPaste");
 	});
 
 	it("refuses card and a missing tag on budget months, writing nothing", async () => {

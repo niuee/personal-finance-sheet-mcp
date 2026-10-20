@@ -240,6 +240,10 @@ describe("conventions", () => {
 		}
 	});
 
+	it("says add_expense carries the 幣別 dropdown onto new entries", () => {
+		expect(CONVENTIONS_TEXT).toContain("add_expense copies the 幣別 dropdown rule onto the new row");
+	});
+
 	it("says the NTD line subtracts the NTD-paid overspend", () => {
 		expect(NTD_OVERSPEND_LABEL).toBe("本月新臺幣超支");
 		expect(CONVENTIONS_TEXT).toContain("本月新臺幣收支狀況 (TWD income − 上月新臺幣透支 − the TWD budget lines + 本月新臺幣超支 − the 乾坤大挪移 手續費)");

@@ -200,6 +200,13 @@ to drop into), `adjust_balance` (no bank-balance blocks), and
   the block's first entry row whose 日期, 項目 and 金額 are all empty;
   the pre-typed "TWD" in 幣別 doesn't count as content. 幣別 is always
   written explicitly.
+- 幣別 is a dropdown, and the template's rule only covers its own rows.
+  When the new row has no rule, `add_expense` copies it
+  (`PASTE_DATA_VALIDATION`) from the nearest entry above that has one onto
+  every row from there down to the new one, so rows logged without it
+  heal too. If no row above has a rule, the column is left as is.
+  *(Added 2026-10-20: entries added past the template's rows showed 幣別
+  as plain text.)*
 - Entries are appended, not date-sorted. *(My call: blocks are short and
   the 總和 doesn't care about order.)*
 - 幣別 means **the currency of the account that paid**, because

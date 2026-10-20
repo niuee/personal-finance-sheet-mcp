@@ -416,3 +416,41 @@ describe("SheetsClient.getDataValidation", () => {
 		expect(await makeClient().getDataValidation("6 月", 3, 15, "C")).toBeNull();
 	});
 });
+
+describe("SheetsClient.dataValidationRows", () => {
+	it("lists the 1-indexed rows of a column window whose cell carries any rule", async () => {
+		const fetchMock = vi.fn<FetchMock>(async () =>
+			jsonResponse({
+				sheets: [
+					{
+						data: [
+							{
+								startRow: 6,
+								rowData: [
+									{ values: [{ dataValidation: { condition: { type: "ONE_OF_LIST", values: [{ userEnteredValue: "USD" }] } } }] }, // row 7
+									{}, // row 8: no rule
+									{ values: [{}] }, // row 9: no rule
+									{ values: [{ dataValidation: { condition: { type: "ONE_OF_RANGE", values: [] } } }] }, // row 10
+								],
+							},
+						],
+					},
+				],
+			}),
+		);
+		vi.stubGlobal("fetch", fetchMock);
+
+		const rows = await makeClient().dataValidationRows("11 月", "AE", 7, 13);
+
+		expect(fetchMock.mock.calls[0][0]).toBe(
+			`${BASE}?ranges=${encodeURIComponent("'11 月'!AE7:AE13")}&fields=sheets.data(startRow,rowData.values.dataValidation)`,
+		);
+		expect(rows).toEqual([7, 10]);
+	});
+
+	it("returns [] when the response has no grid data", async () => {
+		vi.stubGlobal("fetch", vi.fn<FetchMock>(async () => jsonResponse({})));
+
+		expect(await makeClient().dataValidationRows("11 月", "K", 7, 9)).toEqual([]);
+	});
+});

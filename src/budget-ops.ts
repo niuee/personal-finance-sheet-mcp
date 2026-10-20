@@ -37,6 +37,7 @@ import {
 	assertNotTruncated,
 	carryFormula,
 	cellData,
+	colLetter,
 	findIncomeWindow,
 	findRowByLabels,
 	findRowByValue,
@@ -111,6 +112,14 @@ export async function addBudgetExpense(
 	const amount: number | string = convertedAtMonthRate ? `=${p.amount}*$C$${findRateRow(values, tab)}` : p.amount;
 	const currency: "USD" | "TWD" = convertedAtMonthRate ? "TWD" : p.currency;
 
+	// 幣別 is a dropdown, but the template's rule only covers its own rows and
+	// a value write carries no rule. Copy it from the nearest entry above that
+	// has it onto every row from there down to the new one, so rows logged
+	// before this fix heal too. No rule anywhere above → leave the column as is.
+	const currencyCol = block.startCol + 3;
+	const ruled = await client.dataValidationRows(tab, colLetter(currencyCol), block.headerRow + 1, row);
+	const ruleSrcRow = ruled.includes(row) ? null : (ruled.filter((r) => r < row).pop() ?? null);
+
 	const sheetId = await client.getSheetId(tab);
 	const requests: object[] = [
 		{
@@ -121,6 +130,16 @@ export async function addBudgetExpense(
 			},
 		},
 	];
+	if (ruleSrcRow !== null) {
+		const column = { startColumnIndex: currencyCol, endColumnIndex: currencyCol + 1 };
+		requests.push({
+			copyPaste: {
+				source: { sheetId, startRowIndex: ruleSrcRow - 1, endRowIndex: ruleSrcRow, ...column },
+				destination: { sheetId, startRowIndex: ruleSrcRow, endRowIndex: row, ...column },
+				pasteType: "PASTE_DATA_VALIDATION",
+			},
+		});
+	}
 	if (dateSerialValue !== null) {
 		requests.push({
 			updateCells: {
