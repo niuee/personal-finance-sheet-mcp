@@ -243,6 +243,7 @@ describe("conventions", () => {
 
 	it("says add_expense carries the 幣別 dropdown onto new entries", () => {
 		expect(CONVENTIONS_TEXT).toContain("add_expense copies the 幣別 dropdown rule onto the new row");
+		expect(CONVENTIONS_TEXT).toContain("when nothing above has one, from another block's 幣別");
 	});
 
 	it("no longer mentions the one-off migration tool", () => {

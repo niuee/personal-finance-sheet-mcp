@@ -212,7 +212,10 @@ to drop into), `adjust_balance` (no bank-balance blocks), and
   When the new row has no rule, `add_expense` copies it
   (`PASTE_DATA_VALIDATION`) from the nearest entry above that has one onto
   every row from there down to the new one, so rows logged without it
-  heal too. If no row above has a rule, the column is left as is.
+  heal too. If no row above has a rule, it copies the closest rule from
+  any block's 幣別 column on the tab (this block's own rows below first)
+  onto every row of this block's column down to the new one; with no rule
+  anywhere, the column is left as is. *(Fallback added 2026-10-20.)*
   *(Added 2026-10-20: entries added past the template's rows showed 幣別
   as plain text.)*
 - Entries are appended, not date-sorted. *(My call: blocks are short and
