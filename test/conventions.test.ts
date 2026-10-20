@@ -245,6 +245,10 @@ describe("conventions", () => {
 		expect(CONVENTIONS_TEXT).toContain("add_expense copies the 幣別 dropdown rule onto the new row");
 	});
 
+	it("no longer mentions the one-off migration tool", () => {
+		expect(CONVENTIONS_TEXT).not.toContain("migrate_budget_split");
+	});
+
 	it("describes per-currency budget months", () => {
 		expect(USD_OVERSPEND_LABEL).toBe("本月美金超支");
 		for (const needle of [
@@ -253,7 +257,6 @@ describe("conventions", () => {
 			"a 美金 row and a 新臺幣 row",
 			"本月美金超支（加上回補）",
 			"本月新臺幣超支（加上回補）",
-			"migrate_budget_split",
 			"本月美金收支狀況 (USD income − 上月美金透支 − the USD budget lines + 本月美金超支)",
 		]) {
 			expect(CONVENTIONS_TEXT).toContain(needle);

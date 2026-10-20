@@ -31,8 +31,9 @@ describe("budget-month layout", () => {
 		expect(() => findBudgetBlocks(g, "11 月")).toThrow(/AB6.*美金|美金.*AB6/);
 	});
 
-	it("findBudgetBlocks names the migration on an old-shape tab", () => {
-		expect(() => findBudgetBlocks(legacyBudgetGrid(), "11 月")).toThrow(/old single-currency.*migrate_budget_split/);
+	it("findBudgetBlocks refuses an old-shape tab without pointing at the removed migration tool", () => {
+		expect(() => findBudgetBlocks(legacyBudgetGrid(), "11 月")).toThrow(/old single-currency budget blocks, which the tools no longer read/);
+		expect(() => findBudgetBlocks(legacyBudgetGrid(), "11 月")).not.toThrow(/migrate_budget_split/);
 	});
 
 	it("resolveBudgetBlock: alias, trim, unknown tag lists categories", () => {

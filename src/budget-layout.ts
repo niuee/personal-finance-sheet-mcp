@@ -22,7 +22,6 @@ import {
 	CURRENCY_HEADER_LABEL,
 	DATE_HEADER_LABEL,
 	INCOME_HEADER_LABEL,
-	MIGRATE_BUDGET_SPLIT_TOOL,
 	MONTH_COLS,
 	MONTH_USD_NET_LABELS,
 	RATE_LABEL,
@@ -150,7 +149,7 @@ export function isLegacyBudgetBlock(values: unknown[][], h: BudgetBlockHeader): 
 export function findBudgetBlocks(values: unknown[][], tab: string): BudgetBlock[] {
 	return scanBudgetBlockHeaders(values, tab).map((h) => {
 		if (isLegacyBudgetBlock(values, h)) {
-			throw new Error(`${tab} still has the old single-currency budget blocks — run ${MIGRATE_BUDGET_SPLIT_TOOL} on it first.`);
+			throw new Error(`${tab} still has the old single-currency budget blocks, which the tools no longer read — rebuild its blocks on the per-currency layout of the "Budget Based" template.`);
 		}
 		const where = `${colLetter(h.startCol)}${h.headerRow}`;
 		let usdRow: number | null = null;

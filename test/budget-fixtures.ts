@@ -126,7 +126,7 @@ export function budgetGrid(): unknown[][] {
 	return g;
 }
 
-/** The template as it was before the per-currency split (rate at row 15, one mixed 編列預算/總和/剩餘 per block) — what migrate_budget_split starts from. */
+/** The template as it was before the per-currency split (rate at row 15, one mixed 編列預算/總和/剩餘 per block) — kept so the tools' refusal of that shape stays tested. */
 export function legacyBudgetGrid(): unknown[][] {
 	const { g, put, row } = grid();
 	shared(put, row, "$C$15");
