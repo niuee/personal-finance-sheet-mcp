@@ -1190,6 +1190,7 @@ export async function adjustBalance(client: SheetsClient, p: AdjustBalanceParams
 		client.readRange(range, "FORMULA"),
 	]);
 	assertNotTruncated(truncated || formulas.truncated, tab, FULL_GRID_READ);
+	if (isBudgetMonth(values)) throw new Error(`${tab} is a budget month — it has no bank-balance sections to reconcile.`);
 
 	const endRow = findRowByValue(values, MONTH_COLS.budgetLabel, labels.end);
 	const adjustRow = findRowByValue(values, MONTH_COLS.budgetLabel, labels.adjust);
@@ -1757,6 +1758,7 @@ export async function addLunch(client: SheetsClient, p: AddLunchParams) {
 
 	const { values, truncated } = await client.readRange(`${quoteTab(tab)}!${FULL_GRID_READ}`, "FORMULA");
 	assertNotTruncated(truncated, tab, FULL_GRID_READ);
+	if (isBudgetMonth(values)) throw new Error(`${tab} is a budget month — lunches are entries in the 午餐 block: use add_expense with tag 中餐.`);
 	const { budgetRow, headerRow, totalRow } = findLunchSection(values, tab);
 
 	// First row between the header and 總和 that is empty across P–S.
@@ -1879,6 +1881,7 @@ export async function setExpenseDate(client: SheetsClient, p: SetExpenseDatePara
 
 	const { values, truncated } = await client.readRange(`${quoteTab(tab)}!${FULL_GRID_READ}`, "FORMULA");
 	assertNotTruncated(truncated, tab, FULL_GRID_READ);
+	if (isBudgetMonth(values)) throw new Error(`${tab} is a budget month — it has no card statement buckets to date a row into. To change an entry's date, delete_expense it and add_expense it again.`);
 	const { totalRow, start: windowStart, end: windowEnd } = findExpenseWindow(values, tab);
 
 	const candidates: number[] = [];

@@ -181,7 +181,7 @@ export function registerTailoredTools(server: McpServer, client: SheetsClient): 
 
 	server.tool(
 		"set_expense_date",
-		"Fill in (or change) the 日期 of an existing expense row on a monthly tab — e.g. when a dateless recurring subscription charges a credit card, dating the row is what drops it into the 信用卡帳單對帳區 bucket. Finds the row by exact 項目; with duplicate names it prefers the single dateless row (pass row to disambiguate). The dated row is then moved to its date-sorted position (movedToRow in the result; null when it already sat there). If the row's 支付方式 holds a card, the target bucket is grown automatically when its spill area is full.",
+		"Fill in (or change) the 日期 of an existing expense row on a monthly tab — e.g. when a dateless recurring subscription charges a credit card, dating the row is what drops it into the 信用卡帳單對帳區 bucket. Finds the row by exact 項目; with duplicate names it prefers the single dateless row (pass row to disambiguate). The dated row is then moved to its date-sorted position (movedToRow in the result; null when it already sat there). If the row's 支付方式 holds a card, the target bucket is grown automatically when its spill area is full. Refused on BUDGET MONTHS (from 11 月 2026): they have no card buckets.",
 		{
 			item: z.string().min(1).describe("項目 of the expense row, exactly as written"),
 			date: z.string().min(1).describe("Date: M/D, MM/DD, or YYYY-MM-DD (year defaults to the current Taipei year)"),
@@ -223,7 +223,7 @@ export function registerTailoredTools(server: McpServer, client: SheetsClient): 
 
 	server.tool(
 		"adjust_balance",
-		"Reconcile a month-end balance against the real bank account. Pass the ACTUAL balance the account shows; the tool writes actual − the computed 本月底…真實餘額 into that currency's …餘額調整 cell (e.g. computed 500, actual 450 → writes -50). The single 調整 cell feeds the 調整後 rows of BOTH the 帳戶實際數字對應 and 銀行餘額 views, and next month's 本月初 cells chain from those 調整後 rows. Overwrites any previous adjustment (delta is always against the raw computed value — re-running never accumulates). Never write the 調整 cell by hand via update_range.",
+		"Reconcile a month-end balance against the real bank account. Pass the ACTUAL balance the account shows; the tool writes actual − the computed 本月底…真實餘額 into that currency's …餘額調整 cell (e.g. computed 500, actual 450 → writes -50). The single 調整 cell feeds the 調整後 rows of BOTH the 帳戶實際數字對應 and 銀行餘額 views, and next month's 本月初 cells chain from those 調整後 rows. Overwrites any previous adjustment (delta is always against the raw computed value — re-running never accumulates). Never write the 調整 cell by hand via update_range. Refused on BUDGET MONTHS (from 11 月 2026): they have no bank-balance sections.",
 		{
 			currency: z.enum(["TWD", "USD"]).describe("Which account was checked"),
 			actual: z.number().describe("The balance the real bank account actually shows"),
@@ -364,7 +364,7 @@ export function registerTailoredTools(server: McpServer, client: SheetsClient): 
 
 	server.tool(
 		"add_lunch",
-		"Log a lunch into the 午餐預算 section of a monthly tab (titled 中餐預算 on early tabs — both work) (columns P-S; defaults to the current month): writes 日期/項目/金額 and keeps the section's 總和 covering every row. The month's lunch BUDGET is the recurring 中餐 row in the expense list — never also add_expense a lunch. The leftover (剩餘 = 編列預算 − 總和) feeds the 銀行餘額 block's 午餐超支或回補 row: unspent budget returns to 本月底新臺幣餘額, an overdraft deducts more. Returns budget/spent/leftover after the entry. A card lunch (card param) also lands in that card's 信用卡帳單對帳區 bucket.",
+		"Log a lunch into the 午餐預算 section of a monthly tab (titled 中餐預算 on early tabs — both work) (columns P-S; defaults to the current month): writes 日期/項目/金額 and keeps the section's 總和 covering every row. The month's lunch BUDGET is the recurring 中餐 row in the expense list — never also add_expense a lunch. The leftover (剩餘 = 編列預算 − 總和) feeds the 銀行餘額 block's 午餐超支或回補 row: unspent budget returns to 本月底新臺幣餘額, an overdraft deducts more. Returns budget/spent/leftover after the entry. A card lunch (card param) also lands in that card's 信用卡帳單對帳區 bucket. Refused on BUDGET MONTHS (from 11 月 2026): log lunches there with add_expense, tag 中餐.",
 		{
 			amount: z.number().positive().describe("金額 in NTD"),
 			item: z.string().min(1).optional().describe("項目 (default: 中餐)"),

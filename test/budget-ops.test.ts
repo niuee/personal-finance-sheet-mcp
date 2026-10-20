@@ -1,7 +1,18 @@
 import { describe, expect, it, vi } from "vitest";
 import { dateSerial } from "../src/conventions";
 import type { BudgetMonthSummary } from "../src/budget-ops";
-import { addExpense, addTransfer, cellData, deleteExpense, getCategories, monthSummary, setIncome } from "../src/finance-ops";
+import {
+	addExpense,
+	addLunch,
+	addTransfer,
+	adjustBalance,
+	cellData,
+	deleteExpense,
+	getCategories,
+	monthSummary,
+	setExpenseDate,
+	setIncome,
+} from "../src/finance-ops";
 import type { SheetsClient } from "../src/sheets-client";
 import { budgetGrid } from "./budget-fixtures";
 
@@ -266,5 +277,29 @@ describe("monthSummary and getCategories on budget months", () => {
 			categories: ["中餐", "購物", "吃喝", "生活用品", "訂閱", "交通", "娛樂", "學貸", "其他"],
 		});
 		expect((client as any).getDataValidation).not.toHaveBeenCalled();
+	});
+});
+
+describe("old-layout-only tools refuse budget months", () => {
+	it("add_lunch points at add_expense with tag 中餐", async () => {
+		const client = budgetClient({ "11 月": budgetGrid() });
+		await expect(addLunch(client, { amount: 120, month: 11 })).rejects.toThrow("11 月 is a budget month — lunches are entries in the 午餐 block");
+		expect(client.batchUpdate).not.toHaveBeenCalled();
+	});
+
+	it("set_expense_date has no card buckets to date into", async () => {
+		const client = budgetClient({ "11 月": budgetGrid() });
+		await expect(setExpenseDate(client, { item: "Netflix", date: "11/2", month: 11 })).rejects.toThrow(
+			"11 月 is a budget month — it has no card statement buckets",
+		);
+		expect(client.batchUpdate).not.toHaveBeenCalled();
+	});
+
+	it("adjust_balance has no bank-balance sections", async () => {
+		const client = budgetClient({ "11 月": budgetGrid() });
+		await expect(adjustBalance(client, { currency: "TWD", actual: 1000, month: 11 })).rejects.toThrow(
+			"11 月 is a budget month — it has no bank-balance sections to reconcile.",
+		);
+		expect(client.batchUpdate).not.toHaveBeenCalled();
 	});
 });
